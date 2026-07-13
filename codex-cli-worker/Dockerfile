@@ -3,6 +3,7 @@ FROM $BUILD_FROM
 
 ARG BUILD_VERSION=dev
 ARG BUILD_ARCH=amd64
+ARG CODEX_VERSION=0.144.1
 
 LABEL \
     io.hass.version="${BUILD_VERSION}" \
@@ -22,7 +23,10 @@ RUN apk add --no-cache \
     rsync \
     tar
 
-RUN npm install -g @openai/codex
+RUN npm install -g --prefix /usr/local "@openai/codex@${CODEX_VERSION}" \
+    && test -x /usr/local/bin/codex \
+    && test "$(command -v codex)" = /usr/local/bin/codex \
+    && /usr/local/bin/codex --version
 
 RUN pip3 install --no-cache-dir --break-system-packages \
     flask \

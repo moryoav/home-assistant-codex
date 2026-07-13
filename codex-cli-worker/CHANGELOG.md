@@ -1,5 +1,11 @@
 # Changelog
 
+## Next
+
+- Pin and verify the Codex CLI executable during both architecture builds.
+- Disable interactive Codex update prompts in the worker-managed configuration.
+- Use the fixed Codex executable path and fail tasks cleanly when it cannot be started.
+
 ## 0.1.36
 
 - Replaced the option-backed `AGENTS.md` writer with an add-on web UI editor for the real `/config/AGENTS.md` file.

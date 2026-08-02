@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.39
+
+- Let the installed Codex CLI choose its recommended model by default and migrate the legacy GPT-5.3-Codex selection safely.
+- Update Codex CLI to 0.146.0 and make `workspace-write` and `read-only` sandboxing work on HAOS with a capability-dropping Bubblewrap wrapper and a nested AppArmor setup profile.
+- Add Codex version and sandbox readiness diagnostics, including the supported no-proc fallback for restrictive containers.
+- Harden task launch, cancellation, timeout, and child-process cleanup paths.
+- Handle account-specific usage windows, keep the existing 5-hour entities compatible when only a weekly window is reported, and redact account/session data from diagnostic excerpts.
+
 ## 0.1.38
 
 - Pin and verify the Codex CLI executable during both architecture builds.

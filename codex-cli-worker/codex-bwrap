@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+REAL_BWRAP=/opt/codex-sandbox/bwrap.real
+
+if [ "${1:-}" = "--version" ]; then
+  exec "$REAL_BWRAP" "$@"
+fi
+
+exec "$REAL_BWRAP" --cap-drop ALL "$@"

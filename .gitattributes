@@ -7,5 +7,6 @@
 *.json text eol=lf
 *.md text eol=lf
 Dockerfile text eol=lf
+codex-cli-worker/codex-bwrap text eol=lf
 
 *.png binary

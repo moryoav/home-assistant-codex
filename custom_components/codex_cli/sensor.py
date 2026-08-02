@@ -163,6 +163,7 @@ class CodexFiveHourLimitSensor(_CodexSensor):
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return {
             "usage_status": usage.get("status"),
+            "reported": bool(usage.get("five_hour_percent")),
             "updated_at": usage.get("updated_at"),
             "error": usage.get("error"),
             "limit": usage.get("five_hour_limit"),
@@ -212,6 +213,7 @@ class CodexFiveHourResetSensor(_CodexSensor):
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return {
             "usage_status": usage.get("status"),
+            "reported": bool(usage.get("five_hour_reset_at")),
             "updated_at": usage.get("updated_at"),
             "error": usage.get("error"),
             "reset_text": usage.get("five_hour_reset"),
@@ -244,6 +246,7 @@ class CodexWeeklyLimitSensor(_CodexSensor):
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return {
             "usage_status": usage.get("status"),
+            "reported": bool(usage.get("weekly_percent")),
             "updated_at": usage.get("updated_at"),
             "error": usage.get("error"),
             "limit": usage.get("weekly_limit"),
@@ -279,6 +282,7 @@ class CodexWeeklyResetSensor(_CodexSensor):
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return {
             "usage_status": usage.get("status"),
+            "reported": bool(usage.get("weekly_reset_at")),
             "updated_at": usage.get("updated_at"),
             "error": usage.get("error"),
             "reset_text": usage.get("weekly_reset"),

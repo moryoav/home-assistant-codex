@@ -38,6 +38,8 @@ The packaged worker follows the current Home Assistant app security guidance:
 - Exact Ingress proxy source validation.
 - Token-protected worker API for non-Ingress calls.
 - AppArmor enabled with a custom profile.
+- Bubblewrap namespace setup is isolated in a nested AppArmor profile, and
+  sandboxed commands start with all Linux capabilities dropped.
 - No Docker API access.
 - No host network.
 - No host PID/UTS access.
@@ -97,7 +99,7 @@ The app keeps an internal worker API token in private app storage. The **Codex**
 
 The app's web UI is available through Home Assistant Ingress. Do not try to open port `9123` directly; it is intentionally not exposed.
 
-The app options include dropdowns for the Codex model and model reasoning effort. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota, and `xhigh` only applies where the selected model supports it.
+The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota, and `xhigh` only applies where the selected model supports it.
 
 The app web UI can view and save `/config/AGENTS.md`. You can also set the masked `HA_TOKEN` option when Codex tasks need a Home Assistant token in their environment.
 
@@ -178,7 +180,7 @@ The integration exposes these Home Assistant actions:
 - `codex_cli.cancel_task`
 - `codex_cli.reply_task`
 
-The integration also provides diagnostic sensors for auth status, active tasks, last task, Codex 5-hour and weekly usage limits, and separate 5-hour/weekly reset timestamp sensors. The usage sensors expose numeric percent states plus ISO datetime reset attributes when Codex reports reset times in `/status`.
+The integration also provides diagnostic sensors for auth status, active tasks, last task, and the usage windows reported by Codex `/status`. Depending on the account and plan, Codex may report both 5-hour and weekly limits or only a weekly limit. The existing 5-hour entities remain available for automation compatibility; when that window is omitted their state is `unknown` and their `reported` attribute is `false`. Reported usage sensors expose numeric percent states plus ISO datetime reset attributes when reset times are present.
 
 When a Codex task completes, fails, or needs input, the worker fires a Home Assistant event named `codex_cli_task_result` in addition to the notification. Automations can listen for that event and read fields such as `task_id`, `status`, `summary`, `question`, `details`, and the nested `response` object from `trigger.event.data`.
 

@@ -11,7 +11,7 @@ import queue
 import re
 import select
 import secrets
-import signal
+import shutil
 import sys
 import subprocess
 import tarfile
@@ -43,7 +43,7 @@ AGENTS_PATH = CONFIG_ROOT / "AGENTS.md"
 TASK_STATE_FILE = DATA_ROOT / "task_index.json"
 
 DEFAULT_OPTIONS = {
-    "codex_model": "gpt-5.3-codex",
+    "codex_model": "default",
     "model_reasoning_effort": "medium",
     "codex_sandbox": "workspace-write",
     "task_root": "/config/codex_tasks",
@@ -66,11 +66,23 @@ USAGE_READY_TIMEOUT_SECONDS = 8
 USAGE_STATUS_TIMEOUT_SECONDS = 25
 USAGE_POST_TRUST_READY_SECONDS = 10
 USAGE_COMMAND_SUBMIT_DELAY_SECONDS = 0.7
+RUNTIME_PROBE_TIMEOUT_SECONDS = 5
+DIAGNOSTIC_ERROR_MAX_CHARS = 1000
+CANCELLABLE_TASK_STATUSES = frozenset({"queued", "running"})
+CANCELLED_TASK_SUMMARY = "Task cancelled"
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
 URL_RE = re.compile(r"https?://[^\s<>)\"']+")
 DEVICE_CODE_RE = re.compile(r"\b[A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+\b")
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+SENSITIVE_USAGE_LABEL_RE = re.compile(
+    r"(?i)\b(?:account|e-?mail|session(?:\s+id)?|organization|workspace(?:\s+id)?)\s*:"
+)
+USAGE_EXCERPT_LINE_RE = re.compile(
+    r"(?i)(?:5\s*h|five\s*-?\s*hour|weekly|context(?:\s+(?:window|remaining))?|"
+    r"model(?:\s+with\s+reasoning)?|limit|reset)"
+)
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[PX^_].*?\x1b\\|[@-Z\\-_])")
 FIVE_HOUR_RE = re.compile(
     r"(?i)(?<!\w)(?:5\s*h(?:\s+limit)?|5\s*-\s*hour|five\s*-\s*hour|five\s+hour)"
@@ -158,6 +170,7 @@ lock = threading.RLock()
 auth_lock = threading.RLock()
 tasks: dict[str, dict[str, Any]] = {}
 running_processes: dict[str, subprocess.Popen] = {}
+active_task_runners: set[str] = set()
 auth_state: dict[str, Any] = {}
 auth_process: subprocess.Popen | None = None
 event_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
@@ -253,6 +266,127 @@ def codex_binary_path() -> str | None:
     except OSError:
         pass
     return None
+
+
+def _diagnostic_error(value: Any) -> str:
+    """Return a short, redacted single-line diagnostic message."""
+    text = " ".join(str(value or "").strip().split())
+    return redact(text)[:DIAGNOSTIC_ERROR_MAX_CHARS]
+
+
+def codex_version_status() -> dict[str, str]:
+    """Return the pinned Codex version without using authentication or quota."""
+    codex = codex_binary_path()
+    if not codex:
+        return {"version": "", "error": "Codex CLI executable is unavailable."}
+    try:
+        result = subprocess.run(
+            [codex, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=RUNTIME_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"version": "", "error": "Codex version probe timed out."}
+    except OSError as exc:
+        return {"version": "", "error": _diagnostic_error(exc)}
+
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode == 0 and output:
+        return {"version": output.splitlines()[0].strip(), "error": ""}
+    detail = output or f"Codex version probe exited with {result.returncode}."
+    return {"version": "", "error": _diagnostic_error(detail)}
+
+
+def _bubblewrap_probe(binary: str, *, mount_proc: bool) -> dict[str, Any]:
+    """Run a non-mutating Bubblewrap namespace probe."""
+    args = [
+        binary,
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--ro-bind",
+        "/",
+        "/",
+    ]
+    if mount_proc:
+        args.extend(["--proc", "/proc"])
+    args.append("/bin/true")
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=RUNTIME_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Bubblewrap probe timed out."}
+    except OSError as exc:
+        return {"ok": False, "error": _diagnostic_error(exc)}
+
+    if result.returncode == 0:
+        return {"ok": True, "error": ""}
+    detail = result.stderr or result.stdout or f"Bubblewrap exited with {result.returncode}."
+    return {"ok": False, "error": _diagnostic_error(detail)}
+
+
+def sandbox_readiness() -> dict[str, Any]:
+    """Report whether the configured Codex sandbox can run on this host."""
+    mode = str(read_options().get("codex_sandbox") or DEFAULT_OPTIONS["codex_sandbox"])
+    required = mode != "danger-full-access"
+    binary = shutil.which("bwrap") or ""
+    if not required:
+        namespace_probe = {
+            "ok": False,
+            "skipped": True,
+            "error": "Namespace probe is not required in danger-full-access mode.",
+        }
+        proc_probe = {
+            "ok": False,
+            "skipped": True,
+            "error": "Fresh /proc probe is not required in danger-full-access mode.",
+        }
+    elif not binary:
+        namespace_probe = {"ok": False, "error": "Bubblewrap is not installed."}
+        proc_probe = {"ok": False, "skipped": True, "error": "Namespace probe was not run."}
+    else:
+        namespace_probe = _bubblewrap_probe(binary, mount_proc=False)
+        if namespace_probe["ok"]:
+            proc_probe = _bubblewrap_probe(binary, mount_proc=True)
+        else:
+            proc_probe = {"ok": False, "skipped": True, "error": "Namespace probe failed."}
+
+    # Codex 0.146+ automatically retries with its --no-proc path when a
+    # restrictive container denies mounting a fresh /proc. Namespace creation
+    # is the required capability; the proc probe remains useful diagnostics.
+    bubblewrap_ready = bool(required and namespace_probe["ok"])
+    ready = bubblewrap_ready if required else True
+    if ready and required and proc_probe["ok"]:
+        message = "Bubblewrap sandbox preflight passed."
+    elif ready and required:
+        message = (
+            "Bubblewrap namespace preflight passed. Fresh /proc mounting is "
+            "unavailable, so Codex will use its no-proc fallback."
+        )
+    elif not required:
+        message = "The selected danger-full-access mode does not require Bubblewrap."
+    else:
+        detail = proc_probe.get("error") if namespace_probe["ok"] else namespace_probe.get("error")
+        message = f"Bubblewrap sandbox preflight failed: {detail}"
+    return {
+        "mode": mode,
+        "required": required,
+        "ready": ready,
+        "bubblewrap_ready": bubblewrap_ready,
+        "proc_mount_supported": bool(proc_probe["ok"]),
+        "bubblewrap_binary": binary,
+        "namespace_probe": namespace_probe,
+        "proc_probe": proc_probe,
+        "message": message,
+        "checked_at": utc_now(),
+    }
 
 
 def api_token() -> str:
@@ -376,6 +510,21 @@ def clean_cli_text(text: str) -> str:
     return ANSI_RE.sub("", text).replace("\r", "\n")
 
 
+def sanitize_usage_excerpt(text: str) -> str:
+    """Keep only quota diagnostics and remove account/session identifiers."""
+    sanitized_lines: list[str] = []
+    for raw_line in clean_cli_text(text).splitlines():
+        line = raw_line.strip()
+        if not line or SENSITIVE_USAGE_LABEL_RE.search(line):
+            continue
+        if not USAGE_EXCERPT_LINE_RE.search(line):
+            continue
+        line = EMAIL_RE.sub("[redacted]", line)
+        line = UUID_RE.sub("[redacted-session]", line)
+        sanitized_lines.append(redact(line))
+    return "\n".join(sanitized_lines[-25:])
+
+
 def compact_cli_text(text: str) -> str:
     """Return CLI output normalized for prompt detection across TUI layout noise."""
     return re.sub(r"[^a-z0-9]+", "", clean_cli_text(text).casefold())
@@ -489,7 +638,7 @@ def _parse_usage_output(text: str) -> dict[str, str]:
         "weekly_reset_at": parse_codex_reset_at(weekly_reset, now),
         "context_remaining": context,
         "context_percent": context_percent,
-        "raw_excerpt": "\n".join(lines[-25:]),
+        "raw_excerpt": sanitize_usage_excerpt("\n".join(lines[-25:])),
     }
 
 
@@ -660,12 +809,8 @@ def fetch_codex_usage_status() -> dict[str, Any]:
                 os.close(slave_fd)
             except Exception:
                 pass
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except Exception:
-                proc.kill()
+        if proc is not None:
+            terminate_and_reap_process(proc, terminate_timeout=3, kill_timeout=2)
 
 
 def _refresh_usage_worker(force: bool = False) -> None:
@@ -704,15 +849,25 @@ def get_task_dir(task_id: str) -> Path:
     return task_root() / task_id
 
 
-def update_task(task_id: str, **updates: Any) -> None:
+def update_task(task_id: str, **updates: Any) -> bool:
     with lock:
         task = tasks.setdefault(task_id, {"task_id": task_id})
+        if task.get("cancellation_requested") and updates.get("status") != "cancelled":
+            return False
         task.update(updates)
         task["updated_at"] = utc_now()
         task_dir = get_task_dir(task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
         (task_dir / "task.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
     save_task_index()
+    return True
+
+
+def task_cancellation_requested(task_id: str) -> bool:
+    """Return whether cancellation won the task's terminal-state race."""
+    with lock:
+        task = tasks.get(task_id, {})
+        return bool(task.get("cancellation_requested"))
 
 
 def require_auth(func):
@@ -765,17 +920,33 @@ def stdin_reader() -> None:
             handle_stdin_message(payload)
 
 
+def _active_task_ids_locked() -> set[str]:
+    active = set(active_task_runners)
+    active.update(running_processes)
+    active.update(
+        task_id
+        for task_id, task in tasks.items()
+        if task.get("status") in {"queued", "running"}
+    )
+    return active
+
+
+def _active_task_id_locked() -> str | None:
+    active = _active_task_ids_locked()
+    for task_id in tasks:
+        if task_id in active:
+            return task_id
+    return min(active) if active else None
+
+
 def active_task_id() -> str | None:
     with lock:
-        for task_id, task in tasks.items():
-            if task.get("status") in {"queued", "running"}:
-                return task_id
-    return None
+        return _active_task_id_locked()
 
 
 def active_task_count() -> int:
     with lock:
-        return sum(1 for task in tasks.values() if task.get("status") in {"queued", "running"})
+        return len(_active_task_ids_locked())
 
 
 def should_include_file(path: Path) -> bool:
@@ -1408,7 +1579,7 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
         str(final_file),
     ]
     model = str(options.get("codex_model") or "").strip()
-    if model == "default":
+    if model in {"default", "gpt-5.3-codex"}:
         model = ""
     if model:
         args.extend(["--model", model])
@@ -1471,25 +1642,171 @@ def parse_final(final_file: Path, returncode: int) -> dict[str, Any]:
     }
 
 
-def fail_task_launch(task_id: str, exc: OSError) -> None:
+def terminate_and_reap_process(
+    proc: subprocess.Popen[Any],
+    *,
+    terminate_timeout: float = 20,
+    kill_timeout: float = 5,
+) -> bool:
+    """Terminate and reap a child, returning whether exit was confirmed."""
+    try:
+        exited = proc.poll() is not None
+    except OSError:
+        exited = False
+    if exited:
+        try:
+            proc.wait(timeout=0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return True
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=terminate_timeout)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=kill_timeout)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        return proc.poll() is not None
+    except OSError:
+        return False
+
+
+def request_task_cancellation(
+    task_id: str,
+) -> tuple[bool, subprocess.Popen[Any] | None, str]:
+    """Atomically make cancellation the task's terminal outcome."""
+    with lock:
+        task = tasks.get(task_id)
+        if task is None:
+            return False, None, "task not found"
+
+        status = str(task.get("status") or "")
+        if task.get("cancellation_requested"):
+            return True, running_processes.get(task_id), ""
+        if status not in CANCELLABLE_TASK_STATUSES:
+            return False, None, f"task is not active (status={status or 'unknown'})"
+
+        completed_at = str(task.get("completed_at") or utc_now())
+        task.update(
+            {
+                "status": "cancelled",
+                "cancellation_requested": True,
+                "completed_at": completed_at,
+                "returncode": None,
+                "summary": CANCELLED_TASK_SUMMARY,
+                "question": "",
+                "details": "",
+                "error": "",
+                "changes": {"added": [], "changed": [], "deleted": []},
+                "validation_errors": [],
+                "lovelace_results": [],
+                "updated_at": utc_now(),
+            }
+        )
+        task_dir = get_task_dir(task_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "task.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+        proc = running_processes.get(task_id)
+    save_task_index()
+    return True, proc, ""
+
+
+def publish_cancelled_task_outcome(task_id: str, returncode: int | None = None) -> bool:
+    """Publish one, and only one, final cancelled task event."""
+    with lock:
+        task = tasks.get(task_id)
+        if not task or not task.get("cancellation_requested"):
+            return False
+        if task.get("cancellation_event_emitted"):
+            return False
+
+        task["cancellation_event_emitted"] = True
+        if returncode is not None:
+            task["returncode"] = returncode
+        task["updated_at"] = utc_now()
+        task_dir = get_task_dir(task_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "task.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+        final_task = dict(task)
+    save_task_index()
+
+    changes = final_task.get("changes") or {"added": [], "changed": [], "deleted": []}
+    validation_errors = final_task.get("validation_errors") or []
+    lovelace_results = final_task.get("lovelace_results") or []
+    event_data = {
+        "task_id": task_id,
+        "status": "cancelled",
+        "codex_status": "cancelled",
+        "summary": CANCELLED_TASK_SUMMARY,
+        "question": "",
+        "details": "",
+        "returncode": final_task.get("returncode"),
+        "session_id": str(final_task.get("session_id") or ""),
+        "completed_at": str(final_task.get("completed_at") or ""),
+        "changes": changes,
+        "validation_errors": validation_errors,
+        "lovelace_results": lovelace_results,
+        "response": {
+            "status": "cancelled",
+            "summary": CANCELLED_TASK_SUMMARY,
+            "question": "",
+            "details": "",
+        },
+    }
+    ok, detail = fire_ha_event("codex_cli_task_result", event_data)
+    if not ok:
+        print(f"Codex task result event failed: {detail}", flush=True)
+    notify("Codex task cancelled", f"{CANCELLED_TASK_SUMMARY}. Task: {task_id}")
+    refresh_usage_status_async(force=True)
+    return True
+
+
+def fail_task_launch(
+    task_id: str,
+    exc: Exception,
+    *,
+    session_id: str | None = None,
+    summary: str = "Could not start the Codex CLI executable.",
+    detail_prefix: str | None = None,
+) -> None:
     """Record and publish a clean task failure when Codex cannot start."""
+    if task_cancellation_requested(task_id):
+        return
     completed_at = utc_now()
-    details = redact(f"Could not start {CODEX_BINARY}: {exc}")
-    summary = "Could not start the Codex CLI executable."
+    prefix = detail_prefix or f"Could not start {CODEX_BINARY}"
+    details = redact(f"{prefix}: {exc}")
+    with lock:
+        existing_session_id = str(tasks.get(task_id, {}).get("session_id") or "")
+    resolved_session_id = str(session_id or existing_session_id)
     write_task_log(task_id, "worker", details)
-    update_task(
-        task_id,
-        status="failed",
-        completed_at=completed_at,
-        returncode=None,
-        summary=summary,
-        question="",
-        details=details,
-        error=details,
-        changes={"added": [], "changed": [], "deleted": []},
-        validation_errors=[],
-        lovelace_results=[],
-    )
+    task_updates: dict[str, Any] = {
+        "status": "failed",
+        "completed_at": completed_at,
+        "returncode": None,
+        "summary": summary,
+        "question": "",
+        "details": details,
+        "error": details,
+        "changes": {"added": [], "changed": [], "deleted": []},
+        "validation_errors": [],
+        "lovelace_results": [],
+    }
+    if resolved_session_id:
+        task_updates["session_id"] = resolved_session_id
+    if update_task(task_id, **task_updates) is False:
+        return
     event_data = {
         "task_id": task_id,
         "status": "failed",
@@ -1498,7 +1815,7 @@ def fail_task_launch(task_id: str, exc: OSError) -> None:
         "question": "",
         "details": details,
         "returncode": None,
-        "session_id": "",
+        "session_id": resolved_session_id,
         "completed_at": completed_at,
         "changes": {"added": [], "changed": [], "deleted": []},
         "validation_errors": [],
@@ -1517,7 +1834,49 @@ def fail_task_launch(task_id: str, exc: OSError) -> None:
     refresh_usage_status_async(force=True)
 
 
+def record_background_start_failure(task_id: str, exc: Exception) -> None:
+    """Release a runner reservation and record a terminal startup failure."""
+    with lock:
+        active_task_runners.discard(task_id)
+    try:
+        fail_task_launch(
+            task_id,
+            exc,
+            summary="Could not start the Codex task worker.",
+            detail_prefix="Could not start the background task runner",
+        )
+        return
+    except Exception as persist_exc:
+        details = redact(f"Could not start the background task runner: {exc}")
+        completed_at = utc_now()
+        with lock:
+            task = tasks.setdefault(task_id, {"task_id": task_id})
+            if not task.get("cancellation_requested"):
+                task.update(
+                    {
+                        "status": "failed",
+                        "completed_at": completed_at,
+                        "returncode": None,
+                        "summary": "Could not start the Codex task worker.",
+                        "question": "",
+                        "details": details,
+                        "error": details,
+                        "changes": {"added": [], "changed": [], "deleted": []},
+                        "validation_errors": [],
+                        "lovelace_results": [],
+                        "updated_at": completed_at,
+                    }
+                )
+        print(
+            "Could not persist background task startup failure: "
+            f"{redact(str(persist_exc))}",
+            flush=True,
+        )
+
+
 def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: str | None = None) -> None:
+    if task_cancellation_requested(task_id):
+        return
     task_dir = get_task_dir(task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
     final_file = task_dir / ("final-resume.json" if reply else "final.json")
@@ -1525,6 +1884,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     before_manifest_path = task_dir / "manifest-before.json"
 
     update_task(task_id, status="running", started_at=utc_now(), error="")
+    if task_cancellation_requested(task_id):
+        return
     if not before_manifest_path.exists():
         try:
             snapshot = create_snapshot(task_id)
@@ -1532,10 +1893,37 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         except Exception as exc:
             write_task_log(task_id, "worker", f"Snapshot failed: {exc}")
             update_task(task_id, snapshot_error=str(exc))
+    if task_cancellation_requested(task_id):
+        return
 
-    prompt_file.write_text(build_prompt(prompt, task_id, reply=reply), encoding="utf-8")
+    try:
+        prompt_file.write_text(build_prompt(prompt, task_id, reply=reply), encoding="utf-8")
+    except OSError as exc:
+        fail_task_launch(
+            task_id,
+            exc,
+            session_id=session_id,
+            summary="Could not prepare the Codex task input.",
+            detail_prefix="Could not write the Codex task prompt",
+        )
+        return
+    if task_cancellation_requested(task_id):
+        return
     args = build_codex_args(task_id, prompt_file, final_file, session_id)
     write_task_log(task_id, "worker", "Starting Codex: " + " ".join(args))
+
+    readiness = sandbox_readiness()
+    if task_cancellation_requested(task_id):
+        return
+    if readiness["required"] and not readiness["ready"]:
+        fail_task_launch(
+            task_id,
+            RuntimeError(str(readiness["message"])),
+            session_id=session_id,
+            summary="The configured Codex sandbox is not available.",
+            detail_prefix="Codex sandbox preflight failed",
+        )
+        return
 
     timeout = int(read_options().get("task_timeout_seconds") or 3600)
     session_holder: dict[str, str] = {}
@@ -1551,16 +1939,22 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
             bufsize=1,
         )
     except OSError as exc:
-        fail_task_launch(task_id, exc)
+        fail_task_launch(task_id, exc, session_id=session_id)
         return
+    cancel_after_launch = False
     with lock:
-        running_processes[task_id] = proc
+        if tasks.get(task_id, {}).get("cancellation_requested"):
+            cancel_after_launch = True
+        else:
+            running_processes[task_id] = proc
+    if cancel_after_launch:
+        if not terminate_and_reap_process(proc):
+            with lock:
+                running_processes[task_id] = proc
+        return
     assert proc.stdin is not None
     assert proc.stdout is not None
     assert proc.stderr is not None
-    proc.stdin.write(prompt_file.read_text(encoding="utf-8"))
-    proc.stdin.close()
-
     stdout_thread = threading.Thread(
         target=reader_thread,
         args=(task_id, "stdout", proc.stdout, session_holder),
@@ -1575,21 +1969,53 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     stderr_thread.start()
 
     timed_out = False
+    lifecycle_error: Exception | None = None
+    stdin_closed = False
+    returncode = -1
+    process_exit_confirmed = False
     try:
-        returncode = proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        proc.send_signal(signal.SIGTERM)
         try:
-            proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        returncode = proc.returncode if proc.returncode is not None else -1
+            proc.stdin.write(prompt_file.read_text(encoding="utf-8"))
+            proc.stdin.close()
+            stdin_closed = True
+        except (OSError, ValueError) as exc:
+            lifecycle_error = exc
+            process_exit_confirmed = terminate_and_reap_process(proc)
+        if lifecycle_error is None:
+            try:
+                returncode = proc.wait(timeout=timeout)
+                process_exit_confirmed = True
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process_exit_confirmed = terminate_and_reap_process(proc)
+                returncode = proc.returncode if proc.returncode is not None else -1
+            except OSError as exc:
+                lifecycle_error = exc
+                process_exit_confirmed = terminate_and_reap_process(proc)
     finally:
-        with lock:
-            running_processes.pop(task_id, None)
+        if not stdin_closed:
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+        if process_exit_confirmed:
+            with lock:
+                if running_processes.get(task_id) is proc:
+                    running_processes.pop(task_id, None)
         stdout_thread.join(timeout=5)
         stderr_thread.join(timeout=5)
+
+    if task_cancellation_requested(task_id):
+        return
+    if lifecycle_error is not None:
+        fail_task_launch(
+            task_id,
+            lifecycle_error,
+            session_id=session_holder.get("session_id") or session_id,
+            summary="Codex exited before accepting the task prompt.",
+            detail_prefix="Could not send the task prompt to Codex",
+        )
+        return
 
     final = parse_final(final_file, returncode)
     after_manifest = build_manifest()
@@ -1600,11 +2026,15 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         before_manifest = {}
     changes = diff_manifests(before_manifest, after_manifest)
     (task_dir / "changes.json").write_text(json.dumps(changes, indent=2), encoding="utf-8")
+    if task_cancellation_requested(task_id):
+        return
     validation_errors = validate_changed_files(changes)
 
     lovelace_results: list[dict[str, Any]] = []
     if read_options().get("auto_save_lovelace"):
         for ref in find_lovelace_dashboard_refs(changes):
+            if task_cancellation_requested(task_id):
+                return
             ok, detail = save_lovelace_dashboard(ref)
             lovelace_results.append({**ref, "success": ok, "message": detail})
 
@@ -1626,8 +2056,12 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
 
     task_status = "waiting_for_input" if status == "needs_input" else status
     completed_at = utc_now() if status != "needs_input" else ""
-    session_id = session_holder.get("session_id") or tasks.get(task_id, {}).get("session_id", "")
-    update_task(
+    session_id = (
+        session_holder.get("session_id")
+        or session_id
+        or tasks.get(task_id, {}).get("session_id", "")
+    )
+    if update_task(
         task_id,
         status=task_status,
         completed_at=completed_at,
@@ -1639,7 +2073,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         changes=changes,
         validation_errors=validation_errors,
         lovelace_results=lovelace_results,
-    )
+    ) is False:
+        return
 
     event_data = {
         "task_id": task_id,
@@ -1674,9 +2109,51 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     refresh_usage_status_async(force=True)
 
 
-def start_background_task(task_id: str, prompt: str, session_id: str | None = None, reply: str | None = None) -> None:
-    thread = threading.Thread(target=run_task, args=(task_id, prompt, session_id, reply), daemon=True)
-    thread.start()
+def _run_background_task(
+    task_id: str,
+    prompt: str,
+    session_id: str | None,
+    reply: str | None,
+) -> None:
+    try:
+        run_task(task_id, prompt, session_id, reply)
+    finally:
+        with lock:
+            proc = running_processes.get(task_id)
+        if proc is not None:
+            process_exit_confirmed = terminate_and_reap_process(proc)
+            if process_exit_confirmed:
+                with lock:
+                    if running_processes.get(task_id) is proc:
+                        running_processes.pop(task_id, None)
+        with lock:
+            active_task_runners.discard(task_id)
+
+
+def start_background_task(
+    task_id: str,
+    prompt: str,
+    session_id: str | None = None,
+    reply: str | None = None,
+) -> threading.Thread:
+    with lock:
+        other_active = _active_task_ids_locked() - {task_id}
+        if other_active:
+            active = min(other_active)
+            raise RuntimeError(f"another task is already running: {active}")
+        active_task_runners.add(task_id)
+    thread = threading.Thread(
+        target=_run_background_task,
+        args=(task_id, prompt, session_id, reply),
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception:
+        with lock:
+            active_task_runners.discard(task_id)
+        raise
+    return thread
 
 
 @app.get("/")
@@ -1845,14 +2322,19 @@ loadAgents();
 @app.get("/health")
 @require_auth
 def health() -> Response:
+    version = codex_version_status()
+    sandbox = sandbox_readiness()
     return jsonify(
         {
             "ok": True,
             "api_token_configured": bool(api_token()),
             "codex_binary": codex_binary_path() or "",
+            "codex_version": version["version"],
+            "codex_version_error": version["error"],
             "codex_login": codex_login_status(),
             "auth_flow": auth_status_payload(),
             "task_root": str(task_root()),
+            "sandbox_readiness": sandbox,
         }
     )
 
@@ -1942,27 +2424,47 @@ def list_tasks() -> Response:
 @app.post("/tasks")
 @require_auth
 def create_task() -> Response:
-    active = active_task_id()
-    if active:
-        return jsonify({"ok": False, "error": "another task is already running", "active_task_id": active}), 409
     payload = request.get_json(silent=True) or {}
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
         return jsonify({"ok": False, "error": "prompt is required"}), 400
     task_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
     title = str(payload.get("title") or prompt[:80])
-    update_task(
-        task_id,
-        status="queued",
-        title=title,
-        prompt=prompt,
-        created_at=utc_now(),
-        summary="",
-        question="",
-        details="",
-    )
-    (get_task_dir(task_id) / "user-prompt.txt").write_text(prompt, encoding="utf-8")
-    start_background_task(task_id, prompt)
+    with lock:
+        active = _active_task_id_locked()
+        if active:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "another task is already running",
+                    "active_task_id": active,
+                }
+            ), 409
+        active_task_runners.add(task_id)
+    try:
+        update_task(
+            task_id,
+            status="queued",
+            cancellation_requested=False,
+            cancellation_event_emitted=False,
+            title=title,
+            prompt=prompt,
+            created_at=utc_now(),
+            summary="",
+            question="",
+            details="",
+        )
+        (get_task_dir(task_id) / "user-prompt.txt").write_text(prompt, encoding="utf-8")
+        start_background_task(task_id, prompt)
+    except Exception as exc:
+        record_background_start_failure(task_id, exc)
+        return jsonify(
+            {
+                "ok": False,
+                "error": "could not start the Codex task worker",
+                "task_id": task_id,
+            }
+        ), 500
     return jsonify({"ok": True, "task_id": task_id, "status": "queued"})
 
 
@@ -1993,25 +2495,19 @@ def get_log(task_id: str) -> Response:
 @app.post("/tasks/<task_id>/cancel")
 @require_auth
 def cancel_task(task_id: str) -> Response:
-    with lock:
-        proc = running_processes.get(task_id)
-        task = tasks.get(task_id)
-    if not task:
-        return jsonify({"ok": False, "error": "task not found"}), 404
-    if proc and proc.poll() is None:
-        proc.terminate()
-        update_task(task_id, status="cancelled", completed_at=utc_now(), summary="Task cancelled")
-        return jsonify({"ok": True, "task_id": task_id, "status": "cancelled"})
-    update_task(task_id, status="cancelled", completed_at=utc_now(), summary="Task cancelled")
+    accepted, proc, error = request_task_cancellation(task_id)
+    if not accepted:
+        status_code = 404 if error == "task not found" else 409
+        return jsonify({"ok": False, "error": error}), status_code
+    if proc is not None:
+        terminate_and_reap_process(proc)
+    publish_cancelled_task_outcome(task_id, proc.returncode if proc is not None else None)
     return jsonify({"ok": True, "task_id": task_id, "status": "cancelled"})
 
 
 @app.post("/tasks/<task_id>/reply")
 @require_auth
 def reply_task(task_id: str) -> Response:
-    active = active_task_id()
-    if active:
-        return jsonify({"ok": False, "error": "another task is already running", "active_task_id": active}), 409
     payload = request.get_json(silent=True) or {}
     reply = str(payload.get("reply") or "").strip()
     if not reply:
@@ -2027,13 +2523,52 @@ def reply_task(task_id: str) -> Response:
         return jsonify({"ok": False, "error": "task is not waiting for input"}), 409
     reply_history = list(task.get("reply_history") or [])
     reply_history.append({"at": utc_now(), "reply": reply})
-    update_task(task_id, status="queued", reply_history=reply_history)
-    start_background_task(task_id, str(task.get("prompt") or ""), session_id=session_id, reply=reply)
+    with lock:
+        active = _active_task_id_locked()
+        if active:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "another task is already running",
+                    "active_task_id": active,
+                }
+            ), 409
+        active_task_runners.add(task_id)
+    try:
+        update_task(
+            task_id,
+            status="queued",
+            cancellation_requested=False,
+            cancellation_event_emitted=False,
+            reply_history=reply_history,
+        )
+        start_background_task(
+            task_id,
+            str(task.get("prompt") or ""),
+            session_id=session_id,
+            reply=reply,
+        )
+    except Exception as exc:
+        record_background_start_failure(task_id, exc)
+        return jsonify(
+            {
+                "ok": False,
+                "error": "could not start the Codex task worker",
+                "task_id": task_id,
+            }
+        ), 500
     return jsonify({"ok": True, "task_id": task_id, "status": "queued"})
 
 
 def main() -> None:
     ensure_runtime_files()
+    version = codex_version_status()
+    sandbox = sandbox_readiness()
+    if version["version"]:
+        print(f"Codex runtime version: {version['version']}", flush=True)
+    else:
+        print(f"Codex version probe failed: {version['error']}", flush=True)
+    print(f"Codex sandbox preflight: {sandbox['message']}", flush=True)
     load_task_index()
     auto_start_login_if_needed()
     threading.Thread(target=stdin_reader, daemon=True).start()

@@ -18,6 +18,8 @@ Programmatic API calls still require the internal worker API token unless they a
 
 The app does not request host networking, Docker API access, full access, host PID/UTS access, privileged kernel capabilities, or elevated Supervisor roles. It keeps AppArmor enabled and ships a custom `apparmor.txt` profile. The `/config` mount is intentionally read-write because editing Home Assistant configuration is the core purpose of the app.
 
+For sandboxed modes, Codex uses Bubblewrap user, mount, PID, and network namespaces. Only the dedicated Bubblewrap setup binary enters a nested AppArmor profile that permits namespace setup. A wrapper forces Bubblewrap to drop all Linux capabilities before the generated command starts. On restrictive hosts that deny mounting a fresh `/proc`, Codex 0.146 and later automatically use their no-proc fallback while retaining the other namespace restrictions. That fallback can expose numeric process and file-descriptor counts from the app container, but it does not grant host PID access; sensitive process paths remain subject to kernel and AppArmor mediation.
+
 ## API Token
 
 The API token protects the worker HTTP API. The app stores it in private app storage. The Home Assistant `Codex` integration provisions and rotates it automatically through Supervisor-managed app stdin. You do not need to view, copy, or configure this token.
@@ -26,7 +28,7 @@ The token is not your OpenAI or ChatGPT credential. Codex authentication is stil
 
 ## Model
 
-`codex_model` is a fixed selection to avoid typo-prone free text. `gpt-5.3-codex` is the default because OpenAI lists it as the current most capable agentic coding model. Use `default` to let the installed Codex CLI choose its bundled default model.
+`codex_model` is a fixed selection to avoid typo-prone free text. The default value, `default`, lets the installed Codex CLI choose its recommended model. The legacy `gpt-5.3-codex` selection is still accepted for upgrade compatibility but is treated as `default` because it is no longer supported with ChatGPT sign-in.
 
 `model_reasoning_effort` controls how much reasoning Codex asks supported models to use for each non-interactive task. The app passes it to `codex exec` as a per-run `--config model_reasoning_effort="<value>"` override rather than writing it into `config.toml`. Available values are:
 
@@ -41,6 +43,8 @@ The token is not your OpenAI or ChatGPT credential. Codex authentication is stil
 - `read-only`: Codex can inspect files and run read-only commands, but should not edit `/config`.
 - `workspace-write`: Codex can edit the mounted `/config` workspace while generated shell commands remain sandboxed. This is the recommended mode.
 - `danger-full-access`: Codex sandboxing is disabled inside the add-on container. The container still only mounts the configured add-on volumes, but this should be used only when a task cannot work in `workspace-write`.
+
+The worker exposes the Codex version and a structured sandbox preflight in its authenticated `/health` response. Sandboxed tasks fail with an actionable error before launch if namespace isolation is unavailable.
 
 ## Codex Sign-In
 
@@ -66,11 +70,11 @@ The optional `HA_TOKEN` add-on option is passed to Codex subprocesses as the `HA
 
 ## Usage Status
 
-The worker performs a best-effort interactive probe of Codex CLI usage by starting a pseudo-terminal session and running `/status`. It extracts the visible `5-hour` and `Weekly` lines and exposes them through the worker `/status` payload, which the integration surfaces as sensors.
+The worker performs a best-effort interactive probe of Codex CLI usage by starting a pseudo-terminal session and running `/status`. It extracts whichever usage windows Codex reports and exposes them through the worker `/status` payload, which the integration surfaces as sensors. Some accounts report both 5-hour and weekly windows, while others currently report only a weekly window.
 
 The worker disables Codex update checks at startup. Codex CLI is installed and verified as part of the app image, so it must be updated by installing a newer app image rather than from an interactive Codex update prompt.
 
-Because Codex does not currently provide a stable non-interactive usage command, these values may temporarily show as unavailable if the interactive output is delayed or does not include the limits yet.
+Because Codex does not currently provide a stable non-interactive usage command, a missing window has an `unknown` sensor state and a `reported: false` attribute. The existing 5-hour entities and worker fields remain in place so upgrades do not break automations on accounts that still report or reference them. Diagnostic excerpts remove account, email, and session identifiers before being exposed.
 
 ## Notifications
 

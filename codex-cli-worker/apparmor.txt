@@ -18,6 +18,12 @@ profile codex_cli_worker flags=(attach_disconnected,mediate_deleted) {
   /usr/sbin/** rix,
   /usr/local/bin/** rix,
 
+  # The wrapper forces capability removal before a sandboxed command starts.
+  # Only the trusted Bubblewrap setup binary enters the capability-bearing
+  # child profile; the worker and Codex processes remain in this parent profile.
+  /opt/codex-sandbox/bwrap rix,
+  /opt/codex-sandbox/bwrap.real cx,
+
   /lib/** mr,
   /usr/lib/** mr,
   /usr/local/lib/** mr,
@@ -42,4 +48,28 @@ profile codex_cli_worker flags=(attach_disconnected,mediate_deleted) {
   /dev/random r,
   /dev/tty rw,
   /dev/urandom r,
+
+  profile /opt/codex-sandbox/bwrap.real flags=(attach_disconnected,mediate_deleted) {
+    #include <abstractions/base>
+
+    file,
+    network netlink raw,
+    capability net_admin,
+    capability sys_admin,
+    capability sys_chroot,
+    capability setgid,
+    capability setuid,
+    mount,
+    umount,
+    pivot_root,
+    signal,
+
+    /bin/** rix,
+    /sbin/** rix,
+    /usr/bin/** rix,
+    /usr/sbin/** rix,
+    /usr/local/bin/** rix,
+    /opt/codex-sandbox/bwrap.real rix,
+    /config/** rix,
+  }
 }

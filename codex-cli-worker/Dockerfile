@@ -3,7 +3,7 @@ FROM $BUILD_FROM
 
 ARG BUILD_VERSION=dev
 ARG BUILD_ARCH=amd64
-ARG CODEX_VERSION=0.144.1
+ARG CODEX_VERSION=0.146.0
 
 LABEL \
     io.hass.version="${BUILD_VERSION}" \
@@ -12,6 +12,7 @@ LABEL \
 
 RUN apk add --no-cache \
     bash \
+    bubblewrap \
     ca-certificates \
     coreutils \
     git \
@@ -22,6 +23,14 @@ RUN apk add --no-cache \
     py3-pip \
     rsync \
     tar
+
+RUN install -D -m 0755 /usr/bin/bwrap /opt/codex-sandbox/bwrap.real
+
+COPY codex-bwrap /opt/codex-sandbox/bwrap
+
+RUN chmod 0755 /opt/codex-sandbox/bwrap
+
+ENV PATH="/opt/codex-sandbox:${PATH}"
 
 RUN npm install -g --prefix /usr/local "@openai/codex@${CODEX_VERSION}" \
     && test -x /usr/local/bin/codex \

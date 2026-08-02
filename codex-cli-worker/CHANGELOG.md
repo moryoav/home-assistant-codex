@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.37
+
+- Updated installation documentation for availability in the default HACS catalog.
+
 ## 0.1.36
 
 - Replaced the option-backed `AGENTS.md` writer with an add-on web UI editor for the real `/config/AGENTS.md` file.

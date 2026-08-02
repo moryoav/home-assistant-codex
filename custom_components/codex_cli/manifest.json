@@ -9,5 +9,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/moryoav/home-assistant-codex/issues",
   "single_config_entry": true,
-  "version": "0.1.36"
+  "version": "0.1.37"
 }

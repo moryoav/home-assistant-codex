@@ -8,9 +8,11 @@ Use the My Home Assistant buttons in the repository README for the fastest setup
 
 1. Add `https://github.com/moryoav/home-assistant-codex` as a Home Assistant app repository.
 2. Install and start the Codex CLI Worker app.
-3. Install this integration with HACS as a custom integration, or copy `custom_components/codex_cli` into `/config/custom_components/codex_cli`.
+3. Open HACS, search for **Codex** under **Integrations**, select it, and choose **Download**.
 4. Restart Home Assistant.
-5. Add the Codex integration from Settings > Devices & services.
+5. Add the **Codex** integration from **Settings** > **Devices & services**.
+
+As a manual fallback, copy `custom_components/codex_cli` into `/config/custom_components/codex_cli`, restart Home Assistant, and then add the integration from **Settings** > **Devices & services**.
 
 ## Configuration
 

@@ -74,9 +74,10 @@ If you prefer to do it manually:
 In Home Assistant:
 
 1. Go to **Settings** -> **Apps**.
-2. Open the menu in the top right.
-3. Choose **Repositories**.
-4. Add this repository URL:
+2. Select **Install app**.
+3. Open the menu in the top right.
+4. Choose **Repositories**.
+5. Add this repository URL:
 
 ```text
 https://github.com/moryoav/home-assistant-codex
@@ -123,27 +124,17 @@ Scan the QR code or open the link, then enter the device code shown in the notif
 
 Codex CLI sign-in uses your ChatGPT/OpenAI account. It may work with a free ChatGPT account, but **ChatGPT Plus or higher is recommended** for more reasonable usage limits. This project does not use OpenAI API keys for Codex tasks.
 
-### 4. Install the Custom Integration
+### 4. Install the Integration
 
 #### HACS
 
 [![Open the Codex HACS repository](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=moryoav&repository=home-assistant-codex&category=integration)
 
-Use the button above to add and open the Codex custom repository in HACS.
+Codex is available in the default HACS catalog, so no custom repository setup is required.
 
-If you prefer to do it manually:
-
-1. Open HACS.
-2. Add a custom repository.
-3. Use this URL:
-
-```text
-https://github.com/moryoav/home-assistant-codex
-```
-
-4. Select category **Integration**.
-5. Install **Codex**.
-6. Restart Home Assistant.
+1. Select the button above, or open HACS and search for **Codex** under **Integrations**.
+2. Select **Codex** and choose **Download**.
+3. Restart Home Assistant.
 
 #### Manual
 
@@ -250,7 +241,7 @@ Release builds also publish the `latest` image tag. Manual workflow builds from 
 
 [assist-screenshot]: https://raw.githubusercontent.com/moryoav/home-assistant-codex/main/examples/codex-1.JPG
 [notification-screenshot]: https://raw.githubusercontent.com/moryoav/home-assistant-codex/main/examples/codex-2.JPG
-[hacs-badge]: https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square
+[hacs-badge]: https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=flat-square
 [hacs-url]: https://github.com/hacs/integration
 [release-badge]: https://img.shields.io/github/v/release/moryoav/home-assistant-codex?style=flat-square
 [release-url]: https://github.com/moryoav/home-assistant-codex/releases

@@ -68,6 +68,8 @@ The optional `HA_TOKEN` add-on option is passed to Codex subprocesses as the `HA
 
 The worker performs a best-effort interactive probe of Codex CLI usage by starting a pseudo-terminal session and running `/status`. It extracts the visible `5-hour` and `Weekly` lines and exposes them through the worker `/status` payload, which the integration surfaces as sensors.
 
+The worker disables Codex update checks at startup. Codex CLI is installed and verified as part of the app image, so it must be updated by installing a newer app image rather than from an interactive Codex update prompt.
+
 Because Codex does not currently provide a stable non-interactive usage command, these values may temporarily show as unavailable if the interactive output is delayed or does not include the limits yet.
 
 ## Notifications

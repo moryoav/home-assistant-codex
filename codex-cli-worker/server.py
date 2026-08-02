@@ -11,7 +11,6 @@ import queue
 import re
 import select
 import secrets
-import shutil
 import signal
 import sys
 import subprocess
@@ -39,6 +38,7 @@ OPTIONS_PATH = DATA_ROOT / "options.json"
 WORKER_TOKEN_PATH = DATA_ROOT / "worker_api_token"
 SCHEMA_PATH = DATA_ROOT / "codex-output-schema.json"
 CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
+CODEX_BINARY = "/usr/local/bin/codex"
 AGENTS_PATH = CONFIG_ROOT / "AGENTS.md"
 TASK_STATE_FILE = DATA_ROOT / "task_index.json"
 
@@ -244,6 +244,17 @@ def model_reasoning_effort(options: dict[str, Any]) -> str:
     return effort
 
 
+def codex_binary_path() -> str | None:
+    """Return the fixed Codex executable path when it is usable."""
+    path = Path(CODEX_BINARY)
+    try:
+        if path.is_file() and os.access(path, os.X_OK):
+            return CODEX_BINARY
+    except OSError:
+        pass
+    return None
+
+
 def api_token() -> str:
     if WORKER_TOKEN_PATH.exists():
         try:
@@ -299,6 +310,7 @@ def ensure_runtime_files() -> None:
     CODEX_CONFIG_PATH.write_text(
         "\n".join(
             [
+                "check_for_update_on_startup = false",
                 'approval_policy = "never"',
                 'sandbox_mode = "workspace-write"',
                 'web_search = "cached"',
@@ -526,7 +538,7 @@ def fetch_codex_usage_status() -> dict[str, Any]:
             "context_percent": usage_status_payload().get("context_percent", ""),
             "raw_excerpt": usage_status_payload().get("raw_excerpt", ""),
         }
-    codex = shutil.which("codex")
+    codex = codex_binary_path()
     if not codex:
         return {
             "status": "unavailable",
@@ -592,7 +604,14 @@ def fetch_codex_usage_status() -> dict[str, Any]:
             'tui.status_line=["model-with-reasoning","context-remaining","five-hour-limit","weekly-limit"]'
         )
         proc = subprocess.Popen(
-            [codex, "--no-alt-screen", "--config", status_line_config],
+            [
+                codex,
+                "--no-alt-screen",
+                "--config",
+                "check_for_update_on_startup=false",
+                "--config",
+                status_line_config,
+            ],
             cwd="/config",
             env=env,
             stdin=slave_fd,
@@ -1046,7 +1065,7 @@ def save_lovelace_dashboard(ref: dict[str, str]) -> tuple[bool, str]:
 def codex_login_status() -> dict[str, Any]:
     auth_file = CODEX_HOME / "auth.json"
     result = {"has_auth_file": auth_file.exists(), "status_ok": False, "message": ""}
-    codex = shutil.which("codex")
+    codex = codex_binary_path()
     if not codex:
         result["message"] = "codex binary not found"
         return result
@@ -1182,7 +1201,7 @@ def auth_reader_thread(handle) -> None:
 
 def run_codex_device_login(login_id: str) -> None:
     global auth_process
-    codex = shutil.which("codex") or "codex"
+    codex = CODEX_BINARY
     update_auth_state(
         status="starting",
         login_id=login_id,
@@ -1271,7 +1290,7 @@ def logout_codex() -> dict[str, Any]:
             proc_to_stop.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc_to_stop.kill()
-    codex = shutil.which("codex") or "codex"
+    codex = CODEX_BINARY
     try:
         proc = subprocess.run(
             [codex, "logout"],
@@ -1374,9 +1393,8 @@ User request:
 
 def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_id: str | None) -> list[str]:
     options = read_options()
-    codex = shutil.which("codex") or "codex"
     args = [
-        codex,
+        CODEX_BINARY,
         "exec",
         "--cd",
         "/config",
@@ -1453,6 +1471,52 @@ def parse_final(final_file: Path, returncode: int) -> dict[str, Any]:
     }
 
 
+def fail_task_launch(task_id: str, exc: OSError) -> None:
+    """Record and publish a clean task failure when Codex cannot start."""
+    completed_at = utc_now()
+    details = redact(f"Could not start {CODEX_BINARY}: {exc}")
+    summary = "Could not start the Codex CLI executable."
+    write_task_log(task_id, "worker", details)
+    update_task(
+        task_id,
+        status="failed",
+        completed_at=completed_at,
+        returncode=None,
+        summary=summary,
+        question="",
+        details=details,
+        error=details,
+        changes={"added": [], "changed": [], "deleted": []},
+        validation_errors=[],
+        lovelace_results=[],
+    )
+    event_data = {
+        "task_id": task_id,
+        "status": "failed",
+        "codex_status": "failed",
+        "summary": summary,
+        "question": "",
+        "details": details,
+        "returncode": None,
+        "session_id": "",
+        "completed_at": completed_at,
+        "changes": {"added": [], "changed": [], "deleted": []},
+        "validation_errors": [],
+        "lovelace_results": [],
+        "response": {
+            "status": "failed",
+            "summary": summary,
+            "question": "",
+            "details": details,
+        },
+    }
+    ok, detail = fire_ha_event("codex_cli_task_result", event_data)
+    if not ok:
+        print(f"Codex task result event failed: {detail}", flush=True)
+    notify("Codex task failed", f"{summary} Task: {task_id}")
+    refresh_usage_status_async(force=True)
+
+
 def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: str | None = None) -> None:
     task_dir = get_task_dir(task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -1475,16 +1539,20 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
 
     timeout = int(read_options().get("task_timeout_seconds") or 3600)
     session_holder: dict[str, str] = {}
-    proc = subprocess.Popen(
-        args,
-        cwd="/config",
-        env=codex_env(),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
+    try:
+        proc = subprocess.Popen(
+            args,
+            cwd="/config",
+            env=codex_env(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:
+        fail_task_launch(task_id, exc)
+        return
     with lock:
         running_processes[task_id] = proc
     assert proc.stdin is not None
@@ -1781,7 +1849,7 @@ def health() -> Response:
         {
             "ok": True,
             "api_token_configured": bool(api_token()),
-            "codex_binary": shutil.which("codex") or "",
+            "codex_binary": codex_binary_path() or "",
             "codex_login": codex_login_status(),
             "auth_flow": auth_status_payload(),
             "task_root": str(task_root()),

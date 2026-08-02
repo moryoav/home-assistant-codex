@@ -1,6 +1,6 @@
 # Changelog
 
-## Next
+## 0.1.38
 
 - Pin and verify the Codex CLI executable during both architecture builds.
 - Disable interactive Codex update prompts in the worker-managed configuration.

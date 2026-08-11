@@ -76,6 +76,10 @@ The worker disables Codex update checks at startup. Codex CLI is installed and v
 
 Because Codex does not currently provide a stable non-interactive usage command, a missing window has an `unknown` sensor state and a `reported: false` attribute. The existing 5-hour entities and worker fields remain in place so upgrades do not break automations on accounts that still report or reference them. Diagnostic excerpts remove account, email, and session identifiers before being exposed.
 
+## Task Output
+
+Codex tasks return a structured JSON object with `status`, `summary`, `question`, and `details`. The `summary`, `question`, and `details` values are plain JSON strings that may use concise Markdown when it improves readability. Raw HTML should not be used. Status semantics and API fields are unchanged.
+
 ## Notifications
 
 Leave `notify_service` unset or empty to use Home Assistant persistent notifications for task completion, failures, and questions. If you want push notifications, set it to a Home Assistant notify service such as `notify.mobile_app_your_phone`.

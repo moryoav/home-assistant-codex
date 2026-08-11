@@ -431,12 +431,34 @@ def ensure_runtime_files() -> None:
         set_api_token(secrets.token_urlsafe(32))
     schema = {
         "type": "object",
+        "description": (
+            "Structured Home Assistant Codex task response. summary, details, and question may use "
+            "concise Markdown for readability when useful; do not use raw HTML."
+        ),
         "additionalProperties": False,
         "properties": {
             "status": {"type": "string", "enum": ["completed", "needs_input", "failed"]},
-            "summary": {"type": "string"},
-            "question": {"type": "string"},
-            "details": {"type": "string"},
+            "summary": {
+                "type": "string",
+                "description": (
+                    "Concise result summary. Use concise Markdown when it improves readability; "
+                    "do not use raw HTML."
+                ),
+            },
+            "question": {
+                "type": "string",
+                "description": (
+                    "Question to ask the user when status is needs_input; otherwise empty. "
+                    "Use concise Markdown when useful; do not use raw HTML."
+                ),
+            },
+            "details": {
+                "type": "string",
+                "description": (
+                    "Useful implementation, validation, error, or follow-up notes. Use concise Markdown "
+                    "when it improves readability; do not use raw HTML."
+                ),
+            },
         },
         "required": ["status", "summary", "question", "details"],
     }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -225,6 +226,40 @@ class RuntimeConfigTests(unittest.TestCase):
                 config = (root / "codex-home" / "config.toml").read_text(encoding="utf-8")
 
         self.assertIn("check_for_update_on_startup = false", config)
+
+
+    def test_runtime_schema_describes_markdown_response_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            schema_path = root / "schema.json"
+            with (
+                patch.object(server, "CODEX_HOME", root / "codex-home"),
+                patch.object(server, "DATA_ROOT", root),
+                patch.object(server, "AUTH_QR_DIR", root / "auth-qr"),
+                patch.object(server, "SCHEMA_PATH", schema_path),
+                patch.object(server, "CODEX_CONFIG_PATH", root / "codex-home" / "config.toml"),
+                patch.object(server, "task_root", return_value=root / "tasks"),
+                patch.object(server, "api_token", return_value="configured"),
+            ):
+                server.ensure_runtime_files()
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(schema["type"], "object")
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(schema["required"], ["status", "summary", "question", "details"])
+        self.assertEqual(
+            schema["properties"]["status"],
+            {"type": "string", "enum": ["completed", "needs_input", "failed"]},
+        )
+
+        self.assertIn("Markdown", schema["description"])
+        self.assertIn("raw HTML", schema["description"])
+        for field in ("summary", "details", "question"):
+            with self.subTest(field=field):
+                description = schema["properties"][field]["description"]
+                self.assertEqual(schema["properties"][field]["type"], "string")
+                self.assertIn("Markdown", description)
+                self.assertIn("raw HTML", description)
 
 
 class HealthRouteTests(unittest.TestCase):

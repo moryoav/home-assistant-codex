@@ -1517,25 +1517,17 @@ def codex_env() -> dict[str, str]:
 
 
 def extract_session_id(obj: Any) -> str | None:
-    if isinstance(obj, dict):
-        for key in ("session_id", "thread_id", "conversation_id", "rollout_id"):
-            value = obj.get(key)
-            if isinstance(value, str) and UUID_RE.fullmatch(value):
-                return value
-        for value in obj.values():
-            found = extract_session_id(value)
-            if found:
-                return found
-    elif isinstance(obj, list):
-        for value in obj:
-            found = extract_session_id(value)
-            if found:
-                return found
-    elif isinstance(obj, str):
-        match = UUID_RE.search(obj)
-        if match:
-            return match.group(0)
-    return None
+    """Return the authoritative Codex thread ID from one top-level JSON event."""
+    if not isinstance(obj, dict) or obj.get("type") != "thread.started":
+        return None
+    thread_id = obj.get("thread_id")
+    if not isinstance(thread_id, str) or UUID_RE.fullmatch(thread_id) is None:
+        return None
+    try:
+        uuid.UUID(thread_id)
+    except ValueError:
+        return None
+    return thread_id
 
 
 def build_prompt(user_prompt: str, task_id: str, reply: str | None = None) -> str:
@@ -1600,14 +1592,12 @@ def reader_thread(task_id: str, stream_name: str, handle, session_holder: dict[s
             try:
                 event = json.loads(line)
                 found = extract_session_id(event)
-                if found:
+                existing = session_holder.get("session_id")
+                if found and not existing:
                     session_holder["session_id"] = found
                     update_task(task_id, session_id=found)
-            except Exception:
-                match = UUID_RE.search(line)
-                if match:
-                    session_holder["session_id"] = match.group(0)
-                    update_task(task_id, session_id=match.group(0))
+            except (json.JSONDecodeError, TypeError):
+                pass
 
 
 def parse_final(final_file: Path, returncode: int) -> dict[str, Any]:
@@ -1926,7 +1916,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
 
     timeout = int(read_options().get("task_timeout_seconds") or 3600)
-    session_holder: dict[str, str] = {}
+    session_holder: dict[str, str] = {"session_id": session_id} if session_id else {}
     try:
         proc = subprocess.Popen(
             args,

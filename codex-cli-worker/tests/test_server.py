@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,91 @@ SPEC = importlib.util.spec_from_file_location("codex_worker_server", SERVER_PATH
 assert SPEC is not None and SPEC.loader is not None
 server = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(server)
+
+
+class SessionIdParsingTests(unittest.TestCase):
+    THREAD_ID = "019fc242-910a-7c92-a17d-54c014e19fc4"
+    OTHER_ID = "123e4567-e89b-12d3-a456-426614174000"
+
+    def read_stdout(
+        self,
+        lines: list[str],
+        session_holder: dict[str, str] | None = None,
+    ) -> tuple[dict[str, str], list[dict[str, object]]]:
+        holder = session_holder if session_holder is not None else {}
+        updates: list[dict[str, object]] = []
+        with (
+            patch.object(server, "write_task_log"),
+            patch.object(
+                server,
+                "update_task",
+                side_effect=lambda _task_id, **values: updates.append(values),
+            ),
+        ):
+            server.reader_thread("task", "stdout", io.StringIO("".join(lines)), holder)
+        return holder, updates
+
+    def test_accepts_valid_top_level_thread_started_id(self) -> None:
+        event = {"type": "thread.started", "thread_id": self.THREAD_ID}
+
+        self.assertEqual(server.extract_session_id(event), self.THREAD_ID)
+
+    def test_later_web_search_item_cannot_replace_captured_id(self) -> None:
+        holder, updates = self.read_stdout(
+            [
+                json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n",
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "web_search",
+                            "id": f"exec-{self.OTHER_ID}",
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps({"type": "thread.started", "thread_id": self.OTHER_ID}) + "\n",
+            ]
+        )
+
+        self.assertEqual(holder["session_id"], self.THREAD_ID)
+        self.assertEqual(updates, [{"session_id": self.THREAD_ID}])
+
+    def test_nested_ids_and_ids_in_arbitrary_strings_are_ignored(self) -> None:
+        values = [
+            {"type": "item.completed", "item": {"thread_id": self.THREAD_ID}},
+            {"type": "item.completed", "message": f"exec-{self.THREAD_ID}"},
+            [{"type": "thread.started", "thread_id": self.THREAD_ID}],
+            f"tool output {self.THREAD_ID}",
+        ]
+
+        for value in values:
+            with self.subTest(value=value):
+                self.assertIsNone(server.extract_session_id(value))
+
+    def test_resumed_run_preserves_existing_session_id(self) -> None:
+        holder, updates = self.read_stdout(
+            [
+                json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n",
+                json.dumps({"type": "thread.started", "thread_id": self.OTHER_ID}) + "\n",
+            ],
+            {"session_id": self.THREAD_ID},
+        )
+
+        self.assertEqual(holder["session_id"], self.THREAD_ID)
+        self.assertEqual(updates, [])
+
+    def test_malformed_and_non_json_output_do_not_set_session_id(self) -> None:
+        holder, updates = self.read_stdout(
+            [
+                f"not json exec-{self.THREAD_ID}\n",
+                '{"type":"thread.started","thread_id":\n',
+                json.dumps({"type": "thread.started", "thread_id": "not-a-uuid"}) + "\n",
+            ]
+        )
+
+        self.assertNotIn("session_id", holder)
+        self.assertEqual(updates, [])
 
 
 class CodexBinaryTests(unittest.TestCase):

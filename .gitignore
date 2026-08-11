@@ -17,3 +17,7 @@ codex_tasks/
 .env
 .env.*
 secrets.yaml
+
+# Local agent notes
+AGENTS.md
+agents.md

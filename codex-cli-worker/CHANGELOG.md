@@ -2,7 +2,7 @@
 
 ## Next
 
-- Record task session IDs only from Codex `thread.started` events and preserve the original session when continuing a task.
+- Record task session IDs only from Codex `thread.started` events, retain the requested session as a fallback, and prevent stale reply output from being reused.
 
 ## 0.1.39
 

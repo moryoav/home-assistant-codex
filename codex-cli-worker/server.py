@@ -1887,6 +1887,18 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
 
     try:
+        final_file.unlink(missing_ok=True)
+    except OSError as exc:
+        fail_task_launch(
+            task_id,
+            exc,
+            session_id=session_id,
+            summary="Could not prepare the Codex task output.",
+            detail_prefix="Could not reset the Codex final response",
+        )
+        return
+
+    try:
         prompt_file.write_text(build_prompt(prompt, task_id, reply=reply), encoding="utf-8")
     except OSError as exc:
         fail_task_launch(
@@ -1916,7 +1928,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
 
     timeout = int(read_options().get("task_timeout_seconds") or 3600)
-    session_holder: dict[str, str] = {"session_id": session_id} if session_id else {}
+    session_holder: dict[str, str] = {}
     try:
         proc = subprocess.Popen(
             args,

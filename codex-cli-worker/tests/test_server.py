@@ -82,19 +82,14 @@ class SessionIdParsingTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(server.extract_session_id(value))
 
-    def test_reader_preserves_existing_session_id(self) -> None:
-        holder, updates = self.read_stdout(
-            [
-                json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n",
-                json.dumps({"type": "thread.started", "thread_id": self.OTHER_ID}) + "\n",
-            ],
-            {"session_id": self.THREAD_ID},
-        )
-
-        self.assertEqual(holder["session_id"], self.THREAD_ID)
-        self.assertEqual(updates, [])
-
-    def test_run_task_preserves_resumed_session_id(self) -> None:
+    def run_resumed_task(
+        self,
+        stdout: str,
+        *,
+        final_payload: dict[str, str] | None,
+        returncode: int = 0,
+        stale_payload: dict[str, str] | None = None,
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
         task_id = "resumed-task"
         events: list[dict[str, object]] = []
 
@@ -102,34 +97,17 @@ class SessionIdParsingTests(unittest.TestCase):
             def __init__(self, final_file: Path) -> None:
                 self.final_file = final_file
                 self.stdin = io.StringIO()
-                self.stdout = io.StringIO(
-                    json.dumps(
-                        {
-                            "type": "thread.started",
-                            "thread_id": SessionIdParsingTests.OTHER_ID,
-                        }
-                    )
-                    + "\n"
-                )
+                self.stdout = io.StringIO(stdout)
                 self.stderr = io.StringIO("")
-                self.returncode = 0
+                self.returncode = returncode
 
             def poll(self) -> int:
                 return self.returncode
 
             def wait(self, timeout: float | None = None) -> int:
                 del timeout
-                self.final_file.write_text(
-                    json.dumps(
-                        {
-                            "status": "completed",
-                            "summary": "resumed",
-                            "question": "",
-                            "details": "",
-                        }
-                    ),
-                    encoding="utf-8",
-                )
+                if final_payload is not None:
+                    self.final_file.write_text(json.dumps(final_payload), encoding="utf-8")
                 return self.returncode
 
         saved_task = server.tasks.get(task_id)
@@ -142,6 +120,9 @@ class SessionIdParsingTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temp_dir:
                 task_dir = Path(temp_dir) / task_id
                 final_file = task_dir / "final-resume.json"
+                if stale_payload is not None:
+                    task_dir.mkdir(parents=True)
+                    final_file.write_text(json.dumps(stale_payload), encoding="utf-8")
 
                 def create_snapshot(_task_id: str) -> dict[str, object]:
                     (task_dir / "manifest-before.json").write_text("{}", encoding="utf-8")
@@ -189,14 +170,69 @@ class SessionIdParsingTests(unittest.TestCase):
                         reply="more detail",
                     )
 
-            self.assertEqual(server.tasks[task_id]["session_id"], self.THREAD_ID)
-            self.assertEqual(events[-1]["session_id"], self.THREAD_ID)
+            result = dict(server.tasks[task_id])
         finally:
             server.running_processes.pop(task_id, None)
             if saved_task is None:
                 server.tasks.pop(task_id, None)
             else:
                 server.tasks[task_id] = saved_task
+
+        return result, events
+
+    def test_resume_uses_authoritative_emitted_session_id(self) -> None:
+        task, events = self.run_resumed_task(
+            json.dumps({"type": "thread.started", "thread_id": self.OTHER_ID}) + "\n",
+            final_payload={
+                "status": "completed",
+                "summary": "resumed",
+                "question": "",
+                "details": "",
+            },
+        )
+
+        self.assertEqual(task["session_id"], self.OTHER_ID)
+        self.assertEqual(events[-1]["session_id"], self.OTHER_ID)
+
+    def test_resume_keeps_requested_id_without_thread_started_event(self) -> None:
+        task, events = self.run_resumed_task(
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"id": f"exec-{self.OTHER_ID}", "type": "web_search"},
+                }
+            )
+            + "\n",
+            final_payload={
+                "status": "completed",
+                "summary": "resumed",
+                "question": "",
+                "details": "",
+            },
+        )
+
+        self.assertEqual(task["session_id"], self.THREAD_ID)
+        self.assertEqual(events[-1]["session_id"], self.THREAD_ID)
+
+    def test_resume_does_not_reuse_stale_final_response(self) -> None:
+        old_response = {
+            "status": "needs_input",
+            "summary": "old summary",
+            "question": "old question",
+            "details": "old details",
+        }
+        task, events = self.run_resumed_task(
+            json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n",
+            final_payload=None,
+            returncode=1,
+            stale_payload=old_response,
+        )
+
+        self.assertEqual(task["status"], "failed")
+        self.assertIn("before writing the final response", str(task["summary"]))
+        self.assertNotEqual(task["summary"], old_response["summary"])
+        self.assertNotEqual(task["question"], old_response["question"])
+        self.assertEqual(events[-1]["status"], "failed")
 
     def test_malformed_and_non_json_output_do_not_set_session_id(self) -> None:
         holder, updates = self.read_stdout(

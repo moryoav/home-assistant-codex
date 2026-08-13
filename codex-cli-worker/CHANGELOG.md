@@ -1,6 +1,6 @@
 # Changelog
 
-## Next
+## 0.1.40
 
 - Record task session IDs only from Codex `thread.started` events, retain the requested session as a fallback, and prevent stale reply output from being reused.
 

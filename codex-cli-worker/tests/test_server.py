@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,231 @@ SPEC = importlib.util.spec_from_file_location("codex_worker_server", SERVER_PATH
 assert SPEC is not None and SPEC.loader is not None
 server = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(server)
+
+
+class SessionIdParsingTests(unittest.TestCase):
+    THREAD_ID = "019fc242-910a-7c92-a17d-54c014e19fc4"
+    OTHER_ID = "123e4567-e89b-12d3-a456-426614174000"
+
+    def read_stdout(
+        self,
+        lines: list[str],
+        session_holder: dict[str, str] | None = None,
+    ) -> tuple[dict[str, str], list[dict[str, object]]]:
+        holder = session_holder if session_holder is not None else {}
+        updates: list[dict[str, object]] = []
+        with (
+            patch.object(server, "write_task_log"),
+            patch.object(
+                server,
+                "update_task",
+                side_effect=lambda _task_id, **values: updates.append(values),
+            ),
+        ):
+            server.reader_thread("task", "stdout", io.StringIO("".join(lines)), holder)
+        return holder, updates
+
+    def test_accepts_valid_top_level_thread_started_id(self) -> None:
+        event = {"type": "thread.started", "thread_id": self.THREAD_ID}
+
+        self.assertEqual(server.extract_session_id(event), self.THREAD_ID)
+
+    def test_later_web_search_item_cannot_replace_captured_id(self) -> None:
+        holder, updates = self.read_stdout(
+            [
+                json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n",
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "web_search",
+                            "id": f"exec-{self.OTHER_ID}",
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps({"type": "thread.started", "thread_id": self.OTHER_ID}) + "\n",
+            ]
+        )
+
+        self.assertEqual(holder["session_id"], self.THREAD_ID)
+        self.assertEqual(updates, [{"session_id": self.THREAD_ID}])
+
+    def test_nested_ids_and_ids_in_arbitrary_strings_are_ignored(self) -> None:
+        values = [
+            {"type": "item.completed", "item": {"thread_id": self.THREAD_ID}},
+            {"type": "item.completed", "message": f"exec-{self.THREAD_ID}"},
+            [{"type": "thread.started", "thread_id": self.THREAD_ID}],
+            f"tool output {self.THREAD_ID}",
+        ]
+
+        for value in values:
+            with self.subTest(value=value):
+                self.assertIsNone(server.extract_session_id(value))
+
+    def run_resumed_task(
+        self,
+        stdout: str,
+        *,
+        final_payload: dict[str, str] | None,
+        returncode: int = 0,
+        stale_payload: dict[str, str] | None = None,
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+        task_id = "resumed-task"
+        events: list[dict[str, object]] = []
+
+        class FakeProcess:
+            def __init__(self, final_file: Path) -> None:
+                self.final_file = final_file
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO(stdout)
+                self.stderr = io.StringIO("")
+                self.returncode = returncode
+
+            def poll(self) -> int:
+                return self.returncode
+
+            def wait(self, timeout: float | None = None) -> int:
+                del timeout
+                if final_payload is not None:
+                    self.final_file.write_text(json.dumps(final_payload), encoding="utf-8")
+                return self.returncode
+
+        saved_task = server.tasks.get(task_id)
+        server.tasks[task_id] = {
+            "task_id": task_id,
+            "status": "waiting_for_input",
+            "session_id": self.THREAD_ID,
+        }
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                task_dir = Path(temp_dir) / task_id
+                final_file = task_dir / "final-resume.json"
+                if stale_payload is not None:
+                    task_dir.mkdir(parents=True)
+                    final_file.write_text(json.dumps(stale_payload), encoding="utf-8")
+
+                def create_snapshot(_task_id: str) -> dict[str, object]:
+                    (task_dir / "manifest-before.json").write_text("{}", encoding="utf-8")
+                    return {"path": "snapshot", "file_count": 0}
+
+                with (
+                    patch.object(server, "get_task_dir", return_value=task_dir),
+                    patch.object(server, "save_task_index"),
+                    patch.object(server, "create_snapshot", side_effect=create_snapshot),
+                    patch.object(
+                        server,
+                        "read_options",
+                        return_value={
+                            "codex_sandbox": "workspace-write",
+                            "task_timeout_seconds": 30,
+                            "auto_save_lovelace": False,
+                        },
+                    ),
+                    patch.object(
+                        server,
+                        "sandbox_readiness",
+                        return_value={"required": True, "ready": True},
+                    ),
+                    patch.object(server, "codex_env", return_value={}),
+                    patch.object(server, "build_manifest", return_value={}),
+                    patch.object(server, "validate_changed_files", return_value=[]),
+                    patch.object(server, "write_task_log"),
+                    patch.object(
+                        server.subprocess,
+                        "Popen",
+                        return_value=FakeProcess(final_file),
+                    ),
+                    patch.object(
+                        server,
+                        "fire_ha_event",
+                        side_effect=lambda _event, data: (events.append(data) or True, ""),
+                    ),
+                    patch.object(server, "notify"),
+                    patch.object(server, "refresh_usage_status_async"),
+                ):
+                    server.run_task(
+                        task_id,
+                        "continue",
+                        session_id=self.THREAD_ID,
+                        reply="more detail",
+                    )
+
+            result = dict(server.tasks[task_id])
+        finally:
+            server.running_processes.pop(task_id, None)
+            if saved_task is None:
+                server.tasks.pop(task_id, None)
+            else:
+                server.tasks[task_id] = saved_task
+
+        return result, events
+
+    def test_resume_uses_authoritative_emitted_session_id(self) -> None:
+        task, events = self.run_resumed_task(
+            json.dumps({"type": "thread.started", "thread_id": self.OTHER_ID}) + "\n",
+            final_payload={
+                "status": "completed",
+                "summary": "resumed",
+                "question": "",
+                "details": "",
+            },
+        )
+
+        self.assertEqual(task["session_id"], self.OTHER_ID)
+        self.assertEqual(events[-1]["session_id"], self.OTHER_ID)
+
+    def test_resume_keeps_requested_id_without_thread_started_event(self) -> None:
+        task, events = self.run_resumed_task(
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"id": f"exec-{self.OTHER_ID}", "type": "web_search"},
+                }
+            )
+            + "\n",
+            final_payload={
+                "status": "completed",
+                "summary": "resumed",
+                "question": "",
+                "details": "",
+            },
+        )
+
+        self.assertEqual(task["session_id"], self.THREAD_ID)
+        self.assertEqual(events[-1]["session_id"], self.THREAD_ID)
+
+    def test_resume_does_not_reuse_stale_final_response(self) -> None:
+        old_response = {
+            "status": "needs_input",
+            "summary": "old summary",
+            "question": "old question",
+            "details": "old details",
+        }
+        task, events = self.run_resumed_task(
+            json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n",
+            final_payload=None,
+            returncode=1,
+            stale_payload=old_response,
+        )
+
+        self.assertEqual(task["status"], "failed")
+        self.assertIn("before writing the final response", str(task["summary"]))
+        self.assertNotEqual(task["summary"], old_response["summary"])
+        self.assertNotEqual(task["question"], old_response["question"])
+        self.assertEqual(events[-1]["status"], "failed")
+
+    def test_malformed_and_non_json_output_do_not_set_session_id(self) -> None:
+        holder, updates = self.read_stdout(
+            [
+                f"not json exec-{self.THREAD_ID}\n",
+                '{"type":"thread.started","thread_id":\n',
+                json.dumps({"type": "thread.started", "thread_id": "not-a-uuid"}) + "\n",
+            ]
+        )
+
+        self.assertNotIn("session_id", holder)
+        self.assertEqual(updates, [])
 
 
 class CodexBinaryTests(unittest.TestCase):

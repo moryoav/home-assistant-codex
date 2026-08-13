@@ -1,5 +1,9 @@
 # Changelog
 
+## Next
+
+- Record task session IDs only from Codex `thread.started` events and preserve the original session when continuing a task.
+
 ## 0.1.39
 
 - Let the installed Codex CLI choose its recommended model by default and migrate the legacy GPT-5.3-Codex selection safely.

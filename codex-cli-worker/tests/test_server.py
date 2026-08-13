@@ -82,7 +82,7 @@ class SessionIdParsingTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(server.extract_session_id(value))
 
-    def test_resumed_run_preserves_existing_session_id(self) -> None:
+    def test_reader_preserves_existing_session_id(self) -> None:
         holder, updates = self.read_stdout(
             [
                 json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n",
@@ -93,6 +93,110 @@ class SessionIdParsingTests(unittest.TestCase):
 
         self.assertEqual(holder["session_id"], self.THREAD_ID)
         self.assertEqual(updates, [])
+
+    def test_run_task_preserves_resumed_session_id(self) -> None:
+        task_id = "resumed-task"
+        events: list[dict[str, object]] = []
+
+        class FakeProcess:
+            def __init__(self, final_file: Path) -> None:
+                self.final_file = final_file
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO(
+                    json.dumps(
+                        {
+                            "type": "thread.started",
+                            "thread_id": SessionIdParsingTests.OTHER_ID,
+                        }
+                    )
+                    + "\n"
+                )
+                self.stderr = io.StringIO("")
+                self.returncode = 0
+
+            def poll(self) -> int:
+                return self.returncode
+
+            def wait(self, timeout: float | None = None) -> int:
+                del timeout
+                self.final_file.write_text(
+                    json.dumps(
+                        {
+                            "status": "completed",
+                            "summary": "resumed",
+                            "question": "",
+                            "details": "",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return self.returncode
+
+        saved_task = server.tasks.get(task_id)
+        server.tasks[task_id] = {
+            "task_id": task_id,
+            "status": "waiting_for_input",
+            "session_id": self.THREAD_ID,
+        }
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                task_dir = Path(temp_dir) / task_id
+                final_file = task_dir / "final-resume.json"
+
+                def create_snapshot(_task_id: str) -> dict[str, object]:
+                    (task_dir / "manifest-before.json").write_text("{}", encoding="utf-8")
+                    return {"path": "snapshot", "file_count": 0}
+
+                with (
+                    patch.object(server, "get_task_dir", return_value=task_dir),
+                    patch.object(server, "save_task_index"),
+                    patch.object(server, "create_snapshot", side_effect=create_snapshot),
+                    patch.object(
+                        server,
+                        "read_options",
+                        return_value={
+                            "codex_sandbox": "workspace-write",
+                            "task_timeout_seconds": 30,
+                            "auto_save_lovelace": False,
+                        },
+                    ),
+                    patch.object(
+                        server,
+                        "sandbox_readiness",
+                        return_value={"required": True, "ready": True},
+                    ),
+                    patch.object(server, "codex_env", return_value={}),
+                    patch.object(server, "build_manifest", return_value={}),
+                    patch.object(server, "validate_changed_files", return_value=[]),
+                    patch.object(server, "write_task_log"),
+                    patch.object(
+                        server.subprocess,
+                        "Popen",
+                        return_value=FakeProcess(final_file),
+                    ),
+                    patch.object(
+                        server,
+                        "fire_ha_event",
+                        side_effect=lambda _event, data: (events.append(data) or True, ""),
+                    ),
+                    patch.object(server, "notify"),
+                    patch.object(server, "refresh_usage_status_async"),
+                ):
+                    server.run_task(
+                        task_id,
+                        "continue",
+                        session_id=self.THREAD_ID,
+                        reply="more detail",
+                    )
+
+            self.assertEqual(server.tasks[task_id]["session_id"], self.THREAD_ID)
+            self.assertEqual(events[-1]["session_id"], self.THREAD_ID)
+        finally:
+            server.running_processes.pop(task_id, None)
+            if saved_task is None:
+                server.tasks.pop(task_id, None)
+            else:
+                server.tasks[task_id] = saved_task
 
     def test_malformed_and_non_json_output_do_not_set_session_id(self) -> None:
         holder, updates = self.read_stdout(

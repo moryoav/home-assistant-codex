@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.41
+
+- Document how to request optional Markdown-friendly task output through `/config/AGENTS.md` without changing the default worker output contract.
+
 ## 0.1.40
 
 - Record task session IDs only from Codex `thread.started` events, retain the requested session as a fallback, and prevent stale reply output from being reused.

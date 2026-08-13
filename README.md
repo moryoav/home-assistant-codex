@@ -195,6 +195,18 @@ data:
 response_variable: codex_result
 ```
 
+## Task Output
+
+Codex tasks return a structured response with `status`, `summary`, `question`, and `details`. These values are plain strings, and how they are displayed depends on the Home Assistant consumer or notification service that receives them.
+
+You can request a preferred output style through `/config/AGENTS.md`, which is editable from the worker app web UI. Codex treats this as guidance rather than a formatting guarantee. If you want Markdown-friendly task output, you can add this instruction:
+
+```md
+For the final structured response, use concise Markdown in summary, question,
+and details when it improves readability. Use only short lists, emphasis, inline
+code, and fenced code blocks. Do not use raw HTML, images, or embedded content.
+```
+
 ## Assist / LLM Script Example
 
 See [examples/scripts.yaml](examples/scripts.yaml) for a starter script you can expose to Assist or another LLM integration.

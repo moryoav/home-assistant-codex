@@ -101,7 +101,7 @@ The app keeps an internal worker API token in private app storage. The **Codex**
 
 The app's web UI is available through Home Assistant Ingress. Do not try to open port `9123` directly; it is intentionally not exposed.
 
-The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota, and `xhigh` only applies where the selected model supports it.
+The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model. You can also select GPT-5.6 Sol, Terra, or Luna explicitly, with GPT-5.5 retained as a previous-generation fallback. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota, and `xhigh` only applies where the selected model supports it.
 
 The app web UI can view and save `/config/AGENTS.md`. You can also set the masked `HA_TOKEN` option when Codex tasks need a Home Assistant token in their environment.
 

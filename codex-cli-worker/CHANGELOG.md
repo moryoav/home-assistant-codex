@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.42
+
+- Add GPT-5.6 Sol, Terra, and Luna to the Codex model selector.
+- Remove old and deprecated model choices while retaining GPT-5.5 as a previous-generation fallback.
+- Preserve upgrade compatibility for existing GPT-5.3-Codex selections by treating them as the CLI default.
+
 ## 0.1.41
 
 - Document how to request optional Markdown-friendly task output through `/config/AGENTS.md` without changing the default worker output contract.

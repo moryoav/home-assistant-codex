@@ -28,7 +28,7 @@ The token is not your OpenAI or ChatGPT credential. Codex authentication is stil
 
 ## Model
 
-`codex_model` is a fixed selection to avoid typo-prone free text. The default value, `default`, lets the installed Codex CLI choose its recommended model. The legacy `gpt-5.3-codex` selection is still accepted for upgrade compatibility but is treated as `default` because it is no longer supported with ChatGPT sign-in.
+`codex_model` is a fixed selection to avoid typo-prone free text. The default value, `default`, lets the installed Codex CLI choose its recommended model. Explicit choices are `gpt-5.6-sol` for flagship capability, `gpt-5.6-terra` for a balance of capability and cost, `gpt-5.6-luna` for fast and affordable work, and `gpt-5.5` as a previous-generation fallback. Older models are no longer offered in the selector. Existing installations with the legacy `gpt-5.3-codex` value remain upgrade-compatible and treat it as `default`.
 
 `model_reasoning_effort` controls how much reasoning Codex asks supported models to use for each non-interactive task. The app passes it to `codex exec` as a per-run `--config model_reasoning_effort="<value>"` override rather than writing it into `config.toml`. Available values are:
 

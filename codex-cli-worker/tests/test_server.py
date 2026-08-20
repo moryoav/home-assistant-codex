@@ -408,14 +408,17 @@ class ModelSelectionTests(unittest.TestCase):
         ):
             return server.build_codex_args("task", Path("prompt"), Path("final"), None)
 
-    def test_worker_defaults_to_cli_selected_model(self) -> None:
+    def test_worker_model_schema_matches_supported_choices(self) -> None:
         config = server.yaml.safe_load(
             (SERVER_PATH.parent / "config.yaml").read_text(encoding="utf-8")
         )
 
         self.assertEqual(config["options"]["codex_model"], "default")
         self.assertEqual(server.DEFAULT_OPTIONS["codex_model"], "default")
-        self.assertIn("gpt-5.3-codex", config["schema"]["codex_model"])
+        self.assertEqual(
+            config["schema"]["codex_model"],
+            "list(default|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
+        )
 
     def test_default_model_omits_model_argument(self) -> None:
         args = self.build_args_for_model("default")
@@ -428,10 +431,10 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertNotIn("--model", args)
 
     def test_explicit_model_is_passed_to_codex(self) -> None:
-        args = self.build_args_for_model("gpt-5.5")
+        args = self.build_args_for_model("gpt-5.6-terra")
 
         model_index = args.index("--model")
-        self.assertEqual(args[model_index + 1], "gpt-5.5")
+        self.assertEqual(args[model_index + 1], "gpt-5.6-terra")
 
 
 class RuntimeConfigTests(unittest.TestCase):

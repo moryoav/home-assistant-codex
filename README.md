@@ -1,7 +1,15 @@
 # Codex for Home Assistant
-[![HACS][hacs-badge]][hacs-url] [![release][release-badge]][release-url] ![downloads][downloads-badge] [![build][build-badge]][build-url] [![license][license-badge]][license-url]
+[![HACS][hacs-badge]][hacs-url] [![release][release-badge]][release-url] [![build][build-badge]][build-url] [![license][license-badge]][license-url]
+
+---
+
+## Support me on Ko-fi
+
+If this project is useful to you, you can support its continued development:
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y5B124NZ2L)
+
+---
 
 Run Codex CLI against your Home Assistant configuration folder from Home Assistant.
 
@@ -261,7 +269,6 @@ Release builds also publish the `latest` image tag. Manual workflow builds from 
 [hacs-url]: https://github.com/hacs/integration
 [release-badge]: https://img.shields.io/github/v/release/moryoav/home-assistant-codex?style=flat-square
 [release-url]: https://github.com/moryoav/home-assistant-codex/releases
-[downloads-badge]: https://img.shields.io/github/downloads/moryoav/home-assistant-codex/total?style=flat-square
 [build-badge]: https://img.shields.io/github/actions/workflow/status/moryoav/home-assistant-codex/build.yaml?branch=main&style=flat-square&label=build
 [build-url]: https://github.com/moryoav/home-assistant-codex/actions/workflows/build.yaml
 [license-badge]: https://img.shields.io/github/license/moryoav/home-assistant-codex?style=flat-square

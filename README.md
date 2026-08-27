@@ -219,6 +219,12 @@ code, and fenced code blocks. Do not use raw HTML, images, or embedded content.
 
 See [examples/scripts.yaml](examples/scripts.yaml) for a starter script you can expose to Assist or another LLM integration.
 
+## Community-Created Cards
+
+Community-created dashboard cards are maintained in their own repositories:
+
+- [Home Assistant Codex Card](https://github.com/Rschmidt79/home-assistant-codex-card) by [Rschmidt79](https://github.com/Rschmidt79), a Lovelace chat card for starting and following Codex tasks from a Home Assistant dashboard.
+
 ## Stable And Dev Branches
 
 Use the default repository URL for stable releases:

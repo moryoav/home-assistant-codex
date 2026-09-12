@@ -400,13 +400,13 @@ class UsageProcessCleanupTests(unittest.TestCase):
 
 
 class ModelSelectionTests(unittest.TestCase):
-    def build_args_for_model(self, model: str) -> list[str]:
+    def build_args_for_model(self, model: str, session_id: str | None = None) -> list[str]:
         with patch.object(
             server,
             "read_options",
             return_value={"codex_model": model, "codex_sandbox": "workspace-write"},
         ):
-            return server.build_codex_args("task", Path("prompt"), Path("final"), None)
+            return server.build_codex_args("task", Path("prompt"), Path("final"), session_id)
 
     def test_worker_model_schema_matches_supported_choices(self) -> None:
         config = server.yaml.safe_load(
@@ -417,7 +417,7 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertEqual(server.DEFAULT_OPTIONS["codex_model"], "default")
         self.assertEqual(
             config["schema"]["codex_model"],
-            "list(default|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
+            "list(default|gpt-6-astra|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
         )
 
     def test_default_model_omits_model_argument(self) -> None:
@@ -431,10 +431,16 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertNotIn("--model", args)
 
     def test_explicit_model_is_passed_to_codex(self) -> None:
-        args = self.build_args_for_model("gpt-5.6-terra")
+        for model in ("gpt-6-astra", "gpt-5.6-terra"):
+            for session_id in (None, "019fc242-910a-7c92-a17d-54c014e19fc4"):
+                with self.subTest(model=model, session_id=session_id):
+                    args = self.build_args_for_model(model, session_id)
 
-        model_index = args.index("--model")
-        self.assertEqual(args[model_index + 1], "gpt-5.6-terra")
+                    model_index = args.index("--model")
+                    self.assertEqual(args[model_index + 1], model)
+                    self.assertIn('model_reasoning_effort="medium"', args)
+                    if session_id:
+                        self.assertEqual(args[-3:], ["resume", session_id, "-"])
 
 
 class RuntimeConfigTests(unittest.TestCase):

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.43
+
+- Add GPT-6 Astra to the Codex model selector.
+- Update the bundled Codex CLI to 0.154.0 for Astra support.
+- Document Astra availability and supported reasoning choices.
+
 ## 0.1.42
 
 - Add GPT-5.6 Sol, Terra, and Luna to the Codex model selector.

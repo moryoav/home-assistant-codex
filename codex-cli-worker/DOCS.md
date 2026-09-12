@@ -28,7 +28,7 @@ The token is not your OpenAI or ChatGPT credential. Codex authentication is stil
 
 ## Model
 
-`codex_model` is a fixed selection to avoid typo-prone free text. The default value, `default`, lets the installed Codex CLI choose its recommended model. Explicit choices are `gpt-5.6-sol` for flagship capability, `gpt-5.6-terra` for a balance of capability and cost, `gpt-5.6-luna` for fast and affordable work, and `gpt-5.5` as a previous-generation fallback. Older models are no longer offered in the selector. Existing installations with the legacy `gpt-5.3-codex` value remain upgrade-compatible and treat it as `default`.
+`codex_model` is a fixed selection to avoid typo-prone free text. The default value, `default`, lets the installed Codex CLI choose its recommended model. Explicit choices are `gpt-6-astra` for the most demanding tasks, `gpt-5.6-sol` for complex work, `gpt-5.6-terra` for a balance of capability and cost, `gpt-5.6-luna` for fast and affordable work, and `gpt-5.5` as a previous-generation fallback. Model availability depends on your account. The app bundles Codex CLI 0.154.0, which includes Astra support. Older models are no longer offered in the selector. Existing installations with the legacy `gpt-5.3-codex` value remain upgrade-compatible and treat it as `default`.
 
 `model_reasoning_effort` controls how much reasoning Codex asks supported models to use for each non-interactive task. The app passes it to `codex exec` as a per-run `--config model_reasoning_effort="<value>"` override rather than writing it into `config.toml`. Available values are:
 
@@ -36,7 +36,9 @@ The token is not your OpenAI or ChatGPT credential. Codex authentication is stil
 - `low`: lighter reasoning.
 - `medium`: balanced default.
 - `high`: more reasoning, usually slower and more quota-intensive.
-- `xhigh`: highest effort where the selected model supports it; support is model-dependent.
+- `xhigh`: extra reasoning where the selected model supports it.
+
+For GPT-6 Astra, select `low`, `medium`, `high`, or `xhigh`; `minimal` is not supported. See the [OpenAI model documentation](https://developers.openai.com/api/docs/models/gpt-6-astra) for supported reasoning levels and the [Codex models guide](https://learn.chatgpt.com/docs/models) for availability.
 
 ## Sandbox
 

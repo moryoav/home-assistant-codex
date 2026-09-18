@@ -33,7 +33,14 @@ class CodexSandboxReadinessTests(unittest.TestCase):
                 self.assertEqual(run.call_args.kwargs["cwd"], "/config")
                 self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/data/codex-home")
                 self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
-                self.assertEqual(run.call_args.kwargs["timeout"], server.RUNTIME_PROBE_TIMEOUT_SECONDS)
+                self.assertEqual(run.call_args.kwargs["timeout"], server.CODEX_SANDBOX_PROBE_TIMEOUT_SECONDS)
+                self.assertEqual(run.call_args.kwargs["errors"], "replace")
+
+    def test_codex_probe_allows_more_time_than_the_raw_probes(self) -> None:
+        # A timeout blocks every task; the Codex probe does far more work than bwrap alone.
+        self.assertGreater(
+            server.CODEX_SANDBOX_PROBE_TIMEOUT_SECONDS, server.RUNTIME_PROBE_TIMEOUT_SECONDS
+        )
 
     def test_missing_cli_fails_closed(self) -> None:
         with (

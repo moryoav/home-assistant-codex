@@ -67,6 +67,9 @@ USAGE_STATUS_TIMEOUT_SECONDS = 25
 USAGE_POST_TRUST_READY_SECONDS = 10
 USAGE_COMMAND_SUBMIT_DELAY_SECONDS = 0.7
 RUNTIME_PROBE_TIMEOUT_SECONDS = 5
+# The Codex execution probe starts Node, the native CLI, and several Bubblewrap
+# processes. A timeout blocks every task, so allow for slow or busy hardware.
+CODEX_SANDBOX_PROBE_TIMEOUT_SECONDS = 20
 DIAGNOSTIC_ERROR_MAX_CHARS = 1000
 CANCELLABLE_TASK_STATUSES = frozenset({"queued", "running"})
 CANCELLED_TASK_SUMMARY = "Task cancelled"
@@ -324,7 +327,9 @@ def _codex_sandbox_probe(mode: str) -> dict[str, Any]:
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
-            timeout=RUNTIME_PROBE_TIMEOUT_SECONDS,
+            # Undecodable CLI output must not raise out of a readiness check.
+            errors="replace",
+            timeout=CODEX_SANDBOX_PROBE_TIMEOUT_SECONDS,
             check=False,
         )
     except subprocess.TimeoutExpired:

@@ -14,6 +14,8 @@ The no-proc fallback is not identical to mounting a fresh `/proc`: it retains th
 
 The worker now verifies a real Codex sandbox execution in addition to the raw Bubblewrap namespace check. It uses the selected `read-only` or `workspace-write` mode, `/config` working directory, and worker environment. The command is `/bin/true`, not an AI task. Errors and timeouts leave readiness false and block task launch; login and diagnostics remain accessible.
 
+The execution probe has its own 20-second timeout (`CODEX_SANDBOX_PROBE_TIMEOUT_SECONDS`), separate from the 5-second raw Bubblewrap probes. It starts Node, the native CLI, and several Bubblewrap processes, so slow or busy hardware needs more time, and a timeout would otherwise block every task.
+
 In `/health`, `sandbox_readiness.namespace_probe.codex_probe` reports the actual execution result when the raw namespace check succeeded. The standalone `proc_probe` is still included, even when Codex fails. A failed standalone proc mount with successful Codex execution is allowed, but the log no longer promises that a fallback was used merely because a raw namespace test passed.
 
 `danger-full-access` keeps its existing behavior and skips sandbox probes.

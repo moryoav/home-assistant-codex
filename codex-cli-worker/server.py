@@ -299,8 +299,48 @@ def codex_version_status() -> dict[str, str]:
     return {"version": "", "error": _diagnostic_error(detail)}
 
 
-def _bubblewrap_probe(binary: str, *, mount_proc: bool) -> dict[str, Any]:
-    """Run a non-mutating Bubblewrap namespace probe."""
+def _codex_sandbox_probe(mode: str) -> dict[str, Any]:
+    """Execute a harmless command through the configured Codex sandbox."""
+    if mode not in {"read-only", "workspace-write"}:
+        return {"ok": False, "error": "Unsupported sandbox mode for the execution probe."}
+    codex = codex_binary_path()
+    if not codex:
+        return {"ok": False, "error": "Codex CLI executable is unavailable."}
+    try:
+        result = subprocess.run(
+            [
+                codex,
+                "sandbox",
+                "linux",
+                "--config",
+                f"sandbox_mode={json.dumps(mode)}",
+                "--config",
+                "check_for_update_on_startup=false",
+                "--",
+                "/bin/true",
+            ],
+            cwd=str(CONFIG_ROOT),
+            env=codex_env(),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=RUNTIME_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Codex sandbox execution probe timed out."}
+    except OSError as exc:
+        return {"ok": False, "error": _diagnostic_error(exc)}
+    if result.returncode == 0:
+        return {"ok": True, "error": ""}
+    detail = result.stderr or result.stdout or f"Codex sandbox exited with {result.returncode}."
+    return {"ok": False, "error": _diagnostic_error(detail)}
+
+
+def _bubblewrap_probe(
+    binary: str, *, mount_proc: bool, codex_mode: str | None = None,
+) -> dict[str, Any]:
+    """Probe namespaces and optionally verify the actual Codex execution path."""
     args = [
         binary,
         "--unshare-user",
@@ -327,6 +367,14 @@ def _bubblewrap_probe(binary: str, *, mount_proc: bool) -> dict[str, Any]:
         return {"ok": False, "error": _diagnostic_error(exc)}
 
     if result.returncode == 0:
+        if codex_mode is not None:
+            codex_probe = _codex_sandbox_probe(codex_mode)
+            return {
+                "ok": codex_probe["ok"],
+                "error": codex_probe["error"],
+                "namespace_ok": True,
+                "codex_probe": codex_probe,
+            }
         return {"ok": True, "error": ""}
     detail = result.stderr or result.stdout or f"Bubblewrap exited with {result.returncode}."
     return {"ok": False, "error": _diagnostic_error(detail)}
@@ -352,29 +400,27 @@ def sandbox_readiness() -> dict[str, Any]:
         namespace_probe = {"ok": False, "error": "Bubblewrap is not installed."}
         proc_probe = {"ok": False, "skipped": True, "error": "Namespace probe was not run."}
     else:
-        namespace_probe = _bubblewrap_probe(binary, mount_proc=False)
-        if namespace_probe["ok"]:
+        namespace_probe = _bubblewrap_probe(binary, mount_proc=False, codex_mode=mode)
+        if namespace_probe.get("namespace_ok", namespace_probe["ok"]):
             proc_probe = _bubblewrap_probe(binary, mount_proc=True)
         else:
             proc_probe = {"ok": False, "skipped": True, "error": "Namespace probe failed."}
 
-    # Codex 0.146+ automatically retries with its --no-proc path when a
-    # restrictive container denies mounting a fresh /proc. Namespace creation
-    # is the required capability; the proc probe remains useful diagnostics.
+    # A raw namespace success is not sufficient: the optional Codex probe above
+    # must also pass. Keep the fresh /proc check as independent diagnostics.
     bubblewrap_ready = bool(required and namespace_probe["ok"])
     ready = bubblewrap_ready if required else True
     if ready and required and proc_probe["ok"]:
-        message = "Bubblewrap sandbox preflight passed."
+        message = "Codex sandbox execution probe passed."
     elif ready and required:
         message = (
-            "Bubblewrap namespace preflight passed. Fresh /proc mounting is "
-            "unavailable, so Codex will use its no-proc fallback."
+            "Codex sandbox execution probe passed; the standalone fresh /proc "
+            "probe failed. This host may require Codex's no-proc fallback."
         )
     elif not required:
         message = "The selected danger-full-access mode does not require Bubblewrap."
     else:
-        detail = proc_probe.get("error") if namespace_probe["ok"] else namespace_probe.get("error")
-        message = f"Bubblewrap sandbox preflight failed: {detail}"
+        message = f"Codex sandbox preflight failed: {namespace_probe.get('error')}"
     return {
         "mode": mode,
         "required": required,
@@ -418,7 +464,7 @@ def read_agents_file() -> str:
 def write_agents_file(content: str) -> None:
     encoded = content.encode("utf-8")
     if len(encoded) > AGENTS_MAX_BYTES:
-        raise ValueError(f"AGENTS.md is larger than {AGENTS_MAX_BYTES} bytes")
+        raise ValueError(f"{AGENTS_PATH} is larger than {AGENTS_MAX_BYTES} bytes")
     AGENTS_PATH.write_text(content.rstrip() + "\n", encoding="utf-8")
 
 

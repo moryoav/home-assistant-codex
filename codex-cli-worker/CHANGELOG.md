@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.44
+
+- Work around an upstream Codex CLI bug ([openai/codex#44329](https://github.com/openai/codex/issues/44329)) that made every sandboxed task fail with `bwrap: Can't mount proc on /proc: Operation not permitted` on hosts that deny a fresh `/proc` mount, including Home Assistant OS. Codex now selects its own no-proc fallback again. This is a temporary, narrowly scoped workaround for the `read-only` and `workspace-write` modes; `danger-full-access` is unchanged.
+- Verify a real Codex sandbox execution before reporting the sandbox as ready, so a broken sandbox is reported at startup and before each task instead of failing mid-task.
+- See `SANDBOX_TESTING.md` for the scope, verification steps, and how to remove the workaround once upstream is fixed.
+
 ## 0.1.43
 
 - Add GPT-6 Astra to the Codex model selector.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.45
+
+- Fix the sandbox readiness check added in 0.1.44. It called `codex sandbox linux ...`, but the bundled Codex CLI 0.154.0 has no platform subcommand, so the check tried to run a program named `linux`, reported `Failed to execvp linux`, and blocked every task in the `read-only` and `workspace-write` modes. The check now runs `codex sandbox [options] -- /bin/true`.
+
 ## 0.1.44
 
 - Work around an upstream Codex CLI bug ([openai/codex#44329](https://github.com/openai/codex/issues/44329)) that made every sandboxed task fail with `bwrap: Can't mount proc on /proc: Operation not permitted` on hosts that deny a fresh `/proc` mount, including Home Assistant OS. Codex now selects its own no-proc fallback again. This is a temporary, narrowly scoped workaround for the `read-only` and `workspace-write` modes; `danger-full-access` is unchanged.

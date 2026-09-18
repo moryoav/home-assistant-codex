@@ -26,9 +26,15 @@ class CodexSandboxReadinessTests(unittest.TestCase):
             ):
                 self.assertTrue(server._codex_sandbox_probe(mode)["ok"])
                 args = run.call_args.args[0]
-                self.assertEqual(args[:3], [server.CODEX_BINARY, "sandbox", "linux"])
+                self.assertEqual(args[:2], [server.CODEX_BINARY, "sandbox"])
                 self.assertIn(f'sandbox_mode="{mode}"', args)
                 self.assertEqual(args[-2:], ["--", "/bin/true"])
+                # The pinned CLI has no platform subcommand: `codex sandbox linux ...`
+                # runs a program named "linux". Only options may precede `--`.
+                options = args[2:args.index("--")]
+                self.assertEqual(len(options) % 2, 0)
+                self.assertEqual(set(options[0::2]), {"--config"})
+                self.assertNotIn("linux", args)
                 self.assertNotIn("exec", args)
                 self.assertEqual(run.call_args.kwargs["cwd"], "/config")
                 self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/data/codex-home")

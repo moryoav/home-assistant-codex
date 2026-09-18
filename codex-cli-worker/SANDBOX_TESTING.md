@@ -41,9 +41,11 @@ From a shell **inside the worker container**, the basic execution checks are:
 ```sh
 export CODEX_HOME=/data/codex-home HOME=/data
 cd /config
-/usr/local/bin/codex sandbox linux --config 'sandbox_mode="read-only"' -- /bin/true
-/usr/local/bin/codex sandbox linux --config 'sandbox_mode="workspace-write"' -- /bin/true
+/usr/local/bin/codex sandbox --config 'sandbox_mode="read-only"' -- /bin/true
+/usr/local/bin/codex sandbox --config 'sandbox_mode="workspace-write"' -- /bin/true
 ```
+
+The pinned CLI (0.154.0) takes the command directly after `codex sandbox [options] --`. It has no platform subcommand: `codex sandbox linux ...` tries to run a program named `linux` and fails with `Failed to execvp linux`. Re-check this grammar, and the worker's readiness probe that uses it, whenever `CODEX_VERSION` in the Dockerfile is bumped.
 
 Both should exit successfully. Then run the original issue's read-only inspection task and confirm actual shell execution, not just an assistant reply. In a disposable test setup, use new temporary files to verify that `read-only` denies writes, `workspace-write` allows a test write under `/config`, and writes outside configured writable roots (for example a new test file under `/data`) are still denied. Do not use existing HA configuration or credential files for write tests. Also check normal task cancellation.
 

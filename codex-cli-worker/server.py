@@ -310,11 +310,13 @@ def _codex_sandbox_probe(mode: str) -> dict[str, Any]:
     if not codex:
         return {"ok": False, "error": "Codex CLI executable is unavailable."}
     try:
+        # The pinned CLI (0.154.0) takes the command directly: `codex sandbox
+        # [options] -- <command>`. It has no platform subcommand, so any word
+        # before `--` that is not an option is executed as the program.
         result = subprocess.run(
             [
                 codex,
                 "sandbox",
-                "linux",
                 "--config",
                 f"sandbox_mode={json.dumps(mode)}",
                 "--config",

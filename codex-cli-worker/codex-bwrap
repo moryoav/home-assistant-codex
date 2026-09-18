@@ -7,4 +7,45 @@ if [ "${1:-}" = "--version" ]; then
   exec "$REAL_BWRAP" "$@"
 fi
 
+is_codex_proc_probe() (
+  # Use a subshell so probe bookkeeping cannot change the exec environment.
+  # Codex's internal probe ends in exactly `-- /[usr/]bin/true`.
+  # Real commands re-enter the Codex sandbox helper instead. Stop inspecting
+  # arguments at the first separator so task payloads can never match.
+  as_pid_1=0 user_ns=0 pid_ns=0 ipc_ns=0 proc_mount=0
+  new_session=0 die_with_parent=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --as-pid-1) as_pid_1=1 ;;
+      --new-session) new_session=1 ;;
+      --die-with-parent) die_with_parent=1 ;;
+      --unshare-user) user_ns=1 ;;
+      --unshare-pid) pid_ns=1 ;;
+      --unshare-ipc) ipc_ns=1 ;;
+      --proc)
+        [ "$#" -ge 2 ] && [ "$2" = /proc ] || return 1
+        proc_mount=1
+        shift
+        ;;
+      --)
+        shift
+        [ "$#" -eq 1 ] || return 1
+        case "$1" in
+          /bin/true|/usr/bin/true)
+            [ "$as_pid_1$user_ns$pid_ns$ipc_ns$proc_mount$new_session$die_with_parent" = 1111111 ]
+            return
+            ;;
+          *) return 1 ;;
+        esac
+        ;;
+    esac
+    shift
+  done
+  return 1
+)
+
+if is_codex_proc_probe "$@"; then
+  exec /usr/bin/python3 /opt/codex-sandbox/codex-bwrap-probe.py "$@"
+fi
+
 exec "$REAL_BWRAP" --cap-drop ALL "$@"

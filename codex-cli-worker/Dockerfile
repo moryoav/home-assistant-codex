@@ -27,6 +27,7 @@ RUN apk add --no-cache \
 RUN install -D -m 0755 /usr/bin/bwrap /opt/codex-sandbox/bwrap.real
 
 COPY codex-bwrap /opt/codex-sandbox/bwrap
+COPY codex-bwrap-probe.py /opt/codex-sandbox/codex-bwrap-probe.py
 
 RUN chmod 0755 /opt/codex-sandbox/bwrap
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.46
+
+- Add saved chat history and continuation of completed, waiting, failed, and cancelled tasks through `codex_cli.continue_task`.
+- Add task listing filters, pagination, and compact summaries while preserving existing action defaults.
+- Replace the task form with a responsive chat UI, a resizable conversation sidebar, mobile navigation, and a Settings dialog.
+- Preserve each exchange's messages, responses, snapshots, and change manifests across further replies and worker restarts.
+- Show available history for older tasks and reject continuation when the saved Codex session is missing.
+- Add desktop and mobile screenshots and document the new actions.
+
+Update both the worker app and the Codex HACS integration to use the new Home Assistant actions. Existing tasks remain available; earlier responses already overwritten by older versions cannot be recovered.
+
 ## 0.1.45
 
 - Fix the sandbox readiness check added in 0.1.44. It called `codex sandbox linux ...`, but the bundled Codex CLI 0.154.0 has no platform subcommand, so the check tried to run a program named `linux`, reported `Failed to execvp linux`, and blocked every task in the `read-only` and `workspace-write` modes. The check now runs `codex sandbox [options] -- /bin/true`.

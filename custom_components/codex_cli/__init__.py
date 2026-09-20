@@ -22,6 +22,7 @@ from .const import (
     CONF_BASE_URL,
     DOMAIN,
     SERVICE_CANCEL_TASK,
+    SERVICE_CONTINUE_TASK,
     SERVICE_GET_LOGIN_STATUS,
     SERVICE_GET_TASK,
     SERVICE_LOGOUT,
@@ -43,6 +44,14 @@ START_TASK_SCHEMA = vol.Schema(
 )
 TASK_ID_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): str})
 REPLY_TASK_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): str, vol.Required(ATTR_REPLY): str})
+CONTINUE_TASK_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): str, vol.Required("message"): str})
+LIST_TASKS_SCHEMA = vol.Schema({
+    vol.Optional("limit"): vol.All(vol.Coerce(int), vol.Range(min=1, max=500)),
+    vol.Optional("offset"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+    vol.Optional("status"): vol.In(["queued", "running", "waiting_for_input", "completed", "failed", "cancelled"]),
+    vol.Optional("order"): vol.In(["created_asc", "updated_desc"]),
+    vol.Optional("summary"): bool,
+})
 START_LOGIN_SCHEMA = vol.Schema({vol.Optional(ATTR_FORCE, default=False): bool})
 
 
@@ -165,7 +174,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
     async def handle_list_tasks(call: ServiceCall) -> dict[str, Any]:
         runtime_data = _first_runtime(hass)
         try:
-            return await runtime_data.client.list_tasks()
+            return await runtime_data.client.list_tasks(**call.data)
         except CodexCliApiError as exc:
             raise HomeAssistantError(str(exc)) from exc
 
@@ -187,6 +196,19 @@ def _async_register_services(hass: HomeAssistant) -> None:
         await runtime_data.coordinator.async_request_refresh()
         return result
 
+    async def handle_continue_task(call: ServiceCall) -> dict[str, Any]:
+        runtime_data = _first_runtime(hass)
+        try:
+            result = await runtime_data.client.continue_task(call.data[ATTR_TASK_ID], call.data["message"])
+        except CodexCliApiError as exc:
+            raise HomeAssistantError(str(exc)) from exc
+        await runtime_data.coordinator.async_request_refresh()
+        return result
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_CONTINUE_TASK, handle_continue_task,
+        schema=CONTINUE_TASK_SCHEMA, **register_kwargs,
+    )
     hass.services.async_register(
         DOMAIN,
         SERVICE_START_TASK,
@@ -224,6 +246,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_LIST_TASKS,
         handle_list_tasks,
+        schema=LIST_TASKS_SCHEMA,
         **register_kwargs,
     )
     hass.services.async_register(

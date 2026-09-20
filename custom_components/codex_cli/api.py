@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlencode
 
 from aiohttp import ClientError, ClientResponseError, ClientSession
 
@@ -52,9 +53,10 @@ class CodexCliApiClient:
         """Remove saved Codex CLI credentials from the worker."""
         return await self._request("POST", "/auth/logout")
 
-    async def list_tasks(self) -> dict[str, Any]:
+    async def list_tasks(self, **filters: Any) -> dict[str, Any]:
         """List known tasks."""
-        return await self._request("GET", "/tasks")
+        query = urlencode({key: str(value).lower() if isinstance(value, bool) else value for key, value in filters.items()})
+        return await self._request("GET", "/tasks" + ("?" + query if query else ""))
 
     async def start_task(self, prompt: str) -> dict[str, Any]:
         """Start a Codex task."""
@@ -71,6 +73,10 @@ class CodexCliApiClient:
     async def reply_task(self, task_id: str, reply: str) -> dict[str, Any]:
         """Reply to a waiting Codex task."""
         return await self._request("POST", f"/tasks/{task_id}/reply", json={"reply": reply})
+
+    async def continue_task(self, task_id: str, message: str) -> dict[str, Any]:
+        """Continue a saved conversation."""
+        return await self._request("POST", f"/tasks/{task_id}/continue", json={"message": message})
 
     async def _request(
         self,
@@ -92,6 +98,13 @@ class CodexCliApiClient:
                 json=json,
                 timeout=30,
             ) as response:
+                if response.status >= 400 and response.status not in (401, 403):
+                    try:
+                        error = await response.json(content_type=None)
+                    except (ValueError, ClientError):
+                        error = {}
+                    detail = error.get("error") if isinstance(error, dict) else None
+                    raise CodexCliApiError(str(detail or f"Worker returned HTTP {response.status}"), status=response.status)
                 response.raise_for_status()
                 data = await response.json(content_type=None)
         except ClientResponseError as exc:

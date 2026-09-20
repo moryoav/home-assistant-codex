@@ -1,0 +1,226 @@
+"""Conversation persistence and continuation API regressions."""
+from __future__ import annotations
+
+import copy
+import io
+import json
+import tempfile
+import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import patch
+
+from test_server import server
+
+
+class ConversationTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        for name, value in (("tasks", {}), ("active_task_runners", set()), ("running_processes", {})):
+            self.stack.enter_context(patch.object(server, name, value))
+        self.stack.enter_context(patch.object(server, "task_root", return_value=self.root / "tasks"))
+        self.stack.enter_context(patch.object(server, "TASK_STATE_FILE", self.root / "index.json"))
+        self.stack.enter_context(patch.object(server, "CODEX_HOME", self.root / "codex"))
+        self.stack.enter_context(patch.object(server, "api_token", return_value="test-token"))
+        self.runner = self.stack.enter_context(patch.object(server, "start_background_task"))
+        self.client = server.app.test_client()
+        self.headers = {"Authorization": "Bearer test-token"}
+        self.session_id = "019fc242-910a-7c92-a17d-54c014e19fc4"
+        session_dir = server.CODEX_HOME / "sessions" / "2026" / "09" / "20"
+        session_dir.mkdir(parents=True)
+        self.session_file = session_dir / f"rollout-2026-09-20T01-00-00-{self.session_id}.jsonl"
+        self.session_file.write_text('{}\n')
+
+    def post(self, path, body):
+        return self.client.post(path, json=body, headers=self.headers)
+
+    def create(self, message="Review my automation"):
+        response = self.post("/tasks", {"prompt": message})
+        self.assertEqual(response.status_code, 200)
+        return response.json["task_id"]
+
+    def finish(self, task_id, status="completed", summary="First answer"):
+        server.update_task(task_id, status=status, session_id=self.session_id, summary=summary, completed_at=server.utc_now())
+        server.active_task_runners.discard(task_id)
+
+    def test_continue_preserves_exchanges_and_survives_restart(self):
+        task_id = self.create()
+        self.finish(task_id)
+        original = copy.deepcopy(server.tasks[task_id]["turns"][0])
+        response = self.post(f"/tasks/{task_id}/continue", {"message": "Apply that suggestion"})
+        self.assertEqual(response.status_code, 200)
+        self.runner.assert_called_with(task_id, "Review my automation", session_id=self.session_id, reply="Apply that suggestion")
+        self.assertEqual(server.tasks[task_id]["turns"][0], original)
+        self.assertEqual(server.tasks[task_id]["summary"], "")
+        self.finish(task_id, summary="Second answer")
+        server.tasks.clear()
+        server.load_task_index()
+        task = self.client.get(f"/tasks/{task_id}", headers=self.headers).json["task"]
+        self.assertEqual([turn["summary"] for turn in task["turns"]], ["First answer", "Second answer"])
+        self.assertEqual([turn["message"] for turn in task["turns"]], ["Review my automation", "Apply that suggestion"])
+        self.assertTrue(task["can_continue"])
+        self.assertFalse(task["history_incomplete"])
+
+    def test_all_terminal_statuses_can_continue(self):
+        for status in server.CONTINUABLE_STATUSES:
+            with self.subTest(status=status):
+                task_id = self.create()
+                self.finish(task_id, status=status)
+                if status == "cancelled":
+                    server.tasks[task_id]["cancellation_requested"] = True
+                response = self.post(f"/tasks/{task_id}/continue", {"message": "Continue"})
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(server.tasks[task_id]["cancellation_requested"])
+                self.assertEqual(server.tasks[task_id]["status"], "queued")
+                self.finish(task_id)
+
+    def test_legacy_reply_remains_waiting_only(self):
+        task_id = self.create()
+        self.finish(task_id)
+        self.assertEqual(self.post(f"/tasks/{task_id}/reply", {"reply": "More"}).status_code, 409)
+        self.finish(task_id, "waiting_for_input")
+        self.assertEqual(self.post(f"/tasks/{task_id}/reply", {"reply": "More"}).status_code, 200)
+
+    def test_missing_session_never_starts_fresh_or_changes_history(self):
+        task_id = self.create()
+        self.finish(task_id)
+        self.session_file.unlink()
+        before = copy.deepcopy(server.tasks[task_id])
+        self.runner.reset_mock()
+        response = self.post(f"/tasks/{task_id}/continue", {"message": "More"})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("unavailable", response.json["error"])
+        self.assertEqual(server.tasks[task_id], before)
+        self.runner.assert_not_called()
+
+    def test_active_task_and_duplicate_continue_are_rejected(self):
+        task_id = self.create()
+        self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "More"}).status_code, 409)
+        self.finish(task_id)
+        other = self.create("Another request")
+        self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "More"}).status_code, 409)
+        self.finish(other)
+        self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "More"}).status_code, 200)
+        self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "Duplicate"}).status_code, 409)
+        self.assertEqual(len(server.tasks[task_id]["turns"]), 2)
+
+    def test_recent_summary_pagination_and_status_filters(self):
+        ids = []
+        for index in range(3):
+            task_id = self.create(f"Prompt {index}")
+            self.finish(task_id)
+            server.tasks[task_id]["updated_at"] = f"2026-09-2{index}T12:00:00+00:00"
+            ids.append(task_id)
+        page = self.client.get("/tasks?summary=true&order=updated_desc&limit=2", headers=self.headers).json
+        self.assertEqual([item["task_id"] for item in page["tasks"]], ids[::-1][:2])
+        self.assertEqual(page["next_offset"], 2)
+        self.assertEqual(page["total"], 3)
+        self.assertNotIn("turns", page["tasks"][0])
+        self.assertNotIn("prompt", page["tasks"][0])
+        page2 = self.client.get("/tasks?order=updated_desc&limit=2&offset=2", headers=self.headers).json
+        self.assertEqual(page2["tasks"][0]["task_id"], ids[0])
+        self.assertIsNone(page2["next_offset"])
+        empty = self.client.get("/tasks?status=failed", headers=self.headers).json
+        self.assertEqual(empty["tasks"], [])
+        full = self.client.get("/tasks", headers=self.headers).json
+        self.assertEqual(len(full["tasks"]), 3)
+        self.assertIn("prompt", full["tasks"][0])
+
+    def test_invalid_filters_and_message_bodies(self):
+        for query in ("limit=0", "limit=501", "offset=-1", "limit=no", "status=no", "order=no"):
+            self.assertEqual(self.client.get("/tasks?" + query, headers=self.headers).status_code, 400)
+        for body in ([], {"prompt": []}, {"prompt": " "}):
+            self.assertEqual(self.post("/tasks", body).status_code, 400)
+        for body in ([], {"message": {}}, {"message": " "}):
+            self.assertEqual(self.post("/tasks/missing/continue", body).status_code, 400)
+        self.assertEqual(self.client.get("/tasks").status_code, 401)
+        self.assertEqual(self.client.post("/tasks/missing/continue", json={"message": "test"}).status_code, 401)
+
+    def test_legacy_history_is_honest_and_retained_when_continuing(self):
+        server.tasks["old"] = {"task_id": "old", "prompt": "Original", "status": "completed", "session_id": self.session_id,
+                               "summary": "Latest only", "reply_history": [{"at": "2026-09-19", "reply": "Follow-up"}]}
+        data = self.client.get("/tasks/old", headers=self.headers).json["task"]
+        self.assertTrue(data["history_incomplete"])
+        self.assertNotIn("summary", data["turns"][0])
+        self.assertEqual(data["turns"][1]["summary"], "Latest only")
+        self.assertEqual(self.post("/tasks/old/continue", {"message": "Next"}).status_code, 200)
+        self.assertTrue(server.tasks["old"]["history_incomplete"])
+        self.assertEqual(len(server.tasks["old"]["turns"]), 3)
+
+    def test_restart_marks_current_exchange_failed(self):
+        task_id = self.create()
+        server.tasks.clear()
+        server.active_task_runners.clear()
+        server.load_task_index()
+        self.assertEqual(server.tasks[task_id]["status"], "failed")
+        self.assertEqual(server.tasks[task_id]["turns"][0]["status"], "failed")
+        self.assertIn("restarted", server.tasks[task_id]["turns"][0]["summary"])
+
+    def test_cancellation_updates_only_current_exchange(self):
+        task_id = self.create()
+        self.finish(task_id)
+        self.post(f"/tasks/{task_id}/continue", {"message": "More"})
+        accepted, _, _ = server.request_task_cancellation(task_id)
+        self.assertTrue(accepted)
+        self.assertEqual(server.tasks[task_id]["turns"][0]["status"], "completed")
+        self.assertEqual(server.tasks[task_id]["turns"][1]["status"], "cancelled")
+
+    def test_followup_prompt_does_not_reissue_original_request(self):
+        prompt = server.build_prompt("ORIGINAL_REQUEST", "task", reply="CURRENT_MESSAGE")
+        self.assertIn("CURRENT_MESSAGE", prompt)
+        self.assertNotIn("ORIGINAL_REQUEST", prompt)
+
+    def test_runs_keep_separate_artifacts_and_changes(self):
+        task_id = self.create()
+        output_dirs = []
+        manifests = [{}, {"first.yaml": {"sha256": "one"}}, {"first.yaml": {"sha256": "one"}}, {"first.yaml": {"sha256": "one"}, "second.yaml": {"sha256": "two"}}]
+
+        class FakeProcess:
+            def __init__(self, args, **kwargs):
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO(json.dumps({"type": "thread.started", "thread_id": self_session}) + "\n")
+                self.stderr = io.StringIO("")
+                self.returncode = 0
+                self.output = Path(args[args.index("--output-last-message") + 1])
+                output_dirs.append(self.output.parent)
+            def poll(self): return 0
+            def wait(self, timeout=None):
+                self.output.write_text(json.dumps({"status": "completed", "summary": "Saved response", "details": "", "question": ""}))
+                return 0
+
+        self_session = self.session_id
+        with (
+            patch.object(server, "CONFIG_ROOT", self.root),
+            patch.object(server, "build_manifest", side_effect=manifests),
+            patch.object(server, "sandbox_readiness", return_value={"required": True, "ready": True}),
+            patch.object(server, "read_options", return_value={"task_timeout_seconds": 30, "auto_save_lovelace": False}),
+            patch.object(server, "validate_changed_files", return_value=[]),
+            patch.object(server.subprocess, "Popen", side_effect=FakeProcess),
+            patch.object(server, "fire_ha_event", return_value=(True, "")),
+            patch.object(server, "notify"), patch.object(server, "refresh_usage_status_async"),
+        ):
+            server.run_task(task_id, "Review my automation")
+            server.active_task_runners.discard(task_id)
+            self.post(f"/tasks/{task_id}/continue", {"message": "Next change"})
+            server.run_task(task_id, "Review my automation", self.session_id, "Next change")
+        self.assertNotEqual(output_dirs[0], output_dirs[1])
+        self.assertTrue((output_dirs[0] / "final.json").exists())
+        self.assertTrue((output_dirs[1] / "final-resume.json").exists())
+        self.assertEqual(server.tasks[task_id]["turns"][0]["changes"]["added"], ["first.yaml"])
+        self.assertEqual(server.tasks[task_id]["turns"][1]["changes"]["added"], ["second.yaml"])
+
+    def test_web_assets_are_packaged_and_load_without_account_calls(self):
+        self.assertEqual(self.client.get("/").status_code, 403)
+        self.assertEqual(self.client.get("/assets/index.html").status_code, 404)
+        response = self.client.get("/", headers={"X-Ingress-Path": "/api/hassio_ingress/test"}, environ_overrides={"REMOTE_ADDR": server.INGRESS_PROXY_IP})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'assets/chat.js', response.data)
+        for name in ("chat.js", "chat.css"):
+            with self.client.get("/assets/" + name) as asset:
+                self.assertEqual(asset.status_code, 200)
+
+
+if __name__ == "__main__":
+    unittest.main()

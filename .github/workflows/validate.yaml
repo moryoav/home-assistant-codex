@@ -26,6 +26,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install worker test dependencies
-        run: pip install flask pyyaml requests websocket-client
+        run: pip install aiohttp flask pyyaml requests websocket-client
       - name: Run worker tests
         run: python -m unittest discover -s codex-cli-worker/tests -v

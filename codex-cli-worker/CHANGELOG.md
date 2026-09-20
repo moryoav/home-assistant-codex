@@ -2,14 +2,24 @@
 
 ## 0.1.46
 
-- Add saved chat history and continuation of completed, waiting, failed, and cancelled tasks through `codex_cli.continue_task`.
-- Add task listing filters, pagination, and compact summaries while preserving existing action defaults.
-- Replace the task form with a responsive chat UI, a resizable conversation sidebar, mobile navigation, and a Settings dialog.
-- Preserve each exchange's messages, responses, snapshots, and change manifests across further replies and worker restarts.
-- Show available history for older tasks and reject continuation when the saved Codex session is missing.
-- Add desktop and mobile screenshots and document the new actions.
+### New chat web UI
 
-Update both the worker app and the Codex HACS integration to use the new Home Assistant actions. Existing tasks remain available; earlier responses already overwritten by older versions cannot be recovered.
+Introduce a full chat interface for Codex in Home Assistant, inspired by ChatGPT and Codex. Browse earlier conversations, read their messages and responses, and pick up where you left off without starting a new task every time.
+
+- Browse saved chats in a **resizable left sidebar**, with the selected conversation open on the right.
+- **Continue a previous conversation with its saved context**, even after the task has completed, or choose **New chat** to start fresh.
+- Read user messages and Codex responses together in a conversation view, with history preserved across worker restarts.
+- Use a **mobile-friendly layout** with a conversation drawer, plus light and dark themes.
+- Keep account sign-in and workspace instructions together in **Settings**.
+
+### Home Assistant actions and history
+
+- Add `codex_cli.continue_task` for follow-up messages from scripts and automations.
+- Add task-list filters, pagination, and compact summaries while preserving existing action defaults.
+- Preserve each exchange's messages, responses, snapshots, and change manifests.
+- Show available history for older tasks and report a clear error if their saved Codex session is missing.
+
+Update both the **Codex CLI Worker** app and the **Codex** HACS integration to **0.1.46**, then restart Home Assistant to register the new action. Existing tasks remain available; earlier responses already overwritten by older versions cannot be recovered.
 
 ## 0.1.45
 

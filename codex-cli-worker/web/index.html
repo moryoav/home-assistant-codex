@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>Codex · Home Assistant</title>
+    <link rel="stylesheet" href="assets/chat.css" />
+    <script src="assets/chat.js" defer></script>
+  </head>
+  <body>
+    <div class="app">
+      <button
+        class="scrim"
+        id="scrim"
+        aria-label="Close conversations"
+        hidden
+      ></button>
+      <aside id="sidebar" aria-label="Conversations">
+        <div class="brand">
+          <span class="brand-icon" aria-hidden="true">⌘</span
+          ><strong>Codex</strong><span class="tag">HOME ASSISTANT</span
+          ><button
+            id="close-sidebar"
+            class="icon mobile"
+            aria-label="Close conversations"
+          >
+            ✕
+          </button>
+        </div>
+        <button id="new-chat" class="new-chat">
+          <span aria-hidden="true">＋</span> New chat
+        </button>
+        <div class="list-heading">
+          <span>Your chats</span
+          ><button id="refresh" class="icon" aria-label="Refresh conversations">
+            ↻
+          </button>
+        </div>
+        <nav id="chat-list" aria-label="Saved chats"></nav>
+        <p id="list-empty" class="muted">
+          Your conversations will appear here.
+        </p>
+        <button id="load-more" class="subtle" hidden>Load older chats</button>
+        <div class="sidebar-footer">
+          <span class="workspace-dot" aria-hidden="true"></span
+          ><span>Home Assistant workspace</span
+          ><button id="settings-button" class="icon" aria-label="Open settings">
+            ⚙
+          </button>
+        </div>
+      </aside>
+      <div
+        id="divider"
+        role="separator"
+        aria-label="Resize conversations sidebar"
+        aria-orientation="vertical"
+        aria-valuemin="220"
+        aria-valuemax="440"
+        aria-valuenow="280"
+        tabindex="0"
+      ></div>
+      <main>
+        <header class="chat-header">
+          <button
+            id="menu"
+            class="icon mobile"
+            aria-label="Open conversations"
+            aria-expanded="false"
+          >
+            ☰
+          </button>
+          <div class="chat-heading">
+            <h1 id="chat-title">New chat</h1>
+            <p id="chat-status">Your Home Assistant, with a little help.</p>
+          </div>
+          <button id="cancel" class="subtle" hidden>Stop task</button>
+        </header>
+        <div
+          id="messages"
+          class="messages"
+          tabindex="0"
+          aria-label="Conversation"
+        >
+          <div class="welcome">
+            <div class="welcome-icon" aria-hidden="true">⌘</div>
+            <p class="eyebrow">CODEX FOR HOME ASSISTANT</p>
+            <h2>What would you like to work on?</h2>
+            <p>Start something new, or pick up where you left off.</p>
+            <div class="suggestions">
+              <button
+                data-prompt="Review my automations and suggest improvements. Do not make changes yet."
+              >
+                <span>Review automations</span
+                ><small>Find ways to simplify your setup</small></button
+              ><button
+                data-prompt="Check my dashboard configuration for problems. Do not make changes yet."
+              >
+                <span>Check a dashboard</span
+                ><small>Take a closer look at your config</small>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="compose-area">
+          <p id="notice" role="status" hidden></p>
+          <p id="error" role="alert" hidden></p>
+          <form id="composer">
+            <label class="sr-only" for="message">Message Codex</label
+            ><textarea
+              id="message"
+              rows="2"
+              placeholder="Ask Codex about your Home Assistant…"
+              required
+            ></textarea>
+            <div class="compose-bottom">
+              <span id="compose-hint"
+                >A new chat starts a separate conversation.</span
+              ><button id="send" type="submit" aria-label="Send message">
+                ↑
+              </button>
+            </div>
+          </form>
+          <p class="footnote">
+            Codex can make mistakes. Review changes to your home configuration.
+          </p>
+        </div>
+      </main>
+    </div>
+    <dialog id="settings">
+      <div class="dialog-header">
+        <h2>Settings</h2>
+        <button id="close-settings" class="icon" aria-label="Close settings">
+          ✕
+        </button>
+      </div>
+      <section>
+        <h3>ChatGPT account</h3>
+        <p id="login-status" class="muted">Loading account status…</p>
+        <div class="settings-actions">
+          <button id="login">Sign in</button
+          ><button id="logout" class="subtle">Sign out</button>
+        </div>
+        <div id="login-card"></div>
+      </section>
+      <section>
+        <h3>Workspace instructions</h3>
+        <p class="muted">
+          Codex follows these instructions when working in your Home Assistant
+          configuration.
+        </p>
+        <label for="agents">AGENTS.md</label
+        ><textarea id="agents" rows="12" spellcheck="false"></textarea
+        ><button id="save-agents">Save instructions</button>
+      </section>
+      <p id="settings-result" role="status"></p>
+    </dialog>
+  </body>
+</html>

@@ -49,6 +49,7 @@ WORKDIR /data
 
 COPY run.sh /
 COPY server.py /
+COPY web /web
 
 RUN chmod a+x /run.sh /server.py
 

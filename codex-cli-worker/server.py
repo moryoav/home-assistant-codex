@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import json
@@ -168,7 +169,8 @@ SENSITIVE_REPLACEMENTS = [
 ]
 
 
-app = Flask(__name__)
+WEB_ROOT = Path(__file__).resolve().parent / "web"
+app = Flask(__name__, static_folder=str(WEB_ROOT / "assets"), static_url_path="/assets")
 lock = threading.RLock()
 auth_lock = threading.RLock()
 tasks: dict[str, dict[str, Any]] = {}
@@ -519,11 +521,11 @@ def save_task_index() -> None:
             task_id: {
                 key: value
                 for key, value in task.items()
-                if key not in {"prompt", "reply_history"}
+                if key not in {"prompt", "reply_history", "turns"}
             }
             for task_id, task in tasks.items()
         }
-    TASK_STATE_FILE.write_text(json.dumps(slim, indent=2), encoding="utf-8")
+        atomic_json_write(TASK_STATE_FILE, slim)
 
 
 def load_task_index() -> None:
@@ -537,6 +539,7 @@ def load_task_index() -> None:
                 if task.get("status") in {"queued", "running"}:
                     task["status"] = "failed"
                     task["summary"] = "Worker restarted while this task was active."
+                    sync_current_turn(task)
                 tasks[task_id] = task
             except Exception as exc:
                 print(f"Could not load task metadata from {task_file}: {exc}", flush=True)
@@ -546,6 +549,9 @@ def load_task_index() -> None:
         loaded = json.loads(TASK_STATE_FILE.read_text(encoding="utf-8"))
         if isinstance(loaded, dict):
             for task_id, task in loaded.items():
+                if task.get("status") in {"queued", "running"}:
+                    task["status"] = "failed"
+                    task["summary"] = "Worker restarted while this task was active."
                 tasks.setdefault(task_id, task)
     except Exception as exc:
         print(f"Could not load task index: {exc}", flush=True)
@@ -902,16 +908,89 @@ def get_task_dir(task_id: str) -> Path:
     return task_root() / task_id
 
 
+TURN_RESULT_FIELDS = (
+    "status", "summary", "details", "question", "started_at", "completed_at",
+    "returncode", "changes", "validation_errors", "lovelace_results", "error",
+)
+CONTINUABLE_STATUSES = frozenset({"completed", "waiting_for_input", "failed", "cancelled"})
+TASK_STATUSES = CONTINUABLE_STATUSES | {"queued", "running"}
+
+
+def atomic_json_write(path: Path, value: Any) -> None:
+    """Replace metadata only after the complete new document has been written."""
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def task_turns(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Adapt legacy records without inventing missing intermediate responses."""
+    if "turns" in task:
+        return copy.deepcopy(task["turns"])
+    turns = [{
+        "turn_id": "legacy", "message": task.get("prompt", ""),
+        "created_at": task.get("created_at", ""), "legacy": True,
+    }]
+    for index, reply in enumerate(task.get("reply_history") or []):
+        turns.append({
+            "turn_id": f"legacy-{index + 1}", "message": reply.get("reply", ""),
+            "created_at": reply.get("at", ""), "legacy": True,
+        })
+    turns[-1].update({key: copy.deepcopy(task[key]) for key in TURN_RESULT_FIELDS if key in task})
+    return turns
+
+
+def sync_current_turn(task: dict[str, Any]) -> None:
+    """Keep this exchange's outcome alongside the compatible task-level result."""
+    turns = task.get("turns") or []
+    if turns and turns[-1].get("turn_id") == task.get("current_turn_id"):
+        turns[-1].update({key: copy.deepcopy(task[key]) for key in TURN_RESULT_FIELDS if key in task})
+        turns[-1]["updated_at"] = task.get("updated_at", utc_now())
+
+
+def new_turn(message: str) -> dict[str, Any]:
+    return {"turn_id": uuid.uuid4().hex, "message": message, "created_at": utc_now(), "status": "queued"}
+
+
+def get_run_dir(task_id: str) -> Path:
+    """Keep each exchange's prompts, output and snapshot in its own directory."""
+    with lock:
+        turn_id = tasks.get(task_id, {}).get("current_turn_id")
+    root = get_task_dir(task_id)
+    return root / "turns" / turn_id if turn_id else root
+
+
+def session_available(session_id: str) -> bool:
+    """Avoid CLI fallback to a fresh conversation when a rollout is missing."""
+    if UUID_RE.fullmatch(session_id) is None:
+        return False
+    return any((CODEX_HOME / "sessions").rglob(f"*-{session_id}.jsonl"))
+
+
+def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, Any]:
+    if summary:
+        fields = ("task_id", "title", "status", "created_at", "updated_at", "summary", "question")
+        result = {key: task.get(key, "") for key in fields}
+        result["summary"] = str(result["summary"])[:240]
+    else:
+        result = copy.deepcopy(task)
+        result["turns"] = task_turns(task)
+        result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
+    result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES
+    return result
+
+
 def update_task(task_id: str, **updates: Any) -> bool:
     with lock:
         task = tasks.setdefault(task_id, {"task_id": task_id})
-        if task.get("cancellation_requested") and updates.get("status") != "cancelled":
+        if task.get("cancellation_requested") and updates.get("status") != "cancelled" and updates.get("cancellation_requested") is not False:
             return False
         task.update(updates)
         task["updated_at"] = utc_now()
+        sync_current_turn(task)
         task_dir = get_task_dir(task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
-        (task_dir / "task.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+        atomic_json_write(task_dir / "task.json", task)
     save_task_index()
     return True
 
@@ -1068,7 +1147,7 @@ def diff_manifests(before: dict[str, Any], after: dict[str, Any]) -> dict[str, l
 
 
 def create_snapshot(task_id: str) -> dict[str, Any]:
-    task_dir = get_task_dir(task_id)
+    task_dir = get_run_dir(task_id)
     snapshot_path = task_dir / "snapshot-before.tar.gz"
     manifest = build_manifest()
     with tarfile.open(snapshot_path, "w:gz") as tar:
@@ -1584,9 +1663,7 @@ def extract_session_id(obj: Any) -> str | None:
 
 
 def build_prompt(user_prompt: str, task_id: str, reply: str | None = None) -> str:
-    reply_text = ""
-    if reply:
-        reply_text = f"\nUser reply for this resumed task:\n{reply}\n"
+    current_request = reply if reply is not None else user_prompt
     return f"""You are Codex running as a Home Assistant add-on worker.
 
 Workspace: /config
@@ -1601,9 +1678,8 @@ At the end, return only an object matching the provided JSON schema:
 - summary: concise result
 - question: use an empty string unless status is "needs_input"
 - details: use an empty string unless there are useful implementation/test notes
-{reply_text}
-User request:
-{user_prompt}
+Current user message:
+{current_request}
 """
 
 
@@ -1758,9 +1834,10 @@ def request_task_cancellation(
                 "updated_at": utc_now(),
             }
         )
+        sync_current_turn(task)
         task_dir = get_task_dir(task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
-        (task_dir / "task.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+        atomic_json_write(task_dir / "task.json", task)
         proc = running_processes.get(task_id)
     save_task_index()
     return True, proc, ""
@@ -1779,9 +1856,10 @@ def publish_cancelled_task_outcome(task_id: str, returncode: int | None = None) 
         if returncode is not None:
             task["returncode"] = returncode
         task["updated_at"] = utc_now()
+        sync_current_turn(task)
         task_dir = get_task_dir(task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
-        (task_dir / "task.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+        atomic_json_write(task_dir / "task.json", task)
         final_task = dict(task)
     save_task_index()
 
@@ -1920,7 +1998,7 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
 def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: str | None = None) -> None:
     if task_cancellation_requested(task_id):
         return
-    task_dir = get_task_dir(task_id)
+    task_dir = get_run_dir(task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
     final_file = task_dir / ("final-resume.json" if reply else "final.json")
     prompt_file = task_dir / ("prompt-resume.txt" if reply else "prompt.txt")
@@ -2172,6 +2250,8 @@ def _run_background_task(
 ) -> None:
     try:
         run_task(task_id, prompt, session_id, reply)
+    except Exception as exc:
+        fail_task_launch(task_id, exc, session_id=session_id, summary="The Codex task could not finish.")
     finally:
         with lock:
             proc = running_processes.get(task_id)
@@ -2213,165 +2293,7 @@ def start_background_task(
 
 @app.get("/")
 def index() -> Response:
-    token_configured = bool(api_token())
-    status = codex_login_status()
-    html = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Codex CLI Worker</title>
-  <style>
-    body {{ font-family: system-ui, sans-serif; margin: 2rem; color: #18212f; background: #f6f8fb; }}
-    main {{ max-width: 860px; margin: auto; }}
-    section {{ background: white; border: 1px solid #d6dde8; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }}
-    code, pre {{ background: #eef2f7; border-radius: 4px; padding: .15rem .3rem; }}
-    input, textarea {{ width: 100%; box-sizing: border-box; margin: .35rem 0 .75rem; padding: .55rem; }}
-    button {{ padding: .55rem .9rem; border: 0; border-radius: 6px; background: #0b63ce; color: white; cursor: pointer; }}
-  </style>
-</head>
-<body>
-<main>
-  <h1>Codex CLI Worker</h1>
-  <section>
-    <p>Worker API authentication: <strong>{"enabled" if token_configured else "not ready"}</strong></p>
-    <p>Codex auth file: <strong>{str(status.get("has_auth_file")).lower()}</strong></p>
-    <p>Codex login status: <strong>{str(status.get("status_ok")).lower()}</strong></p>
-    <p><code>{status.get("message", "")}</code></p>
-  </section>
-  <section>
-    <h2>ChatGPT login</h2>
-    <p>Start the device-code login from here or with the <code>codex_cli.start_login</code> Home Assistant service. The worker will send a persistent notification with a QR code and sign-in link.</p>
-    <button onclick="startLogin()">Start login</button>
-    <button onclick="logoutCodex()" style="background:#5c6675">Log out</button>
-    <pre id="login-result"></pre>
-    <div id="login-card"></div>
-  </section>
-  <section>
-    <h2>AGENTS.md</h2>
-    <textarea id="agents-md" rows="14" spellcheck="false"></textarea>
-    <button onclick="loadAgents()">Load</button>
-    <button onclick="saveAgents()" style="background:#188038">Save</button>
-    <pre id="agents-result"></pre>
-  </section>
-  <section>
-    <h2>Start a task</h2>
-    <label>Prompt</label>
-    <textarea id="prompt" rows="8"></textarea>
-    <button onclick="startTask()">Start</button>
-    <pre id="result"></pre>
-  </section>
-</main>
-<script>
-function workerUrl(path) {{
-  return path.replace(/^\\//, '');
-}}
-function workerHeaders(includeJson = true) {{
-  const headers = {{}};
-  if (includeJson) headers['Content-Type'] = 'application/json';
-  return headers;
-}}
-async function renderJsonResponse(result, res) {{
-  const text = await res.text();
-  try {{
-    result.textContent = JSON.stringify(JSON.parse(text), null, 2);
-  }} catch (err) {{
-    result.textContent = text || ('HTTP ' + res.status);
-  }}
-}}
-function renderLoginCard(auth) {{
-  const card = document.getElementById('login-card');
-  if (!card || !auth) return;
-  const qr = auth.qr_url ? '<p><img src="' + auth.qr_url + '" alt="Codex login QR" style="max-width:260px;background:white;padding:12px;border:1px solid #d6dde8;border-radius:8px"></p>' : '';
-  const link = auth.verification_url ? '<p><a href="' + auth.verification_url + '" target="_blank" rel="noreferrer">Open sign-in page</a></p>' : '';
-  const code = auth.user_code ? '<p>Device code: <code>' + auth.user_code + '</code></p>' : '';
-  card.innerHTML = '<p>Status: <strong>' + (auth.status || 'unknown') + '</strong></p>' + qr + link + code;
-}}
-async function refreshLoginStatus() {{
-  const result = document.getElementById('login-result');
-  try {{
-    const res = await fetch(workerUrl('/auth/status'), {{
-      method: 'GET',
-      headers: workerHeaders(false)
-    }});
-    const data = await res.json();
-    renderLoginCard(data.auth);
-    if (data.auth && ['waiting_for_user', 'starting', 'queued'].includes(data.auth.status)) {{
-      window.setTimeout(refreshLoginStatus, 3000);
-    }}
-  }} catch (err) {{
-    if (result) result.textContent = String(err);
-  }}
-}}
-async function startTask() {{
-  const prompt = document.getElementById('prompt').value;
-  const result = document.getElementById('result');
-  const res = await fetch(workerUrl('/tasks'), {{
-    method: 'POST',
-    headers: workerHeaders(),
-    body: JSON.stringify({{ prompt }})
-  }});
-  await renderJsonResponse(result, res);
-}}
-async function loadAgents() {{
-  const result = document.getElementById('agents-result');
-  result.textContent = 'Loading...';
-  const res = await fetch(workerUrl('/agents'), {{
-    method: 'GET',
-    headers: workerHeaders(false)
-  }});
-  const text = await res.text();
-  try {{
-    const data = JSON.parse(text);
-    if (!res.ok || !data.ok) {{
-      result.textContent = JSON.stringify(data, null, 2);
-      return;
-    }}
-    document.getElementById('agents-md').value = data.content || '';
-    result.textContent = data.exists ? 'Loaded /config/AGENTS.md' : 'AGENTS.md does not exist yet.';
-  }} catch (err) {{
-    result.textContent = text || ('HTTP ' + res.status);
-  }}
-}}
-async function saveAgents() {{
-  const result = document.getElementById('agents-result');
-  const content = document.getElementById('agents-md').value;
-  result.textContent = 'Saving...';
-  const res = await fetch(workerUrl('/agents'), {{
-    method: 'POST',
-    headers: workerHeaders(),
-    body: JSON.stringify({{ content }})
-  }});
-  await renderJsonResponse(result, res);
-}}
-async function startLogin() {{
-  const result = document.getElementById('login-result');
-  result.textContent = 'Starting login...';
-  const res = await fetch(workerUrl('/auth/start'), {{
-    method: 'POST',
-    headers: workerHeaders(),
-    body: JSON.stringify({{}})
-  }});
-  await renderJsonResponse(result, res);
-  refreshLoginStatus();
-}}
-async function logoutCodex() {{
-  const result = document.getElementById('login-result');
-  result.textContent = 'Logging out...';
-  const res = await fetch(workerUrl('/auth/logout'), {{
-    method: 'POST',
-    headers: workerHeaders(),
-    body: JSON.stringify({{}})
-  }});
-  await renderJsonResponse(result, res);
-  refreshLoginStatus();
-}}
-refreshLoginStatus();
-loadAgents();
-</script>
-</body>
-</html>"""
-    return Response(html, mimetype="text/html")
+    return Response((WEB_ROOT / "index.html").read_text(encoding="utf-8"), mimetype="text/html")
 
 
 @app.get("/health")
@@ -2399,7 +2321,8 @@ def health() -> Response:
 def status() -> Response:
     refresh_usage_status_async(force=False)
     with lock:
-        task_values = list(tasks.values())
+        task_values = sorted(tasks.values(), key=lambda task: task.get("updated_at") or task.get("created_at", ""))
+        latest = {key: copy.deepcopy(value) for key, value in task_values[-1].items() if key != "turns"} if task_values else None
     return jsonify(
         {
             "ok": True,
@@ -2407,7 +2330,7 @@ def status() -> Response:
             "active_task_count": active_task_count(),
             "task_count": active_task_count(),
             "total_task_count": len(task_values),
-            "latest_task": task_values[-1] if task_values else None,
+            "latest_task": latest,
             "codex_login": codex_login_status(),
             "auth_flow": auth_status_payload(),
             "codex_usage": usage_status_payload(),
@@ -2471,20 +2394,46 @@ def logout_auth() -> Response:
 @app.get("/tasks")
 @require_auth
 def list_tasks() -> Response:
+    try:
+        limit = int(request.args["limit"]) if "limit" in request.args else None
+        offset = int(request.args.get("offset", "0"))
+        if (limit is not None and not 1 <= limit <= 500) or offset < 0:
+            raise ValueError
+    except ValueError:
+        return jsonify({"ok": False, "error": "limit must be 1-500 and offset must be non-negative"}), 400
+    status = request.args.get("status")
+    order = request.args.get("order", "created_asc")
+    if status and status not in TASK_STATUSES:
+        return jsonify({"ok": False, "error": "invalid task status"}), 400
+    if order not in {"created_asc", "updated_desc"}:
+        return jsonify({"ok": False, "error": "invalid task order"}), 400
     with lock:
-        ordered = sorted(tasks.values(), key=lambda item: item.get("created_at", ""))
-    return jsonify({"ok": True, "tasks": ordered})
+        filtered = [task for task in tasks.values() if not status or task.get("status") == status]
+        key = "updated_at" if order == "updated_desc" else "created_at"
+        ordered = sorted(filtered, key=lambda item: (item.get(key) or item.get("created_at", ""), item["task_id"]), reverse=order == "updated_desc")
+        page = ordered[offset:offset + limit] if limit is not None else ordered[offset:]
+        # Preserve the original unfiltered response shape for existing automations.
+        summaries = request.args.get("summary") == "true"
+        result = [task_payload(task, summary=summaries) for task in page]
+        active = _active_task_id_locked()
+    next_offset = offset + len(page)
+    return jsonify({"ok": True, "tasks": result, "total": len(ordered),
+                    "next_offset": next_offset if next_offset < len(ordered) else None,
+                    "active_task_id": active})
 
 
 @app.post("/tasks")
 @require_auth
 def create_task() -> Response:
-    payload = request.get_json(silent=True) or {}
-    prompt = str(payload.get("prompt") or "").strip()
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), str):
+        return jsonify({"ok": False, "error": "prompt must be text"}), 400
+    prompt = payload["prompt"].strip()
     if not prompt:
         return jsonify({"ok": False, "error": "prompt is required"}), 400
     task_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
     title = str(payload.get("title") or prompt[:80])
+    turn = new_turn(prompt)
     with lock:
         active = _active_task_id_locked()
         if active:
@@ -2504,6 +2453,8 @@ def create_task() -> Response:
             cancellation_event_emitted=False,
             title=title,
             prompt=prompt,
+            turns=[turn],
+            current_turn_id=turn["turn_id"],
             created_at=utc_now(),
             summary="",
             question="",
@@ -2528,9 +2479,10 @@ def create_task() -> Response:
 def get_task(task_id: str) -> Response:
     with lock:
         task = tasks.get(task_id)
-    if not task:
+        result = task_payload(task) if task else None
+    if result is None:
         return jsonify({"ok": False, "error": "task not found"}), 404
-    return jsonify({"ok": True, "task": task})
+    return jsonify({"ok": True, "task": result})
 
 
 @app.get("/tasks/<task_id>/log")
@@ -2563,56 +2515,60 @@ def cancel_task(task_id: str) -> Response:
 @app.post("/tasks/<task_id>/reply")
 @require_auth
 def reply_task(task_id: str) -> Response:
-    payload = request.get_json(silent=True) or {}
-    reply = str(payload.get("reply") or "").strip()
-    if not reply:
-        return jsonify({"ok": False, "error": "reply is required"}), 400
+    return continue_task_request(task_id, "reply", waiting_only=True)
+
+
+@app.post("/tasks/<task_id>/continue")
+@require_auth
+def continue_task(task_id: str) -> Response:
+    return continue_task_request(task_id, "message")
+
+
+def continue_task_request(task_id: str, field: str, *, waiting_only: bool = False) -> Response:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get(field), str) or not payload[field].strip():
+        return jsonify({"ok": False, "error": f"{field} must be non-empty text"}), 400
+    message = payload[field].strip()
     with lock:
         task = tasks.get(task_id)
-    if not task:
-        return jsonify({"ok": False, "error": "task not found"}), 404
-    session_id = str(task.get("session_id") or "")
-    if not session_id:
-        return jsonify({"ok": False, "error": "task has no Codex session id to resume"}), 409
-    if task.get("status") != "waiting_for_input":
-        return jsonify({"ok": False, "error": "task is not waiting for input"}), 409
-    reply_history = list(task.get("reply_history") or [])
-    reply_history.append({"at": utc_now(), "reply": reply})
-    with lock:
+        if not task:
+            return jsonify({"ok": False, "error": "task not found"}), 404
+        if waiting_only and task.get("status") != "waiting_for_input":
+            return jsonify({"ok": False, "error": "task is not waiting for input"}), 409
+        if task.get("status") not in CONTINUABLE_STATUSES:
+            return jsonify({"ok": False, "error": "task is still active"}), 409
+        session_id = str(task.get("session_id") or "")
+        if not session_id or not session_available(session_id):
+            return jsonify({"ok": False, "error": "The saved Codex session is unavailable. Start a new chat and include the context you need."}), 409
         active = _active_task_id_locked()
         if active:
-            return jsonify(
-                {
-                    "ok": False,
-                    "error": "another task is already running",
-                    "active_task_id": active,
-                }
-            ), 409
+            return jsonify({"ok": False, "error": "another task is already running", "active_task_id": active}), 409
+        turns = task_turns(task)
+        turn = new_turn(message)
+        turns.append(turn)
+        incomplete = task.get("history_incomplete", "turns" not in task)
+        reply_history = list(task.get("reply_history") or [])
+        reply_history.append({"at": turn["created_at"], "reply": message})
         active_task_runners.add(task_id)
+        try:
+            update_task(
+                task_id, status="queued", cancellation_requested=False,
+                cancellation_event_emitted=False, turns=turns,
+                current_turn_id=turn["turn_id"], history_incomplete=incomplete,
+                reply_history=reply_history, summary="", question="", details="",
+                error="", started_at="", completed_at="", returncode=None,
+                changes={}, validation_errors=[], lovelace_results=[],
+            )
+        except Exception as exc:
+            record_background_start_failure(task_id, exc)
+            return jsonify({"ok": False, "task_id": task_id, "error": "Could not save the new message"}), 500
     try:
-        update_task(
-            task_id,
-            status="queued",
-            cancellation_requested=False,
-            cancellation_event_emitted=False,
-            reply_history=reply_history,
-        )
-        start_background_task(
-            task_id,
-            str(task.get("prompt") or ""),
-            session_id=session_id,
-            reply=reply,
-        )
+        start_background_task(task_id, str(task.get("prompt") or ""), session_id=session_id, reply=message)
     except Exception as exc:
         record_background_start_failure(task_id, exc)
-        return jsonify(
-            {
-                "ok": False,
-                "error": "could not start the Codex task worker",
-                "task_id": task_id,
-            }
-        ), 500
-    return jsonify({"ok": True, "task_id": task_id, "status": "queued"})
+        return jsonify({"ok": False, "task_id": task_id, "error": "Could not start the task worker"}), 500
+    return jsonify({"ok": True, "task_id": task_id, "turn_id": turn["turn_id"], "status": "queued"})
+
 
 
 def main() -> None:

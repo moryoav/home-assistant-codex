@@ -61,5 +61,47 @@
       "title": "Codex is not signed in",
       "description": "The Codex worker is reachable, but Codex CLI is not signed in. Start the Codex sign-in flow from the add-on web UI or by running the `codex_cli.start_login` action."
     }
+  },
+  "services": {
+    "continue_task": {
+      "name": "Continue task",
+      "description": "Send a new message to a saved Codex conversation.",
+      "fields": {
+        "task_id": {
+          "name": "Task ID",
+          "description": "The saved task to continue."
+        },
+        "message": {
+          "name": "Message",
+          "description": "The follow-up message for Codex."
+        }
+      }
+    },
+    "list_tasks": {
+      "name": "List tasks",
+      "description": "Get all tasks or a filtered page of saved conversations.",
+      "fields": {
+        "limit": {
+          "name": "Limit",
+          "description": "Maximum number of tasks to return (1–500). Omit to return all tasks."
+        },
+        "offset": {
+          "name": "Offset",
+          "description": "Number of matching tasks to skip."
+        },
+        "status": {
+          "name": "Status",
+          "description": "Only return tasks with this status."
+        },
+        "order": {
+          "name": "Order",
+          "description": "Order by creation time (oldest first) or latest activity (newest first)."
+        },
+        "summary": {
+          "name": "Compact summaries",
+          "description": "Return short entries instead of full task records."
+        }
+      }
+    }
   }
 }

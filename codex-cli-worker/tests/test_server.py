@@ -707,6 +707,7 @@ class BackgroundStartFailureTests(unittest.TestCase):
             root = Path(temp_dir)
             with (
                 patch.object(server, "get_task_dir", side_effect=lambda value: root / value),
+                patch.object(server, "session_available", return_value=True),
                 patch.object(server, "save_task_index"),
                 patch.object(server, "api_token", return_value="test-token"),
                 patch.object(server.threading.Thread, "start", side_effect=RuntimeError("thread unavailable")),

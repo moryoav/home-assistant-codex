@@ -34,11 +34,12 @@ All entities are diagnostic entities on the Codex device.
 ## Actions
 
 - `codex_cli.start_task`: Start a Codex task. Requires `prompt`.
+- `codex_cli.continue_task`: Continue a saved task. Requires `task_id` and `message`. Supports completed, failed, cancelled, and waiting tasks with an available Codex session.
 - `codex_cli.start_login`: Start the Codex sign-in flow; optional `force`.
 - `codex_cli.logout`: Remove saved Codex CLI credentials from the worker.
 - `codex_cli.get_login_status`: Return current sign-in status.
-- `codex_cli.list_tasks`: Return known tasks.
-- `codex_cli.get_task`: Return one task by task ID.
+- `codex_cli.list_tasks`: Return all tasks or filter with `limit`, `offset`, `status`, `order`, and `summary`. Use `order: updated_desc` for recent activity and `summary: true` for compact entries.
+- `codex_cli.get_task`: Return one task by task ID, including its conversation in `turns`.
 - `codex_cli.cancel_task`: Cancel one task by task ID.
 - `codex_cli.reply_task`: Send a reply to a waiting task.
 

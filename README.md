@@ -26,11 +26,13 @@ Codex runs the task and sends a Home Assistant notification when it finishes:
 This repository contains two pieces:
 
 - `codex-cli-worker`: a Home Assistant app/add-on that runs Codex CLI with read-write access to `/config`.
-- `custom_components/codex_cli`: a Home Assistant custom integration that exposes entities and actions for starting tasks, checking status, signing in, cancelling work, and replying when Codex needs input.
+- `custom_components/codex_cli`: a Home Assistant custom integration that exposes entities and actions for starting tasks, checking status, signing in, cancelling work, and continuing saved conversations.
 
 ## What It Does
 
 - Starts Codex tasks from Home Assistant actions, scripts, automations, or Assist/LLM tools.
+- Keeps saved conversations so you can return to an earlier chat and continue with its context.
+- Provides a chat UI with a resizable sidebar, mobile navigation, and light/dark themes.
 - Mounts the Home Assistant config folder as `/config` inside the worker app.
 - Runs tasks non-interactively and stores task logs/results under `/config/codex_tasks`.
 - Supports Codex device-code sign-in through Home Assistant persistent notifications.
@@ -189,6 +191,7 @@ The integration exposes these Home Assistant actions:
 - `codex_cli.get_task`
 - `codex_cli.cancel_task`
 - `codex_cli.reply_task`
+- `codex_cli.continue_task`
 
 The integration also provides diagnostic sensors for auth status, active tasks, last task, and the usage windows reported by Codex `/status`. Depending on the account and plan, Codex may report both 5-hour and weekly limits or only a weekly limit. The existing 5-hour entities remain available for automation compatibility; when that window is omitted their state is `unknown` and their `reported` attribute is `false`. Reported usage sensors expose numeric percent states plus ISO datetime reset attributes when reset times are present.
 
@@ -202,6 +205,54 @@ data:
   prompt: Check my Home dashboard for broken cards and suggest fixes.
 response_variable: codex_result
 ```
+
+## Conversations
+
+Open the worker web UI to browse saved chats in the left sidebar. Select a chat to read its messages and continue with the same Codex context, or choose **New chat** to start a separate conversation. Drag the sidebar divider to resize it, or focus it and use the arrow keys. On phones, use the menu button to open the chat list. Account sign-in and the AGENTS.md editor are under **Settings**.
+
+The sidebar shows recently active chats first and includes **Load older chats**. Messages, responses, and per-exchange results are saved across worker restarts. Older tasks remain available, but responses overwritten before this feature was added cannot be recovered by the new history view.
+
+Available from **0.1.46**. Update both the **Codex CLI Worker** app and the **Codex** HACS integration for the new actions.
+
+### Chat UI preview
+
+Screenshots use demo conversations from the local test fixture.
+
+![Desktop chat UI with a resizable conversation sidebar and saved messages](examples/chat-ui/desktop.png)
+
+<p>
+  <img src="examples/chat-ui/mobile.png" alt="Mobile chat UI showing a saved conversation and reply box" width="300">
+  <img src="examples/chat-ui/mobile-dark.png" alt="Mobile chat UI in dark mode" width="300">
+</p>
+
+### Home Assistant actions
+
+List the 10 most recently active tasks:
+
+```yaml
+action: codex_cli.list_tasks
+data:
+  limit: 10
+  order: updated_desc
+  summary: true
+response_variable: recent_chats
+```
+
+Optional filters are `limit` (1–500), `offset` (zero-based), `status`, `order` (`created_asc` or `updated_desc`), and `summary`. The response includes `tasks`, `total`, `next_offset`, and `active_task_id`. With no options, the action keeps returning all tasks, oldest-created first. Use `codex_cli.get_task` with a `task_id` to retrieve the full conversation in `task.turns`.
+
+Continue a previous task:
+
+```yaml
+action: codex_cli.continue_task
+data:
+  task_id: "YOUR_TASK_ID"
+  message: "Apply the first suggestion from your previous answer."
+response_variable: continued_chat
+```
+
+Completed, failed, cancelled, and waiting tasks can continue if their saved Codex session is available. The task ID stays the same. Each message adds a new exchange, and the task-level status and result describe the latest exchange. Only one task can run at a time. A missing session produces an error instead of silently starting a new conversation.
+
+The existing `codex_cli.reply_task` action still answers tasks waiting for input. New tasks do not automatically inherit context from other chats.
 
 ## Task Output
 

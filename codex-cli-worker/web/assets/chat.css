@@ -469,6 +469,225 @@ textarea::placeholder {
 #compose-hint {
   font-size: 10px;
   color: var(--muted);
+  text-align: center;
+  margin: 8px 0 0;
+  line-height: 1.5;
+}
+.chat-picker {
+  position: relative;
+  min-width: 0;
+}
+.picker-pill {
+  display: flex;
+  align-items: center;
+  background: var(--surface);
+  border-radius: 20px;
+  max-width: 100%;
+}
+.picker-pill button {
+  background: transparent;
+  color: var(--text);
+  padding: 7px 4px 7px 12px;
+  font-size: 12px;
+  border-radius: 20px;
+  white-space: nowrap;
+  min-height: 34px;
+}
+.picker-pill #effort-button {
+  color: var(--muted);
+  padding: 7px 10px 7px 3px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.picker-chevron {
+  font-size: 14px;
+}
+.picker-popover {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  width: min(256px, calc(100vw - 56px));
+  max-height: min(360px, 55dvh);
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow:
+    0 5px 22px #00000012,
+    0 1px 4px #00000008;
+  padding: 6px;
+  z-index: 10;
+}
+.picker-heading {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 5px 6px 6px;
+}
+.model-option {
+  display: block;
+  text-align: left;
+  width: 100%;
+  border-radius: 11px;
+  padding: 8px 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  min-height: 34px;
+}
+.model-option:hover,
+.model-option:focus-visible {
+  background: var(--surface);
+}
+.model-option:first-child {
+  background: var(--surface);
+}
+.model-option-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.model-option small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 3px;
+}
+.model-check {
+  font-size: 15px;
+  line-height: 1;
+}
+.effort-popover {
+  padding: 10px 12px;
+}
+.effort-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.effort-heading > div {
+  flex: 1;
+  text-align: center;
+  padding-top: 2px;
+}
+.effort-heading label {
+  color: #467ced;
+  font-size: 13px;
+  font-weight: 600;
+}
+#effort-model {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.effort-bolt {
+  color: var(--muted);
+  width: 20px;
+  height: 20px;
+  margin: 3px 2px;
+}
+#effort-reset {
+  background: transparent;
+  color: var(--muted);
+  padding: 1px 3px;
+  font-size: 20px;
+  width: 24px;
+}
+.effort-track {
+  position: relative;
+  margin: 15px 0 0;
+  height: 26px;
+}
+#effort-slider {
+  --effort-fill: 33%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  position: relative;
+  width: 100%;
+  height: 26px;
+  margin: 0;
+  cursor: pointer;
+  border-radius: 20px;
+}
+#effort-slider::-webkit-slider-runnable-track {
+  height: 24px;
+  border-radius: 20px;
+  background: linear-gradient(
+    to right,
+    #5284f4 var(--effort-fill),
+    var(--hover) var(--effort-fill)
+  );
+}
+#effort-slider::-moz-range-track {
+  height: 24px;
+  border-radius: 20px;
+  background: var(--hover);
+}
+#effort-slider::-moz-range-progress {
+  height: 24px;
+  border-radius: 20px;
+  background: #5284f4;
+}
+#effort-slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -1px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid #0000000a;
+  box-shadow: 0 1px 4px #0002;
+  position: relative;
+  z-index: 2;
+}
+#effort-slider::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid #0000000a;
+  box-shadow: 0 1px 4px #0002;
+}
+#effort-dots {
+  position: absolute;
+  inset: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+  z-index: 1;
+}
+#effort-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #9999;
+}
+#effort-description {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 9px 1px 0;
+}
+@media (prefers-color-scheme: dark) {
+  .effort-heading label {
+    color: #8cafff;
+  }
+}
+@media (max-width: 400px) {
+  .picker-pill button {
+    font-size: 11px;
+    padding-left: 9px;
+  }
+  .picker-pill #effort-button {
+    gap: 5px;
+    padding-right: 8px;
+  }
 }
 #send {
   font-size: 22px;
@@ -652,7 +871,6 @@ dialog label {
     max-width: 94%;
   }
   #compose-hint {
-    max-width: 80%;
     line-height: 1.5;
   }
   .footnote {

@@ -76,6 +76,96 @@ class ConversationTests(unittest.TestCase):
                 self.assertEqual(server.tasks[task_id]["status"], "queued")
                 self.finish(task_id)
 
+    def test_model_settings_persist_and_apply_to_new_and_resumed_runs(self):
+        settings = {"model": "gpt-6-astra", "reasoning_effort": "ultra"}
+        response = self.post("/tasks", {"prompt": "Review", "chat_settings": settings})
+        self.assertEqual(response.status_code, 200)
+        task_id = response.json["task_id"]
+        args = server.build_codex_args(task_id, self.root / "prompt", self.root / "final", None)
+        self.assertEqual(args[args.index("--model") + 1], "gpt-6-astra")
+        self.assertIn('model_reasoning_effort="ultra"', args)
+        self.finish(task_id)
+        first = copy.deepcopy(server.tasks[task_id]["turns"][0])
+        settings = {"model": "gpt-5.6-luna", "reasoning_effort": "max"}
+        with patch.object(server, "utc_now", return_value="2027-01-01T00:00:00+00:00"):
+            response = self.post(f"/tasks/{task_id}/settings", {"chat_settings": settings})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(server.tasks[task_id]["turns"][0], first)
+        server.tasks.clear()
+        server.load_task_index()
+        task = self.client.get(f"/tasks/{task_id}", headers=self.headers).json["task"]
+        self.assertEqual(task["chat_settings"], settings)
+        self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "Next"}).status_code, 200)
+        args = server.build_codex_args(task_id, self.root / "prompt", self.root / "final", self.session_id)
+        self.assertEqual(args[args.index("--model") + 1], "gpt-5.6-luna")
+        self.assertIn('model_reasoning_effort="max"', args)
+        self.assertEqual(args[-3:], ["resume", self.session_id, "-"])
+        self.assertEqual(server.tasks[task_id]["turns"][0], first)
+
+    def test_settings_inherit_defaults_without_leaking_between_chats(self):
+        options = {"codex_model": "gpt-5.6-sol", "model_reasoning_effort": "high"}
+        with patch.object(server, "read_options", return_value=options):
+            task_id = self.create()
+            self.assertEqual(server.tasks[task_id]["turns"][0]["execution_settings"], {"model": "gpt-5.6-sol", "reasoning_effort": "high"})
+            # An option edit after queuing must not change the queued run.
+            options["codex_model"] = "gpt-5.6-terra"
+            args = server.build_codex_args(task_id, self.root / "p", self.root / "f", None)
+            self.assertEqual(args[args.index("--model") + 1], "gpt-5.6-sol")
+            self.finish(task_id)
+            self.post(f"/tasks/{task_id}/settings", {"chat_settings": {"model": "gpt-6-astra", "reasoning_effort": "max"}})
+            other = self.create("Separate chat")
+            self.assertEqual(server.tasks[other]["chat_settings"], server.DEFAULT_CHAT_SETTINGS)
+            self.assertEqual(server.tasks[other]["turns"][0]["execution_settings"]["model"], "gpt-5.6-terra")
+            self.finish(other)
+            response = self.post(f"/tasks/{task_id}/continue", {"message": "Reset", "chat_settings": {"model": None, "reasoning_effort": None}})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"], {"model": "gpt-5.6-terra", "reasoning_effort": "high"})
+            self.assertEqual(options, {"codex_model": "gpt-5.6-terra", "model_reasoning_effort": "high"})
+
+    def test_invalid_settings_are_rejected_without_mutation(self):
+        invalid = [None, [], "high", {"model": []}, {"model": "invented"},
+                   {"reasoning_effort": {}}, {"reasoning_effort": "minimal"},
+                   {"model": "gpt-5.5", "reasoning_effort": "max"},
+                   {"model": "gpt-5.6-luna", "reasoning_effort": "ultra"},
+                   {"codex_sandbox": "danger-full-access"}]
+        for settings in invalid:
+            with self.subTest(settings=settings):
+                self.assertEqual(self.post("/tasks", {"prompt": "Review", "chat_settings": settings}).status_code, 400)
+        self.assertFalse(server.tasks)
+        self.runner.assert_not_called()
+        task_id = self.create()
+        self.finish(task_id)
+        before = copy.deepcopy(server.tasks[task_id])
+        self.runner.reset_mock()
+        for settings in invalid:
+            self.assertEqual(self.post(f"/tasks/{task_id}/settings", {"chat_settings": settings}).status_code, 400)
+            self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "Next", "chat_settings": settings}).status_code, 400)
+        self.assertEqual(server.tasks[task_id], before)
+        self.runner.assert_not_called()
+
+    def test_settings_auth_active_task_guard_and_catalog(self):
+        self.assertEqual(self.client.get("/chat-options").status_code, 401)
+        self.assertEqual(self.client.post("/tasks/missing/settings", json={"chat_settings": {}}).status_code, 401)
+        self.assertEqual(self.post("/tasks/missing/settings", {"chat_settings": {}}).status_code, 404)
+        task_id = self.create()
+        self.assertEqual(self.post(f"/tasks/{task_id}/settings", {"chat_settings": {}}).status_code, 409)
+        catalog = self.client.get("/chat-options", headers=self.headers).json
+        self.assertEqual(len(catalog["models"]), 5)
+        self.assertNotIn("HA_TOKEN", json.dumps(catalog))
+        self.assertEqual(catalog["models"][-1]["efforts"], ["low", "medium", "high", "xhigh"])
+        with patch.object(server, "read_options", return_value={"codex_model": "gpt-6-astra", "model_reasoning_effort": "minimal"}):
+            catalog = self.client.get("/chat-options", headers=self.headers).json
+            self.assertEqual(catalog["defaults"]["reasoning_effort"], "medium")
+
+    def test_failed_settings_write_keeps_previous_selection(self):
+        task_id = self.create()
+        self.finish(task_id)
+        before = copy.deepcopy(server.tasks[task_id])
+        with patch.object(server, "atomic_json_write", side_effect=OSError("disk full")):
+            response = self.post(f"/tasks/{task_id}/settings", {"chat_settings": {"model": "gpt-6-astra"}})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(server.tasks[task_id], before)
+
     def test_legacy_reply_remains_waiting_only(self):
         task_id = self.create()
         self.finish(task_id)

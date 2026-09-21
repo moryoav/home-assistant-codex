@@ -55,6 +55,17 @@ DEFAULT_OPTIONS = {
     "HA_TOKEN": "",
 }
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+# Supported choices in the bundled CLI 0.154.0 model catalog. Availability still
+# depends on the signed-in account; the CLI reports unavailable models normally.
+CHAT_MODELS = (
+    ("gpt-6-astra", "GPT-6 Astra", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-5.6-sol", "GPT-5.6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-5.6-terra", "GPT-5.6 Terra", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-5.6-luna", "GPT-5.6 Luna", ("low", "medium", "high", "xhigh", "max")),
+    ("gpt-5.5", "GPT-5.5", ("low", "medium", "high", "xhigh")),
+)
+CHAT_MODEL_EFFORTS = {model: efforts for model, _, efforts in CHAT_MODELS}
+DEFAULT_CHAT_SETTINGS = {"model": None, "reasoning_effort": None}
 
 AGENTS_MAX_BYTES = 256 * 1024
 SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024
@@ -260,6 +271,37 @@ def model_reasoning_effort(options: dict[str, Any]) -> str:
     if effort not in REASONING_EFFORTS:
         return DEFAULT_OPTIONS["model_reasoning_effort"]
     return effort
+
+
+def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+    """Resolve inheritance once per turn, without changing shared options."""
+    model = settings.get("model") or str(options.get("codex_model") or "default")
+    if model == "gpt-5.3-codex":
+        model = "default"
+    efforts = CHAT_MODEL_EFFORTS.get(model, ("low", "medium", "high", "xhigh"))
+    effort = settings.get("reasoning_effort")
+    if effort is not None and effort not in efforts:
+        raise ValueError("The selected reasoning level is not supported by this model.")
+    if effort is None:
+        effort = model_reasoning_effort(options)
+        # A legacy global setting may not suit an explicitly selected model.
+        if model in CHAT_MODEL_EFFORTS and effort not in efforts:
+            effort = "medium"
+    return {"model": model, "reasoning_effort": effort}
+
+
+def parse_chat_settings(payload: dict[str, Any], task: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = payload.get("chat_settings", (task or {}).get("chat_settings", DEFAULT_CHAT_SETTINGS))
+    if not isinstance(settings, dict) or set(settings) - set(DEFAULT_CHAT_SETTINGS):
+        raise ValueError("chat_settings must contain only model and reasoning_effort.")
+    settings = {**DEFAULT_CHAT_SETTINGS, **settings}
+    model, effort = settings["model"], settings["reasoning_effort"]
+    if model is not None and (not isinstance(model, str) or model not in CHAT_MODEL_EFFORTS):
+        raise ValueError("Select a supported model or use the add-on default.")
+    if effort is not None and (not isinstance(effort, str) or effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}):
+        raise ValueError("Select a supported reasoning level or use the add-on default.")
+    resolve_chat_settings(settings, read_options())
+    return settings
 
 
 def codex_binary_path() -> str | None:
@@ -974,6 +1016,7 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
         result["summary"] = str(result["summary"])[:240]
     else:
         result = copy.deepcopy(task)
+        result["chat_settings"] = copy.deepcopy(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
         result["turns"] = task_turns(task)
         result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
     result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES
@@ -1685,6 +1728,12 @@ Current user message:
 
 def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_id: str | None) -> list[str]:
     options = read_options()
+    with lock:
+        task = tasks.get(task_id, {})
+        turns = task.get("turns") or []
+        execution = copy.deepcopy(turns[-1].get("execution_settings")) if turns else None
+    if execution is None:
+        execution = resolve_chat_settings(task.get("chat_settings", DEFAULT_CHAT_SETTINGS), options)
     args = [
         CODEX_BINARY,
         "exec",
@@ -1699,12 +1748,12 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
         "--output-last-message",
         str(final_file),
     ]
-    model = str(options.get("codex_model") or "").strip()
+    model = execution["model"]
     if model in {"default", "gpt-5.3-codex"}:
         model = ""
     if model:
         args.extend(["--model", model])
-    args.extend(["--config", f'model_reasoning_effort="{model_reasoning_effort(options)}"'])
+    args.extend(["--config", f'model_reasoning_effort="{execution["reasoning_effort"]}"'])
     if session_id:
         args.extend(["resume", session_id, "-"])
     else:
@@ -2422,6 +2471,49 @@ def list_tasks() -> Response:
                     "active_task_id": active})
 
 
+@app.get("/chat-options")
+@require_auth
+def chat_options() -> Response:
+    options = read_options()
+    default = resolve_chat_settings(DEFAULT_CHAT_SETTINGS, options)
+    return jsonify({
+        "ok": True,
+        "defaults": default,
+        "models": [{"id": model, "label": label, "efforts": efforts} for model, label, efforts in CHAT_MODELS],
+        "default_efforts": CHAT_MODEL_EFFORTS.get(default["model"], ("low", "medium", "high", "xhigh")),
+    })
+
+
+@app.post("/tasks/<task_id>/settings")
+@require_auth
+def save_chat_settings(task_id: str) -> Response:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or "chat_settings" not in payload:
+        return jsonify({"ok": False, "error": "chat_settings is required"}), 400
+    with lock:
+        task = tasks.get(task_id)
+        if task is None:
+            return jsonify({"ok": False, "error": "task not found"}), 404
+        if task.get("status") in {"queued", "running"} or task_id in _active_task_ids_locked():
+            return jsonify({"ok": False, "error": "Wait for this task to finish before changing its settings."}), 409
+        try:
+            settings = parse_chat_settings(payload, task)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        # Changing the next run's settings must not rewrite the previous turn or
+        # move a conversation to the top of the recently active list.
+        updated = {**task, "chat_settings": settings}
+        try:
+            task_dir = get_task_dir(task_id)
+            task_dir.mkdir(parents=True, exist_ok=True)
+            atomic_json_write(task_dir / "task.json", updated)
+        except OSError:
+            return jsonify({"ok": False, "error": "Could not save conversation settings. Try again."}), 500
+        tasks[task_id] = updated
+        save_task_index()
+    return jsonify({"ok": True, "chat_settings": settings})
+
+
 @app.post("/tasks")
 @require_auth
 def create_task() -> Response:
@@ -2431,9 +2523,15 @@ def create_task() -> Response:
     prompt = payload["prompt"].strip()
     if not prompt:
         return jsonify({"ok": False, "error": "prompt is required"}), 400
+    try:
+        settings = parse_chat_settings(payload)
+        execution = resolve_chat_settings(settings, read_options())
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     task_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
     title = str(payload.get("title") or prompt[:80])
     turn = new_turn(prompt)
+    turn["execution_settings"] = execution
     with lock:
         active = _active_task_id_locked()
         if active:
@@ -2453,6 +2551,7 @@ def create_task() -> Response:
             cancellation_event_emitted=False,
             title=title,
             prompt=prompt,
+            chat_settings=settings,
             turns=[turn],
             current_turn_id=turn["turn_id"],
             created_at=utc_now(),
@@ -2543,8 +2642,14 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
         active = _active_task_id_locked()
         if active:
             return jsonify({"ok": False, "error": "another task is already running", "active_task_id": active}), 409
+        try:
+            settings = parse_chat_settings(payload, task)
+            execution = resolve_chat_settings(settings, read_options())
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         turns = task_turns(task)
         turn = new_turn(message)
+        turn["execution_settings"] = execution
         turns.append(turn)
         incomplete = task.get("history_incomplete", "turns" not in task)
         reply_history = list(task.get("reply_history") or [])
@@ -2553,6 +2658,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
         try:
             update_task(
                 task_id, status="queued", cancellation_requested=False,
+                chat_settings=settings,
                 cancellation_event_emitted=False, turns=turns,
                 current_turn_id=turn["turn_id"], history_incomplete=incomplete,
                 reply_history=reply_history, summary="", question="", details="",

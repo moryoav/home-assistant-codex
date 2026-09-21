@@ -214,6 +214,10 @@ The sidebar shows recently active chats first and includes **Load older chats**.
 
 From **0.1.47**, the sidebar also shows the remaining **5h** and **7d** account quota below **Home Assistant workspace**. Values refresh automatically; hover over a percentage to see its reset time when available. While a task is running, the display identifies the last known quota.
 
+From **0.1.48**, choose a **model and reasoning level for each conversation** using the pill below the message box. Click the model name to open the model menu, or the reasoning label to open the blue slider. Choices are saved for that chat and apply to its next message, including when continuing a saved conversation. New chats start with the add-on defaults. Choose **Default** in the model menu or the reset button in the reasoning picker to inherit the corresponding add-on setting again.
+
+The reasoning slider adjusts to the selected model: GPT-6 Astra and GPT-5.6 Sol/Terra support Low through Ultra; Luna supports Low through Max; GPT-5.5 supports Low through Extra High. Ultra allows automatic task delegation. With an unspecified default model, the slider offers Low through Extra High. Switching to a model that does not support the current reasoning selection resets reasoning to the add-on default, or Medium if that default is incompatible. Model access depends on the signed-in account. Settings can be changed while the conversation is idle.
+
 Available from **0.1.46**. Update both the **Codex CLI Worker** app and the **Codex** HACS integration for the new actions.
 
 ### Chat UI preview
@@ -225,6 +229,11 @@ Screenshots use demo conversations from the local test fixture.
 <p>
   <img src="examples/chat-ui/mobile.png" alt="Mobile chat UI showing a saved conversation and reply box" width="300">
   <img src="examples/chat-ui/mobile-dark.png" alt="Mobile chat UI in dark mode" width="300">
+</p>
+
+<p>
+  <img src="examples/chat-ui/model-picker.png" alt="Per-conversation model menu" width="300">
+  <img src="examples/chat-ui/reasoning-picker.png" alt="Per-conversation reasoning slider" width="300">
 </p>
 
 ### Home Assistant actions

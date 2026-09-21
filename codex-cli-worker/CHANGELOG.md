@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.48
+
+- Add a compact model picker and a blue reasoning slider below the message box, with rounded menus and a checkmark for the selected model.
+- Save model and reasoning choices separately for each conversation, including across worker restarts. Changes apply to the next message while preserving the conversation's context.
+- Keep new chats on the add-on defaults, with independent controls to reset the model or reasoning selection.
+- Show reasoning levels supported by the selected model, including Max and Ultra where available. Reset an incompatible reasoning selection when switching models.
+- Support keyboard navigation, small screens, and light and dark themes for both pickers.
+
+Update the worker app to **0.1.48** to use per-conversation model and reasoning selection.
+
 ## 0.1.47
 
 - Show remaining **5h** and **7d** account quota percentages below **Home Assistant workspace** in the web UI sidebar.

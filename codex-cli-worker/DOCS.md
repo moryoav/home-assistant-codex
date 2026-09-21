@@ -92,6 +92,18 @@ Runs are non-interactive. If Codex needs a decision, it should return `needs_inp
 
 The web UI lists recent chats in a resizable sidebar and opens their messages on the right. On mobile, the sidebar becomes a drawer. Select a saved chat and send a message to continue, or choose **New chat** for a fresh session. Settings contains account controls and workspace instructions.
 
+### Per-conversation model and reasoning
+
+From **0.1.48**, the pill below the message box opens a model menu and a reasoning slider. Selecting a value in a saved chat saves it immediately; selections for a new chat are saved with its first message. Both persist across worker restarts. Changes apply to the next message and preserve the saved session. Controls are disabled while that conversation is running.
+
+**Default** inherits the add-on model setting. The reasoning reset button inherits the add-on reasoning setting. These can be reset independently. New and older chats without saved overrides inherit both defaults. Each new turn records its resolved `execution_settings`, so changing the defaults after a turn is queued does not alter that run or its recorded settings.
+
+The model choices match the add-on model selector. Supported reasoning levels follow the bundled CLI 0.154.0 catalog: Low, Medium, High, Extra High, Max and Ultra for Astra/Sol/Terra; through Max for Luna; through Extra High for GPT-5.5. Ultra enables automatic task delegation. The unspecified default model uses the common Low through Extra High choices. If switching models makes a saved reasoning choice incompatible, the UI resets reasoning to the add-on default. An inherited reasoning level unsupported by an explicit model falls back to Medium. Model availability still depends on the account; unavailable-model errors are reported by the CLI.
+
+The authenticated worker API exposes `GET /chat-options` for choices and defaults, and `POST /tasks/<task_id>/settings` with `{"chat_settings": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"}}` to save selections for an idle chat. Each value can be `null` to inherit the add-on default. `POST /tasks`, `/tasks/<task_id>/continue`, and `/tasks/<task_id>/reply` also accept the optional `chat_settings` object. Omitting the object preserves existing selections. Invalid models, reasoning levels, and combinations return HTTP 400; changes to active chats return HTTP 409. `GET /tasks/<task_id>` includes the saved `chat_settings`. Home Assistant actions continue using their existing parameters and honor settings already saved for the conversation.
+
+### Continuing and browsing chats
+
 `codex_cli.continue_task` accepts `task_id` and `message` and resumes completed, waiting, failed, or cancelled tasks. The old `reply_task` action remains restricted to tasks waiting for input. Both use the same resume implementation. Continuation requires a saved session under `/data/codex-home/sessions`; the worker does not fall back to a fresh chat if it is missing.
 
 `GET /tasks` and `codex_cli.list_tasks` accept optional `limit` (1–500), `offset`, `status`, `order` (`created_asc` or `updated_desc`), and `summary` parameters. `summary: true` returns compact entries for the sidebar. Without filters, all tasks are returned in their original creation order. `GET /tasks/<task_id>` includes `turns`, `history_incomplete`, and `can_continue`. The latter indicates an eligible task with a recorded session ID; availability of its session file is checked when continuing. `POST /tasks/<task_id>/continue` accepts a JSON `message`.

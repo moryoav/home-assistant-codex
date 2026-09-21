@@ -23,6 +23,48 @@ const state = {
 };
 const welcome = $("messages").innerHTML;
 let refreshTimer;
+let usageTimer;
+let usageLoading = false;
+function renderUsage(usage = {}) {
+  // The worker's percentages already represent quota left, not quota used.
+  for (const [id, key] of [
+    ["usage-five-hour", "five_hour"],
+    ["usage-weekly", "weekly"],
+  ]) {
+    const raw = usage[`${key}_percent`];
+    const percent =
+      typeof raw === "number" || (typeof raw === "string" && raw.trim())
+        ? Number(raw)
+        : NaN;
+    const valid = Number.isFinite(percent) && percent >= 0 && percent <= 100;
+    $(id).textContent = valid ? `${percent}% left` : "Unavailable";
+    const reset = dateLabel(usage[`${key}_reset_at`], true) || usage[`${key}_reset`];
+    $(id).title = valid && reset ? `Resets ${reset}` : "";
+  }
+  $("usage-note").textContent =
+    usage.status === "deferred"
+      ? "Last known quota; refreshes after the task finishes."
+      : usage.status === "ok"
+        ? ""
+        : "Quota is currently unavailable.";
+  $("usage-note").hidden = !$("usage-note").textContent;
+}
+async function loadUsage() {
+  if (usageLoading) return;
+  usageLoading = true;
+  clearTimeout(usageTimer);
+  try {
+    if (!document.hidden) {
+      const data = await api("status");
+      renderUsage(data.codex_usage);
+    }
+  } catch (_) {
+    renderUsage();
+  } finally {
+    usageLoading = false;
+    usageTimer = setTimeout(loadUsage, 60000);
+  }
+}
 async function api(path, body) {
   const response = await fetch(path.replace(/^\//, ""), {
     method: body === undefined ? "GET" : "POST",
@@ -341,6 +383,7 @@ matchMedia("(max-width:700px)").addEventListener("change", () =>
   sidebar(false),
 );
 $("refresh").onclick = async () => {
+  loadUsage();
   try {
     await loadList();
     await fetchSelected();
@@ -513,3 +556,4 @@ async function refresh() {
 sidebar(false);
 controls();
 refresh();
+loadUsage();

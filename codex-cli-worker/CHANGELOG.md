@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.47
+
+- Show remaining **5h** and **7d** account quota percentages below **Home Assistant workspace** in the web UI sidebar.
+- Refresh quota automatically and show reset times on hover when available.
+- Identify cached quota while a task is running and show unavailable values clearly.
+
+Update the **Codex CLI Worker** app to see the new quota display.
+
 ## 0.1.46
 
 ### New chat web UI

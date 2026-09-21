@@ -46,11 +46,18 @@
         </p>
         <button id="load-more" class="subtle" hidden>Load older chats</button>
         <div class="sidebar-footer">
-          <span class="workspace-dot" aria-hidden="true"></span
-          ><span>Home Assistant workspace</span
-          ><button id="settings-button" class="icon" aria-label="Open settings">
-            ⚙
-          </button>
+          <div class="workspace-label">
+            <span class="workspace-dot" aria-hidden="true"></span
+            ><span>Home Assistant workspace</span
+            ><button id="settings-button" class="icon" aria-label="Open settings">
+              ⚙
+            </button>
+          </div>
+          <div id="usage" class="usage" aria-label="Remaining account quota">
+            <span>5h <strong id="usage-five-hour">Unavailable</strong></span>
+            <span>7d <strong id="usage-weekly">Unavailable</strong></span>
+          </div>
+          <p id="usage-note" class="usage-note" role="status">Loading quota…</p>
         </div>
       </aside>
       <div

@@ -212,6 +212,8 @@ Open the worker web UI to browse saved chats in the left sidebar. Select a chat 
 
 The sidebar shows recently active chats first and includes **Load older chats**. Messages, responses, and per-exchange results are saved across worker restarts. Older tasks remain available, but responses overwritten before this feature was added cannot be recovered by the new history view.
 
+From **0.1.47**, the sidebar also shows the remaining **5h** and **7d** account quota below **Home Assistant workspace**. Values refresh automatically; hover over a percentage to see its reset time when available. While a task is running, the display identifies the last known quota.
+
 Available from **0.1.46**. Update both the **Codex CLI Worker** app and the **Codex** HACS integration for the new actions.
 
 ### Chat UI preview

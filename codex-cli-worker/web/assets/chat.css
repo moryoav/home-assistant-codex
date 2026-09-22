@@ -397,6 +397,61 @@ h1 {
   margin-top: 15px;
   line-height: 1.5;
 }
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 14px;
+}
+.attachment {
+  margin: 0;
+  flex: 1 1 240px;
+  max-width: 380px;
+}
+.attachment > a {
+  display: block;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.attachment > a:focus-visible {
+  outline-offset: 2px;
+}
+.attachment-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 480px;
+  object-fit: contain;
+}
+.attachment figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.attachment figcaption a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.attachment figcaption a:hover {
+  text-decoration: underline;
+}
+.attachment-missing {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
 .history-note {
   background: var(--sidebar);
   border: 1px solid var(--line);

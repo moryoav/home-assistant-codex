@@ -420,6 +420,7 @@ async function loadList(older = false) {
   renderList();
   controls();
 }
+/** Return the turn's image attachments that carry a well-formed id. */
 function imageAttachments(turn) {
   return (Array.isArray(turn.attachments) ? turn.attachments : []).filter(
     (item) =>
@@ -429,6 +430,7 @@ function imageAttachments(turn) {
       /^[0-9a-f]{32}$/.test(item.attachment_id),
   );
 }
+/** Build a worker-relative attachment URL from ids only, never from server text. */
 function attachmentUrl(taskId, attachment, download = false) {
   return (
     `tasks/${encodeURIComponent(taskId)}/attachments/` +
@@ -436,12 +438,14 @@ function attachmentUrl(taskId, attachment, download = false) {
     (download ? "?download=1" : "")
   );
 }
+/** Format a byte count as KB or MB for the attachment caption. */
 function sizeLabel(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
   return bytes < 1024 * 1024
     ? `${Math.max(1, Math.round(bytes / 1024))} KB`
     : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+/** Render image attachments with a full-size link and a download button. */
 function renderAttachments(taskId, attachments) {
   const list = textNode("div", "", "attachments");
   for (const attachment of attachments) {

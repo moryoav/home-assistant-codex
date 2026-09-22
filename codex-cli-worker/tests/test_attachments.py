@@ -18,7 +18,9 @@ SESSION_ID = "019fc242-910a-7c92-a17d-54c014e19fc4"
 
 
 def png_bytes(width=4, height=3, shade=200):
+    """Build a tiny valid PNG so tests never depend on binary fixtures."""
     def chunk(tag, data):
+        """Frame one PNG chunk with its length and CRC."""
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     raw = b"".join(b"\x00" + bytes([shade, 80, 40]) * width for _ in range(height))
@@ -38,6 +40,7 @@ def rollout_line(item_id, saved_path="", result=b"", status="completed", failure
 
 class AttachmentTests(unittest.TestCase):
     def setUp(self):
+        """Isolate task storage, CODEX_HOME and Home Assistant calls in a temp directory."""
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
@@ -65,6 +68,7 @@ class AttachmentTests(unittest.TestCase):
         self.headers = {"Authorization": "Bearer test-token"}
 
     def save_generated(self, name, data):
+        """Write a file where Codex would save a generated image."""
         directory = server.generated_images_dir(SESSION_ID)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / name
@@ -72,19 +76,23 @@ class AttachmentTests(unittest.TestCase):
         return path
 
     def append_rollout(self, *lines):
+        """Append raw records to the session rollout file."""
         with self.rollout.open("a", encoding="utf-8") as handle:
             handle.write("".join(lines))
 
     def create(self, prompt="Draw a sheep"):
+        """Create a queued task through the API and return its id."""
         response = self.client.post("/tasks", json={"prompt": prompt}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         return response.json["task_id"]
 
     def run_codex(self, task_id, *, on_wait=None, session_id=None, reply=None, final=None):
+        """Run one exchange with a fake Codex process that writes the final response."""
         final = final or {"status": "completed", "summary": "Here is your sheep.", "details": "", "question": ""}
 
         class FakeProcess:
             def __init__(self, args, **kwargs):
+                """Record the final-response path Codex was asked to write."""
                 self.stdin = io.StringIO()
                 self.stderr = io.StringIO("")
                 self.stdout = io.StringIO(json.dumps({"type": "thread.started", "thread_id": SESSION_ID}) + "\n")
@@ -92,9 +100,11 @@ class AttachmentTests(unittest.TestCase):
                 self.output = Path(args[args.index("--output-last-message") + 1])
 
             def poll(self):
+                """Report that the fake process has exited."""
                 return 0
 
             def wait(self, timeout=None):
+                """Simulate Codex finishing, running the test hook first."""
                 if on_wait:
                     on_wait()
                 self.output.write_text(json.dumps(final), encoding="utf-8")
@@ -105,9 +115,11 @@ class AttachmentTests(unittest.TestCase):
         server.active_task_runners.discard(task_id)
 
     def generate_first_image(self, task_id, name="exec-1.png", data=None):
+        """Complete a first exchange that produces one generated image."""
         data = data or png_bytes()
 
         def on_wait():
+            """Simulate Codex saving an image and recording it in the rollout."""
             path = self.save_generated(name, data)
             self.append_rollout(rollout_line(name.removesuffix(".png"), saved_path=str(path)))
 
@@ -115,6 +127,7 @@ class AttachmentTests(unittest.TestCase):
         return data
 
     def test_generated_image_is_attached_served_and_survives_restart(self):
+        """Capture, serve, download, authorize and persist a generated image."""
         task_id = self.create()
         png = self.generate_first_image(task_id)
         task = server.tasks[task_id]
@@ -167,8 +180,34 @@ class AttachmentTests(unittest.TestCase):
         self.assertIn("missing", missing.json["error"])
         stored.write_bytes(b"not an image any more")
         self.assertEqual(self.client.get(attachment["url"], headers=self.headers).status_code, 404)
+        # A valid image of the same type with different bytes is not the recorded attachment either.
+        stored.write_bytes(png_bytes(shade=1))
+        altered = self.client.get(attachment["url"], headers=self.headers)
+        self.assertEqual(altered.status_code, 404)
+        self.assertIn("not the recorded image", altered.json["error"])
+        stored.write_bytes(png)
+        self.assertEqual(self.client.get(attachment["url"], headers=self.headers).status_code, 200)
+
+    def test_oversized_stored_file_is_not_served(self):
+        """A stored file above the size limit is refused even when its hash matches."""
+        task_id = self.create()
+        server.active_task_runners.discard(task_id)
+        png = png_bytes(width=64, height=64)
+        run_dir = server.get_run_dir(task_id) / "attachments"
+        run_dir.mkdir(parents=True)
+        attachment_id = "a" * 32
+        stored = run_dir / f"{attachment_id}.png"
+        stored.write_bytes(png)
+        server.update_task(task_id, status="completed", session_id=SESSION_ID, attachments=[{
+            "attachment_id": attachment_id, "kind": "image", "mime_type": "image/png", "name": "big.png",
+            "size": len(png), "sha256": server.file_hash(stored), "path": stored.relative_to(server.get_task_dir(task_id)).as_posix(),
+        }])
+        with patch.object(server, "ATTACHMENT_MAX_BYTES", len(png) - 1):
+            self.assertEqual(self.client.get(f"/tasks/{task_id}/attachments/{attachment_id}", headers=self.headers).status_code, 404)
+        self.assertEqual(self.client.get(f"/tasks/{task_id}/attachments/{attachment_id}", headers=self.headers).status_code, 200)
 
     def test_resumed_turn_attaches_only_new_images_and_keeps_history(self):
+        """A continued conversation attaches only images from its own exchange."""
         task_id = self.create()
         self.generate_first_image(task_id)
         first = server.tasks[task_id]["turns"][0]["attachments"]
@@ -179,6 +218,7 @@ class AttachmentTests(unittest.TestCase):
         blue = png_bytes(shade=20)
 
         def on_wait():
+            """Simulate Codex saving an image and recording it in the rollout."""
             path = self.save_generated("exec-2.png", blue)
             self.append_rollout(rollout_line("exec-2", saved_path=str(path), revised="A blue sheep"))
 
@@ -194,12 +234,14 @@ class AttachmentTests(unittest.TestCase):
         self.assertNotEqual(first_dir, second_dir)
 
     def test_inline_result_fallback_and_unusable_items_are_skipped(self):
+        """Decode the inline result when the file is gone; skip unusable items."""
         task_id = self.create()
         png = png_bytes()
         outside = self.root / "config" / "secrets.yaml"
         outside.write_bytes(png)
 
         def on_wait():
+            """Simulate Codex saving an image and recording it in the rollout."""
             text_file = self.save_generated("exec-text.png", b"not an image at all")
             self.append_rollout(
                 "not json\n",
@@ -221,11 +263,13 @@ class AttachmentTests(unittest.TestCase):
             self.assertIn(f"Skipped image generation {item_id}", log)
 
     def test_size_and_count_limits_are_enforced(self):
+        """Oversized images and images beyond the per-exchange limit are skipped."""
         task_id = self.create()
         small = png_bytes()
         large = png_bytes(width=64, height=64)
 
         def on_wait():
+            """Simulate Codex saving an image and recording it in the rollout."""
             paths = [self.save_generated(name, data) for name, data in (("a.png", small), ("b.png", large), ("c.png", small))]
             self.append_rollout(*(rollout_line(path.stem, saved_path=str(path)) for path in paths))
 
@@ -236,6 +280,7 @@ class AttachmentTests(unittest.TestCase):
         self.assertIn("Skipped image generation b: attachment limit reached", log)
 
     def test_attachment_paths_outside_the_task_directory_are_rejected(self):
+        """Recorded paths that escape the task directory are never served."""
         task_id = self.create()
         server.active_task_runners.discard(task_id)
         png = png_bytes()
@@ -250,6 +295,7 @@ class AttachmentTests(unittest.TestCase):
             self.assertEqual(response.status_code, 404, relative)
 
     def test_rollout_parsing_and_prompt_guidance(self):
+        """Rollout parsing keeps the last record per item and the prompt mentions attachments."""
         self.append_rollout(rollout_line("exec-1", saved_path="/x/1.png", status="generating"), rollout_line("exec-1", saved_path="/x/1.png"))
         items = server.image_generation_items(SESSION_ID)
         self.assertEqual([(item["id"], item["status"], item["saved_path"]) for item in items], [("exec-1", "completed", "/x/1.png")])
@@ -262,6 +308,7 @@ class AttachmentTests(unittest.TestCase):
         self.assertIn("attached to this conversation", prompt)
 
     def test_cancellation_and_launch_failure_clear_attachments(self):
+        """Cancelling a continued exchange clears only that exchange's attachments."""
         task_id = self.create()
         self.generate_first_image(task_id)
         self.assertEqual(len(server.tasks[task_id]["attachments"]), 1)

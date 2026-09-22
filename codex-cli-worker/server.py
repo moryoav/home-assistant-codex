@@ -1179,6 +1179,7 @@ def collect_generated_images(task_id: str, session_id: str, known_ids: set[str])
 
 
 def find_attachment(task: dict[str, Any], attachment_id: str) -> dict[str, Any] | None:
+    """Return the recorded metadata for an attachment id, newest exchange first."""
     for turn in reversed(task_turns(task)):
         for attachment in turn.get("attachments") or []:
             if isinstance(attachment, dict) and attachment.get("attachment_id") == attachment_id:
@@ -2810,12 +2811,19 @@ def get_attachment(task_id: str, attachment_id: str) -> Response:
         inside = bool(relative) and not Path(relative).is_absolute() and path.is_relative_to(task_dir)
         if not inside or not path.is_file():
             return jsonify({"ok": False, "error": "attachment file is missing"}), 404
+        size = path.stat().st_size
         with path.open("rb") as handle:
             sniffed = sniff_image(handle.read(16))
+        # Serve only the bytes that were recorded when the image was captured.
+        intact = (
+            0 < size <= ATTACHMENT_MAX_BYTES
+            and size == attachment.get("size")
+            and file_hash(path) == str(attachment.get("sha256") or "")
+        )
     except OSError:
         return jsonify({"ok": False, "error": "attachment file is missing"}), 404
     mime_type = str(attachment.get("mime_type") or "")
-    if sniffed is None or sniffed[0] != mime_type:
+    if sniffed is None or sniffed[0] != mime_type or not intact:
         return jsonify({"ok": False, "error": "attachment content is not the recorded image"}), 404
     response = send_file(
         path,

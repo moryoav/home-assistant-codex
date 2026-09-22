@@ -15,6 +15,7 @@ from werkzeug.wrappers import Response
 def preview_png(width=320, height=200):
     """Build a small PNG without third-party libraries."""
     def chunk(tag, data):
+        """Frame one PNG chunk with its length and CRC."""
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     rows = []
@@ -31,6 +32,7 @@ def preview_png(width=320, height=200):
 
 
 def main():
+    """Serve the chat UI with simulated conversations under an Ingress-style prefix."""
     spec = importlib.util.spec_from_file_location("web_fixture_server", Path(__file__).resolve().parents[1] / "server.py")
     server = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(server)
@@ -51,6 +53,7 @@ def main():
         (sessions / f"rollout-preview-{session_id}.jsonl").write_text("{}\n")
 
         def finish(task_id, prompt, session_id=session_id, reply=None):
+            """Complete a task immediately with a canned response instead of running Codex."""
             server.update_task(task_id, status="completed", session_id=session_id,
                                summary="Preview response: " + (reply or prompt), details="", question="")
             server.active_task_runners.discard(task_id)
@@ -89,6 +92,7 @@ def main():
         mounted = DispatcherMiddleware(Response("Open /preview/", status=404), {"/preview": server.app})
 
         def ingress(environ, start_response):
+            """Mark every request as if it arrived through Home Assistant Ingress."""
             environ["HTTP_X_INGRESS_PATH"] = "/preview"
             environ["REMOTE_ADDR"] = server.INGRESS_PROXY_IP
             return mounted(environ, start_response)

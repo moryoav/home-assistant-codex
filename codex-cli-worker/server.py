@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
 import hashlib
 import hmac
@@ -29,7 +31,7 @@ from urllib.parse import urlparse, urlunparse
 import requests
 import websocket
 import yaml
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_file
 
 
 CONFIG_ROOT = Path("/config")
@@ -85,6 +87,19 @@ CODEX_SANDBOX_PROBE_TIMEOUT_SECONDS = 20
 DIAGNOSTIC_ERROR_MAX_CHARS = 1000
 CANCELLABLE_TASK_STATUSES = frozenset({"queued", "running"})
 CANCELLED_TASK_SUMMARY = "Task cancelled"
+# Built-in Codex image generation writes files under CODEX_HOME and records
+# each result in the session rollout; `codex exec --json` does not report it.
+IMAGE_GENERATION_KIND = "image_gen.generation"
+ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+ATTACHMENTS_PER_TURN_MAX = 12
+TASK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+ATTACHMENT_ID_RE = re.compile(r"[0-9a-f]{32}")
+IMAGE_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png", ".png"),
+    (b"\xff\xd8\xff", "image/jpeg", ".jpg"),
+    (b"GIF87a", "image/gif", ".gif"),
+    (b"GIF89a", "image/gif", ".gif"),
+)
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
@@ -953,6 +968,7 @@ def get_task_dir(task_id: str) -> Path:
 TURN_RESULT_FIELDS = (
     "status", "summary", "details", "question", "started_at", "completed_at",
     "returncode", "changes", "validation_errors", "lovelace_results", "error",
+    "attachments",
 )
 CONTINUABLE_STATUSES = frozenset({"completed", "waiting_for_input", "failed", "cancelled"})
 TASK_STATUSES = CONTINUABLE_STATUSES | {"queued", "running"}
@@ -1002,11 +1018,172 @@ def get_run_dir(task_id: str) -> Path:
     return root / "turns" / turn_id if turn_id else root
 
 
+def session_rollout_path(session_id: str) -> Path | None:
+    """Locate the rollout file in which Codex records a session's items."""
+    sessions = CODEX_HOME / "sessions"
+    if UUID_RE.fullmatch(session_id) is None or not sessions.is_dir():
+        return None
+    return next(iter(sessions.rglob(f"*-{session_id}.jsonl")), None)
+
+
 def session_available(session_id: str) -> bool:
     """Avoid CLI fallback to a fresh conversation when a rollout is missing."""
-    if UUID_RE.fullmatch(session_id) is None:
-        return False
-    return any((CODEX_HOME / "sessions").rglob(f"*-{session_id}.jsonl"))
+    return session_rollout_path(session_id) is not None
+
+
+def generated_images_dir(session_id: str) -> Path:
+    """Codex saves built-in image generation output here by default."""
+    return CODEX_HOME / "generated_images" / session_id
+
+
+def image_generation_items(session_id: str) -> list[dict[str, Any]]:
+    """Return the image generation items recorded in a session rollout.
+
+    Each `item_completed` event carries the saved path, the revised prompt and
+    the inline result. Later records for the same item id replace earlier ones.
+    """
+    rollout = session_rollout_path(session_id) if session_id else None
+    if rollout is None:
+        return []
+    items: dict[str, dict[str, Any]] = {}
+    try:
+        with rollout.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if IMAGE_GENERATION_KIND not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                payload = record.get("payload") if isinstance(record, dict) else None
+                item = payload.get("item") if isinstance(payload, dict) else None
+                if not isinstance(item, dict) or item.get("kind") != IMAGE_GENERATION_KIND:
+                    continue
+                item_id = item.get("id")
+                if not isinstance(item_id, str) or not item_id:
+                    continue
+                result = item.get("result")
+                items[item_id] = {
+                    "id": item_id,
+                    "status": str(item.get("status") or ""),
+                    "failure": item.get("failure"),
+                    "revised_prompt": str(item.get("revisedPrompt") or item.get("revised_prompt") or ""),
+                    "saved_path": str(item.get("savedPath") or item.get("saved_path") or ""),
+                    "result": result if isinstance(result, str) else "",
+                    "turn_id": str(payload.get("turn_id") or ""),
+                }
+    except OSError as exc:
+        print(f"Could not read the Codex session rollout for {session_id}: {exc}", flush=True)
+    return list(items.values())
+
+
+def sniff_image(header: bytes) -> tuple[str, str] | None:
+    """Identify supported image content from its leading bytes."""
+    for signature, mime_type, suffix in IMAGE_SIGNATURES:
+        if header.startswith(signature):
+            return mime_type, suffix
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp", ".webp"
+    return None
+
+
+def _image_generation_source(item: dict[str, Any], session_id: str) -> Path | bytes | None:
+    """Prefer the file Codex saved; otherwise decode the inline result."""
+    saved_path = item.get("saved_path") or ""
+    if saved_path:
+        try:
+            path = Path(saved_path).resolve()
+            if path.is_relative_to(generated_images_dir(session_id).resolve()) and path.is_file():
+                return path
+        except OSError:
+            pass
+    result = str(item.get("result") or "")
+    if result.startswith("data:"):
+        result = result.split(",", 1)[-1]
+    if not result or len(result) > ATTACHMENT_MAX_BYTES * 4 // 3 + 4:
+        return None
+    try:
+        return base64.b64decode(result, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+
+
+def store_attachment(
+    task_id: str, source: Path | bytes | None, item: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Copy verified image content into this exchange's attachment directory."""
+    if source is None:
+        return None
+    if isinstance(source, Path):
+        size = source.stat().st_size
+        with source.open("rb") as handle:
+            header = handle.read(16)
+    else:
+        size = len(source)
+        header = source[:16]
+    sniffed = sniff_image(header)
+    if sniffed is None or size == 0 or size > ATTACHMENT_MAX_BYTES:
+        return None
+    mime_type, suffix = sniffed
+    attachment_id = uuid.uuid4().hex
+    target_dir = get_run_dir(task_id) / "attachments"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{attachment_id}{suffix}"
+    if isinstance(source, Path):
+        shutil.copyfile(source, target)
+    else:
+        target.write_bytes(source)
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass
+    return {
+        "attachment_id": attachment_id,
+        "kind": "image",
+        "name": f"codex-image-{attachment_id[:8]}{suffix}",
+        "mime_type": mime_type,
+        "size": target.stat().st_size,
+        "sha256": file_hash(target),
+        "created_at": utc_now(),
+        "revised_prompt": str(item.get("revised_prompt") or "")[:2000],
+        "generation_id": str(item.get("id") or ""),
+        "path": target.relative_to(get_task_dir(task_id)).as_posix(),
+        "url": f"/tasks/{task_id}/attachments/{attachment_id}",
+    }
+
+
+def collect_generated_images(task_id: str, session_id: str, known_ids: set[str]) -> list[dict[str, Any]]:
+    """Attach the images this exchange generated, skipping earlier turns' items."""
+    if not session_id:
+        return []
+    attachments: list[dict[str, Any]] = []
+    for item in image_generation_items(session_id):
+        if item["id"] in known_ids:
+            continue
+        if (item["status"] and item["status"] != "completed") or item.get("failure"):
+            write_task_log(task_id, "worker", f"Skipped image generation {item['id']}: status={item['status'] or 'unknown'}")
+            continue
+        if len(attachments) >= ATTACHMENTS_PER_TURN_MAX:
+            write_task_log(task_id, "worker", f"Skipped image generation {item['id']}: attachment limit reached")
+            continue
+        try:
+            attachment = store_attachment(task_id, _image_generation_source(item, session_id), item)
+        except Exception as exc:
+            write_task_log(task_id, "worker", f"Could not attach image generation {item['id']}: {exc}")
+            continue
+        if attachment is None:
+            write_task_log(task_id, "worker", f"Skipped image generation {item['id']}: no usable image content")
+            continue
+        attachments.append(attachment)
+    return attachments
+
+
+def find_attachment(task: dict[str, Any], attachment_id: str) -> dict[str, Any] | None:
+    for turn in reversed(task_turns(task)):
+        for attachment in turn.get("attachments") or []:
+            if isinstance(attachment, dict) and attachment.get("attachment_id") == attachment_id:
+                return attachment
+    return None
 
 
 def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, Any]:
@@ -1716,6 +1893,8 @@ Follow /config/AGENTS.md. Treat this as a live Home Assistant config tree. Make 
 
 This is a non-interactive run. Do not wait for terminal input. If you need the user's decision or verification before continuing, stop cleanly by returning status "needs_input" with one concise question.
 
+If the user asks for an image, use the built-in image generation tool. Every image it generates is attached to this conversation and shown to the user automatically, so leave it at its default save location and describe it in the summary. Copy it into /config only when the user asks for a file at a specific path. The default save location is not a failure.
+
 At the end, return only an object matching the provided JSON schema:
 - status: "completed", "needs_input", or "failed"
 - summary: concise result
@@ -1880,6 +2059,7 @@ def request_task_cancellation(
                 "changes": {"added": [], "changed": [], "deleted": []},
                 "validation_errors": [],
                 "lovelace_results": [],
+                "attachments": [],
                 "updated_at": utc_now(),
             }
         )
@@ -1928,6 +2108,7 @@ def publish_cancelled_task_outcome(task_id: str, returncode: int | None = None) 
         "changes": changes,
         "validation_errors": validation_errors,
         "lovelace_results": lovelace_results,
+        "attachments": [],
         "response": {
             "status": "cancelled",
             "summary": CANCELLED_TASK_SUMMARY,
@@ -1972,6 +2153,7 @@ def fail_task_launch(
         "changes": {"added": [], "changed": [], "deleted": []},
         "validation_errors": [],
         "lovelace_results": [],
+        "attachments": [],
     }
     if resolved_session_id:
         task_updates["session_id"] = resolved_session_id
@@ -1990,6 +2172,7 @@ def fail_task_launch(
         "changes": {"added": [], "changed": [], "deleted": []},
         "validation_errors": [],
         "lovelace_results": [],
+        "attachments": [],
         "response": {
             "status": "failed",
             "summary": summary,
@@ -2034,6 +2217,7 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
                         "changes": {"added": [], "changed": [], "deleted": []},
                         "validation_errors": [],
                         "lovelace_results": [],
+                        "attachments": [],
                         "updated_at": completed_at,
                     }
                 )
@@ -2109,6 +2293,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
 
     timeout = int(read_options().get("task_timeout_seconds") or 3600)
     session_holder: dict[str, str] = {}
+    # Images recorded before this run belong to earlier exchanges of the session.
+    known_image_ids = {item["id"] for item in image_generation_items(session_id or "")}
     try:
         proc = subprocess.Popen(
             args,
@@ -2243,6 +2429,11 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         or session_id
         or tasks.get(task_id, {}).get("session_id", "")
     )
+    try:
+        attachments = collect_generated_images(task_id, session_id, known_image_ids)
+    except Exception as exc:
+        attachments = []
+        write_task_log(task_id, "worker", f"Could not collect generated images: {exc}")
     if update_task(
         task_id,
         status=task_status,
@@ -2255,6 +2446,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         changes=changes,
         validation_errors=validation_errors,
         lovelace_results=lovelace_results,
+        attachments=attachments,
     ) is False:
         return
 
@@ -2271,6 +2463,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         "changes": changes,
         "validation_errors": validation_errors,
         "lovelace_results": lovelace_results,
+        "attachments": attachments,
         "response": {
             "status": status,
             "summary": final.get("summary", ""),
@@ -2558,6 +2751,7 @@ def create_task() -> Response:
             summary="",
             question="",
             details="",
+            attachments=[],
         )
         (get_task_dir(task_id) / "user-prompt.txt").write_text(prompt, encoding="utf-8")
         start_background_task(task_id, prompt)
@@ -2596,6 +2790,45 @@ def get_log(task_id: str) -> Response:
         handle.seek(max(0, size - LOG_TAIL_BYTES), os.SEEK_SET)
         data = handle.read().decode("utf-8", errors="replace")
     return Response(data, mimetype="text/plain")
+
+
+@app.get("/tasks/<task_id>/attachments/<attachment_id>")
+@require_auth
+def get_attachment(task_id: str, attachment_id: str) -> Response:
+    """Serve a generated image recorded for this conversation."""
+    if TASK_ID_RE.fullmatch(task_id) is None or ATTACHMENT_ID_RE.fullmatch(attachment_id) is None:
+        return jsonify({"ok": False, "error": "attachment not found"}), 404
+    with lock:
+        task = tasks.get(task_id)
+        attachment = find_attachment(task, attachment_id) if task else None
+    if attachment is None:
+        return jsonify({"ok": False, "error": "attachment not found"}), 404
+    task_dir = get_task_dir(task_id).resolve()
+    relative = str(attachment.get("path") or "")
+    path = (task_dir / relative).resolve()
+    try:
+        inside = bool(relative) and not Path(relative).is_absolute() and path.is_relative_to(task_dir)
+        if not inside or not path.is_file():
+            return jsonify({"ok": False, "error": "attachment file is missing"}), 404
+        with path.open("rb") as handle:
+            sniffed = sniff_image(handle.read(16))
+    except OSError:
+        return jsonify({"ok": False, "error": "attachment file is missing"}), 404
+    mime_type = str(attachment.get("mime_type") or "")
+    if sniffed is None or sniffed[0] != mime_type:
+        return jsonify({"ok": False, "error": "attachment content is not the recorded image"}), 404
+    response = send_file(
+        path,
+        mimetype=mime_type,
+        as_attachment=request.args.get("download") == "1",
+        download_name=str(attachment.get("name") or f"{attachment_id}{sniffed[1]}"),
+        conditional=True,
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return response
 
 
 @app.post("/tasks/<task_id>/cancel")
@@ -2663,7 +2896,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
                 current_turn_id=turn["turn_id"], history_incomplete=incomplete,
                 reply_history=reply_history, summary="", question="", details="",
                 error="", started_at="", completed_at="", returncode=None,
-                changes={}, validation_errors=[], lovelace_results=[],
+                changes={}, validation_errors=[], lovelace_results=[], attachments=[],
             )
         except Exception as exc:
             record_background_start_failure(task_id, exc)

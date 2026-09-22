@@ -8,6 +8,8 @@ For setup, security notes, and action examples, see the repository root `README.
 
 Open an existing chat to continue with its saved Codex context, or choose **New chat** for a separate conversation. Account controls and workspace instructions are under **Settings**.
 
+Ask for an image and Codex shows the generated picture in the chat, with a full-size link and a download button. Images stay with their conversation across restarts.
+
 Use the model name and reasoning label below the message box to customize each conversation. Choices are saved across restarts and apply to the next message. The model menu's **Default** option and the reasoning picker's reset button restore the add-on defaults. The slider only offers reasoning levels supported by the selected model.
 
 ![Saved conversations in the desktop chat UI](https://raw.githubusercontent.com/moryoav/home-assistant-codex/v0.1.46/examples/chat-ui/desktop.png)

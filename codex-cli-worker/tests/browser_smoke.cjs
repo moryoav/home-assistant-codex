@@ -28,6 +28,49 @@ const os = require("node:os");
     await page.waitForFunction(
       () => document.querySelectorAll(".chat-row").length === 25,
     );
+    await page.locator('[data-task-id="preview-02"]').click();
+    const image = page.locator("#messages img.attachment-image");
+    await image.waitFor();
+    assert.equal(await image.count(), 1);
+    await page.waitForFunction(() => {
+      const img = document.querySelector("#messages img.attachment-image");
+      return img && img.complete && img.naturalWidth > 0;
+    });
+    assert.match(
+      await image.getAttribute("src"),
+      /\/preview\/tasks\/preview-02\/attachments\/[0-9a-f]{32}$/,
+    );
+    assert.match(
+      await page
+        .locator("#messages .attachment figcaption a")
+        .getAttribute("href"),
+      /\?download=1$/,
+    );
+    const served = await page.evaluate(async () => {
+      const src = document.querySelector("#messages img.attachment-image").src;
+      const ok = await fetch(src);
+      const missing = await fetch(
+        "tasks/preview-02/attachments/" + "0".repeat(32),
+      );
+      const download = await fetch(src + "?download=1");
+      return {
+        status: ok.status,
+        type: ok.headers.get("content-type"),
+        nosniff: ok.headers.get("x-content-type-options"),
+        disposition: download.headers.get("content-disposition"),
+        missing: missing.status,
+      };
+    });
+    assert.equal(served.status, 200);
+    assert.equal(served.type, "image/png");
+    assert.equal(served.nosniff, "nosniff");
+    assert.match(served.disposition, /^attachment;/);
+    assert.equal(served.missing, 404);
+    await page.screenshot({
+      path: path.join(output, "generated-image.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
     await page.locator('[data-task-id="preview-00"]').click();
     await page
       .locator("#messages")
@@ -269,7 +312,7 @@ const os = require("node:os");
     });
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

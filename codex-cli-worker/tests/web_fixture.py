@@ -70,6 +70,9 @@ def main():
                          "Here is a cartoon sheep standing on grass. It is attached below.", "")
         for index in range(25):
             title, message, summary, details = image_example if index == 2 else examples[index % 3]
+            # Each saved chat owns its session, as in production, so deleting one leaves the others resumable.
+            task_session = f"{session_id[:-4]}{index:04x}"
+            (sessions / f"rollout-preview-{task_session}.jsonl").write_text("{}\n")
             turn = server.new_turn(message)
             attachments = []
             if index == 2:
@@ -85,7 +88,7 @@ def main():
             server.update_task(f"preview-{index:02}", title=title if index < 3 else f"Earlier chat {index}",
                                prompt=message, created_at=f"2026-09-{20 - index % 19:02}T10:00:00+00:00",
                                turns=[turn], current_turn_id=turn["turn_id"], status="completed",
-                               session_id=session_id, summary=summary, details=details, question="",
+                               session_id=task_session, summary=summary, details=details, question="",
                                attachments=attachments)
             server.tasks[f"preview-{index:02}"]["updated_at"] = f"2026-09-{20 - index % 19:02}T10:00:00+00:00"
         # A prefix checks that every browser URL works under Home Assistant Ingress.

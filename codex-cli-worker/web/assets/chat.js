@@ -1091,7 +1091,9 @@ function encodeUpload(upload) {
 }
 /** Shrink an image whose longest edge exceeds the limit; other images pass through. */
 async function prepareUpload(file) {
-  if (!UPLOAD_TYPES.includes(file.type))
+  const type = file.type === "image/jpg" ? "image/jpeg" : file.type;
+  // Drag-and-drop and clipboard sources can omit the type; the worker sniffs the bytes.
+  if (type && !UPLOAD_TYPES.includes(type))
     throw new Error(
       `${file.name || "This file"} is not a PNG, JPEG, GIF, or WebP image.`,
     );
@@ -1115,15 +1117,15 @@ async function prepareUpload(file) {
       canvas
         .getContext("2d")
         .drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      const type = file.type === "image/jpeg" ? "image/jpeg" : "image/png";
+      const output = type === "image/jpeg" ? "image/jpeg" : "image/png";
       const resized = await new Promise((resolve) =>
-        canvas.toBlob(resolve, type, 0.9),
+        canvas.toBlob(resolve, output, 0.9),
       );
       if (resized) {
         blob = resized;
         name =
           name.replace(/\.[^.]+$/, "") +
-          (type === "image/jpeg" ? ".jpg" : ".png");
+          (output === "image/jpeg" ? ".jpg" : ".png");
       }
     }
     bitmap.close();
@@ -1225,8 +1227,8 @@ $("file-input").addEventListener("change", async () => {
   $("file-input").value = "";
 });
 $("message").addEventListener("paste", (event) => {
-  const files = [...(event.clipboardData?.files || [])].filter((file) =>
-    file.type.startsWith("image/"),
+  const files = [...(event.clipboardData?.files || [])].filter(
+    (file) => !file.type || file.type.startsWith("image/"),
   );
   if (!files.length) return;
   event.preventDefault();

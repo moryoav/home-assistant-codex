@@ -471,6 +471,19 @@ function pngBuffer(width = 8, height = 6) {
     );
     assert.equal(await page.locator(".pending-file").count(), 0);
     await page.evaluate(() => window.__restoreBitmap());
+    // An image without a MIME type, as some drop and clipboard sources
+    // deliver, is accepted; the worker checks the bytes.
+    await page.evaluate(async (bytes) => {
+      await addUploads([
+        new File([new Uint8Array(bytes)], "untyped-shot", { type: "" }),
+      ]);
+    }, [...shot]);
+    assert.equal(await page.locator(".pending-file").count(), 1);
+    assert.equal(
+      await page.locator(".pending-name").textContent(),
+      "untyped-shot",
+    );
+    await page.getByRole("button", { name: "Remove untyped-shot" }).click();
     await page.getByRole("button", { name: "Open settings" }).click();
     await page
       .getByText("Signed in (local preview)", { exact: true })

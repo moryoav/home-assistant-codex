@@ -302,6 +302,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(server.tasks[task_id]["turns"][1]["changes"]["added"], ["second.yaml"])
 
     def test_pin_persists_without_reordering_and_lists_first(self):
+        """Pinning persists, keeps the recent order, and lists pinned chats first."""
         ids = []
         for index in range(3):
             task_id = self.create(f"Prompt {index}")
@@ -345,6 +346,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(server.tasks[running]["status"], "completed")
 
     def test_rename_validates_and_persists_without_touching_history(self):
+        """Renaming validates the title and saves it without touching the chat history."""
         task_id = self.create()
         self.finish(task_id)
         before = copy.deepcopy(server.tasks[task_id])
@@ -373,6 +375,7 @@ class ConversationTests(unittest.TestCase):
         self.assertNotIn("pinned", server.tasks[task_id])
 
     def test_delete_removes_files_session_and_index_but_not_active_chats(self):
+        """Deleting removes the files, session, and index entry, and refuses active chats."""
         task_id = self.create()
         self.assertEqual(self.client.delete(f"/tasks/{task_id}", headers=self.headers).status_code, 409)
         self.finish(task_id)

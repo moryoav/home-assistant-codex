@@ -282,6 +282,7 @@ async function loadUsage() {
     usageTimer = setTimeout(loadUsage, 60000);
   }
 }
+/** Send a JSON request to the worker API and return the parsed response. */
 async function api(path, body, method) {
   const response = await fetch(path.replace(/^\//, ""), {
     method: method || (body === undefined ? "GET" : "POST"),
@@ -364,6 +365,7 @@ function controls() {
   $("notice").hidden = !notice;
   renderPicker();
 }
+/** Build the small pin icon shown beside pinned chat titles. */
 function pinIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -377,9 +379,11 @@ function pinIcon() {
   svg.append(path);
   return svg;
 }
+/** Find a loaded sidebar chat by task id. */
 function chatById(id) {
   return state.chats.find((chat) => chat.task_id === id);
 }
+/** Sort pinned chats first, then most recently updated, then by id for stability. */
 function chatOrder(a, b) {
   return (
     Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) ||
@@ -389,6 +393,7 @@ function chatOrder(a, b) {
     b.task_id.localeCompare(a.task_id)
   );
 }
+/** Build one sidebar row with its title, summary, status, and actions button. */
 function renderRow(chat) {
   const title = chat.title || "Untitled chat";
   const row = textNode("div", "", "chat-row");
@@ -480,11 +485,16 @@ async function loadList(older = false) {
   const data = await api(
     `tasks?summary=true&order=pinned_first&limit=${count}&offset=${offset}`,
   );
-  const merged = new Map(state.chats.map((chat) => [chat.task_id, chat]));
+  // A full refresh covers every loaded chat, so drop entries the server no
+  // longer returns, such as a chat deleted here or in another tab.
+  const kept = older || state.chats.length > 500 ? state.chats : [];
+  const hadSelected = state.chats.some((chat) => chat.task_id === state.id);
+  const merged = new Map(kept.map((chat) => [chat.task_id, chat]));
   for (const chat of data.tasks) merged.set(chat.task_id, chat);
   state.chats = [...merged.values()].sort(chatOrder);
   state.next = state.chats.length < data.total ? state.chats.length : null;
   state.active = data.active_task_id;
+  if (hadSelected && !merged.has(state.id)) await selectChat(null);
   renderList();
   controls();
 }
@@ -693,19 +703,23 @@ const menu = {
   pressStart: null,
   suppressClick: false,
 };
+/** Show or clear the error line under the chat list. */
 function sidebarError(error) {
   $("sidebar-error").textContent = error ? String(error.message || error) : "";
   $("sidebar-error").hidden = !error;
 }
+/** Show or clear the error line inside the named dialog. */
 function dialogError(name, error) {
   $(name + "-error").textContent = error ? String(error.message || error) : "";
   $(name + "-error").hidden = !error;
 }
+/** Return the enabled, visible items of the chat actions menu. */
 function menuItems() {
   return [...$("chat-menu").querySelectorAll('[role="menuitem"]')].filter(
     (item) => !item.disabled && item.offsetParent !== null,
   );
 }
+/** Place the desktop menu at the pointer or under its trigger, inside the viewport. */
 function positionChatMenu() {
   const panel = $("chat-menu");
   panel.style.left = panel.style.top = "0px";
@@ -721,6 +735,7 @@ function positionChatMenu() {
   panel.style.left = `${left}px`;
   panel.style.top = `${top}px`;
 }
+/** Hide the chat actions menu and optionally return focus to its trigger. */
 function closeChatMenu(focus = false) {
   if ($("chat-menu").hidden) return;
   const trigger = menu.trigger;
@@ -769,6 +784,7 @@ function openChatMenu(id, trigger, point = null) {
   menu.trigger?.closest(".chat-row")?.classList.add("menu-open");
   menuItems()[0]?.focus();
 }
+/** Stop a pending long-press timer and forget where the press started. */
 function cancelLongPress() {
   clearTimeout(menu.longPress);
   menu.longPress = null;
@@ -786,8 +802,16 @@ document.addEventListener(
   },
   true,
 );
+// Some browsers fire no click after a long press, so every new press starts
+// fresh instead of letting a stale flag swallow the next tap on the menu.
+document.addEventListener(
+  "pointerdown",
+  () => {
+    menu.suppressClick = false;
+  },
+  true,
+);
 $("chat-list").addEventListener("pointerdown", (event) => {
-  menu.suppressClick = false;
   cancelLongPress();
   const row = event.target.closest(".row-main");
   if (!row || !event.isPrimary || !["touch", "pen"].includes(event.pointerType))
@@ -889,6 +913,7 @@ $("chat-menu").addEventListener("click", async (event) => {
   else if (action === "rename") openRename(id);
   else if (action === "delete") openDelete(id);
 });
+/** Pin or unpin a chat through the worker API and re-sort the list. */
 async function togglePin(id) {
   const chat = chatById(id);
   if (!chat) return;
@@ -904,6 +929,7 @@ async function togglePin(id) {
     sidebarError(error);
   }
 }
+/** Open the rename dialog prefilled with the chat's current title. */
 function openRename(id) {
   const chat = chatById(id);
   if (!chat) return;
@@ -938,6 +964,7 @@ $("rename-form").addEventListener("submit", async (event) => {
     $("rename-save").disabled = false;
   }
 });
+/** Open the delete confirmation dialog for a chat. */
 function openDelete(id) {
   const chat = chatById(id);
   if (!chat) return;

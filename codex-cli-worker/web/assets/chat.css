@@ -231,13 +231,17 @@ aside {
   .row-title {
     padding-right: 0;
   }
+  /* The hidden button must not swallow taps meant for the title under it. */
+  .row-menu,
   .chat-row:hover .row-menu,
   .chat-row:focus-within .row-menu {
     opacity: 0;
+    pointer-events: none;
   }
   .chat-row.menu-open .row-menu,
   .row-menu:focus-visible {
     opacity: 1;
+    pointer-events: auto;
   }
 }
 .sidebar-error {

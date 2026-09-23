@@ -2778,6 +2778,7 @@ def save_chat_settings(task_id: str) -> Response:
 @app.post("/tasks/<task_id>/pin")
 @require_auth
 def pin_task(task_id: str) -> Response:
+    """Pin or unpin a chat without moving it in the recent list."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or not isinstance(payload.get("pinned"), bool):
         return jsonify({"ok": False, "error": "pinned must be true or false"}), 400
@@ -2790,6 +2791,7 @@ def pin_task(task_id: str) -> Response:
 @app.post("/tasks/<task_id>/title")
 @require_auth
 def rename_task(task_id: str) -> Response:
+    """Rename a chat; the title is normalized and the recent order is kept."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return jsonify({"ok": False, "error": "title is required"}), 400
@@ -2806,6 +2808,7 @@ def rename_task(task_id: str) -> Response:
 @app.delete("/tasks/<task_id>")
 @require_auth
 def delete_task(task_id: str) -> Response:
+    """Delete a finished chat with its files, Codex session, and index entry."""
     with lock:
         task = tasks.get(task_id)
         if task is None:

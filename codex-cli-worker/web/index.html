@@ -40,6 +40,7 @@
             ↻
           </button>
         </div>
+        <p id="sidebar-error" class="sidebar-error" role="alert" hidden></p>
         <nav id="chat-list" aria-label="Saved chats"></nav>
         <p id="list-empty" class="muted">
           Your conversations will appear here.
@@ -225,6 +226,61 @@
         </div>
       </main>
     </div>
+    <button
+      id="menu-scrim"
+      class="menu-scrim"
+      aria-label="Close chat actions"
+      hidden
+    ></button>
+    <div
+      id="chat-menu"
+      class="chat-menu"
+      role="menu"
+      aria-labelledby="chat-menu-title"
+      hidden
+    >
+      <p id="chat-menu-title" class="chat-menu-title"></p>
+      <button type="button" role="menuitem" data-action="pin">Pin chat</button>
+      <button type="button" role="menuitem" data-action="rename">
+        Rename
+      </button>
+      <button type="button" role="menuitem" data-action="delete" class="danger">
+        Delete
+      </button>
+      <button type="button" role="menuitem" data-action="close">Cancel</button>
+    </div>
+    <dialog id="rename-dialog" class="small-dialog" aria-labelledby="rename-title">
+      <form id="rename-form">
+        <h2 id="rename-title">Rename chat</h2>
+        <label class="sr-only" for="rename-input">Chat title</label
+        ><input
+          id="rename-input"
+          type="text"
+          maxlength="200"
+          autocomplete="off"
+          spellcheck="false"
+          required
+        />
+        <p id="rename-error" class="dialog-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="rename-cancel" class="subtle">
+            Cancel
+          </button>
+          <button type="submit" id="rename-save">Save</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="delete-dialog" class="small-dialog" aria-labelledby="delete-title">
+      <h2 id="delete-title">Delete chat?</h2>
+      <p id="delete-text"></p>
+      <p id="delete-error" class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" id="delete-cancel" class="subtle">Cancel</button>
+        <button type="button" id="delete-confirm" class="danger">
+          Delete
+        </button>
+      </div>
+    </dialog>
     <dialog id="settings">
       <div class="dialog-header">
         <h2>Settings</h2>

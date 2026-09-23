@@ -282,9 +282,9 @@ async function loadUsage() {
     usageTimer = setTimeout(loadUsage, 60000);
   }
 }
-async function api(path, body) {
+async function api(path, body, method) {
   const response = await fetch(path.replace(/^\//, ""), {
-    method: body === undefined ? "GET" : "POST",
+    method: method || (body === undefined ? "GET" : "POST"),
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -317,6 +317,7 @@ function dateLabel(value, full = false) {
     : date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 function sidebar(open) {
+  if (!open) closeChatMenu();
   document.body.classList.toggle("sidebar-open", open);
   $("scrim").hidden = !open;
   $("menu").setAttribute("aria-expanded", String(open));
@@ -363,40 +364,112 @@ function controls() {
   $("notice").hidden = !notice;
   renderPicker();
 }
+function pinIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("pin-icon");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute(
+    "d",
+    "M8 2h8v2l-1.5 1v5.5l3.5 3V16h-5v6l-1 1-1-1v-6H6v-2.5l3.5-3V5L8 4z",
+  );
+  svg.append(path);
+  return svg;
+}
+function chatById(id) {
+  return state.chats.find((chat) => chat.task_id === id);
+}
+function chatOrder(a, b) {
+  return (
+    Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) ||
+    (b.updated_at || b.created_at).localeCompare(
+      a.updated_at || a.created_at,
+    ) ||
+    b.task_id.localeCompare(a.task_id)
+  );
+}
+function renderRow(chat) {
+  const title = chat.title || "Untitled chat";
+  const row = textNode("div", "", "chat-row");
+  row.classList.toggle("current", chat.task_id === state.id);
+  row.classList.toggle("menu-open", chat.task_id === menu.id);
+  const main = textNode("button", "", "row-main");
+  main.type = "button";
+  main.dataset.taskId = chat.task_id;
+  main.setAttribute("aria-current", String(chat.task_id === state.id));
+  const heading = textNode("span", "", "row-title");
+  if (chat.pinned) heading.append(pinIcon());
+  heading.append(textNode("span", title));
+  main.append(heading);
+  main.append(
+    textNode(
+      "span",
+      chat.summary || chat.question || labels[chat.status] || chat.status,
+      "row-preview",
+    ),
+  );
+  const meta = textNode("span", "", "row-meta");
+  meta.append(
+    textNode(
+      "span",
+      labels[chat.status] || chat.status,
+      chat.status === "waiting_for_input" ? "waiting" : "",
+    ),
+  );
+  meta.append(textNode("span", dateLabel(chat.updated_at || chat.created_at)));
+  main.append(meta);
+  main.onclick = () => selectChat(chat.task_id);
+  const actions = textNode("button", "⋯", "row-menu");
+  actions.type = "button";
+  actions.dataset.menuFor = chat.task_id;
+  actions.setAttribute("aria-label", `Chat actions for ${title}`);
+  actions.setAttribute("aria-haspopup", "menu");
+  actions.setAttribute("aria-expanded", String(chat.task_id === menu.id));
+  actions.onclick = () =>
+    chat.task_id === menu.id
+      ? closeChatMenu(true)
+      : openChatMenu(chat.task_id, actions);
+  row.append(main, actions);
+  return row;
+}
 function renderList() {
-  const signature = JSON.stringify([state.chats, state.id]);
+  const signature = JSON.stringify([state.chats, state.id, menu.id]);
   if (signature === state.listSignature) return;
   state.listSignature = signature;
   const list = $("chat-list");
-  const previousFocus = document.activeElement?.dataset.taskId;
+  const focused = document.activeElement;
+  const focusId = focused?.dataset.taskId || focused?.dataset.menuFor;
+  const focusMenu = Boolean(focused?.dataset.menuFor);
   list.replaceChildren();
-  for (const chat of state.chats) {
-    const row = textNode("button", "", "chat-row");
-    row.dataset.taskId = chat.task_id;
-    row.setAttribute("aria-current", String(chat.task_id === state.id));
-    row.append(textNode("span", chat.title || "Untitled chat", "row-title"));
-    row.append(
-      textNode(
-        "span",
-        chat.summary || chat.question || labels[chat.status] || chat.status,
-        "row-preview",
-      ),
+  const pinned = state.chats.filter((chat) => chat.pinned);
+  const groups = pinned.length
+    ? [
+        ["Pinned", pinned],
+        ["Recent", state.chats.filter((chat) => !chat.pinned)],
+      ]
+    : [["", state.chats]];
+  for (const [label, chats] of groups) {
+    if (label && chats.length) list.append(textNode("p", label, "list-group"));
+    for (const chat of chats) list.append(renderRow(chat));
+  }
+  if (focusId)
+    list
+      .querySelector(
+        focusMenu
+          ? `[data-menu-for="${CSS.escape(focusId)}"]`
+          : `[data-task-id="${CSS.escape(focusId)}"]`,
+      )
+      ?.focus();
+  if (menu.id) {
+    // Keep an open menu attached to the row that replaced its trigger.
+    const trigger = list.querySelector(
+      `[data-menu-for="${CSS.escape(menu.id)}"]`,
     );
-    const meta = textNode("span", "", "row-meta");
-    meta.append(
-      textNode(
-        "span",
-        labels[chat.status] || chat.status,
-        chat.status === "waiting_for_input" ? "waiting" : "",
-      ),
-    );
-    meta.append(
-      textNode("span", dateLabel(chat.updated_at || chat.created_at)),
-    );
-    row.append(meta);
-    row.onclick = () => selectChat(chat.task_id);
-    list.append(row);
-    if (previousFocus === chat.task_id) row.focus();
+    if (trigger) {
+      menu.trigger = trigger;
+      if (!$("chat-menu").classList.contains("sheet")) positionChatMenu();
+    } else closeChatMenu();
   }
   $("list-empty").hidden = state.chats.length > 0;
   $("load-more").hidden = state.next === null;
@@ -405,16 +478,11 @@ async function loadList(older = false) {
   const count = older ? 20 : Math.max(20, Math.min(500, state.chats.length));
   const offset = older ? state.chats.length : 0;
   const data = await api(
-    `tasks?summary=true&order=updated_desc&limit=${count}&offset=${offset}`,
+    `tasks?summary=true&order=pinned_first&limit=${count}&offset=${offset}`,
   );
   const merged = new Map(state.chats.map((chat) => [chat.task_id, chat]));
   for (const chat of data.tasks) merged.set(chat.task_id, chat);
-  state.chats = [...merged.values()].sort(
-    (a, b) =>
-      (b.updated_at || b.created_at).localeCompare(
-        a.updated_at || a.created_at,
-      ) || b.task_id.localeCompare(a.task_id),
-  );
+  state.chats = [...merged.values()].sort(chatOrder);
   state.next = state.chats.length < data.total ? state.chats.length : null;
   state.active = data.active_task_id;
   renderList();
@@ -616,6 +684,301 @@ async function selectChat(id) {
     if (state.id === id) showError(error);
   }
 }
+const menu = {
+  id: null,
+  trigger: null,
+  point: null,
+  returnId: null,
+  longPress: null,
+  pressStart: null,
+  suppressClick: false,
+};
+function sidebarError(error) {
+  $("sidebar-error").textContent = error ? String(error.message || error) : "";
+  $("sidebar-error").hidden = !error;
+}
+function dialogError(name, error) {
+  $(name + "-error").textContent = error ? String(error.message || error) : "";
+  $(name + "-error").hidden = !error;
+}
+function menuItems() {
+  return [...$("chat-menu").querySelectorAll('[role="menuitem"]')].filter(
+    (item) => !item.disabled && item.offsetParent !== null,
+  );
+}
+function positionChatMenu() {
+  const panel = $("chat-menu");
+  panel.style.left = panel.style.top = "0px";
+  const width = panel.offsetWidth;
+  const height = panel.offsetHeight;
+  const rect = menu.trigger?.getBoundingClientRect();
+  let left = menu.point ? menu.point.x : rect ? rect.right - width : 8;
+  let top = menu.point ? menu.point.y : rect ? rect.bottom + 4 : 8;
+  if (!menu.point && rect && top + height > innerHeight - 8)
+    top = rect.top - height - 4;
+  left = Math.max(8, Math.min(left, innerWidth - width - 8));
+  top = Math.max(8, Math.min(top, innerHeight - height - 8));
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+}
+function closeChatMenu(focus = false) {
+  if ($("chat-menu").hidden) return;
+  const trigger = menu.trigger;
+  $("chat-menu").hidden = true;
+  $("menu-scrim").hidden = true;
+  menu.id = null;
+  menu.trigger = null;
+  menu.point = null;
+  for (const button of $("chat-list").querySelectorAll(
+    '.row-menu[aria-expanded="true"]',
+  ))
+    button.setAttribute("aria-expanded", "false");
+  for (const row of $("chat-list").querySelectorAll(".chat-row.menu-open"))
+    row.classList.remove("menu-open");
+  if (focus && trigger?.isConnected) trigger.focus();
+}
+/** Show the actions for one chat, anchored to its button or as a sheet on phones. */
+function openChatMenu(id, trigger, point = null) {
+  const chat = chatById(id);
+  if (!chat) return;
+  if (id === menu.id && !$("chat-menu").hidden) return;
+  closeChatMenu();
+  closePicker();
+  menu.id = id;
+  menu.trigger =
+    trigger ||
+    $("chat-list").querySelector(`[data-menu-for="${CSS.escape(id)}"]`);
+  menu.point = point;
+  const panel = $("chat-menu");
+  $("chat-menu-title").textContent = chat.title || "Untitled chat";
+  panel.querySelector('[data-action="pin"]').textContent = chat.pinned
+    ? "Unpin chat"
+    : "Pin chat";
+  const remove = panel.querySelector('[data-action="delete"]');
+  const working =
+    ["queued", "running"].includes(chat.status) || state.active === id;
+  remove.disabled = working;
+  remove.title = working ? "Stop this task before deleting it." : "";
+  const sheet = matchMedia("(max-width:700px)").matches;
+  panel.classList.toggle("sheet", sheet);
+  panel.style.left = panel.style.top = "";
+  panel.hidden = false;
+  $("menu-scrim").hidden = !sheet;
+  if (!sheet) positionChatMenu();
+  menu.trigger?.setAttribute("aria-expanded", "true");
+  menu.trigger?.closest(".chat-row")?.classList.add("menu-open");
+  menuItems()[0]?.focus();
+}
+function cancelLongPress() {
+  clearTimeout(menu.longPress);
+  menu.longPress = null;
+  menu.pressStart = null;
+}
+// A long press opens the menu, so the click released afterwards must not
+// select the row, tap the scrim, or hit whatever ends up under the finger.
+document.addEventListener(
+  "click",
+  (event) => {
+    if (!menu.suppressClick) return;
+    menu.suppressClick = false;
+    event.preventDefault();
+    event.stopPropagation();
+  },
+  true,
+);
+$("chat-list").addEventListener("pointerdown", (event) => {
+  menu.suppressClick = false;
+  cancelLongPress();
+  const row = event.target.closest(".row-main");
+  if (!row || !event.isPrimary || !["touch", "pen"].includes(event.pointerType))
+    return;
+  menu.pressStart = { x: event.clientX, y: event.clientY };
+  menu.longPress = setTimeout(() => {
+    menu.longPress = null;
+    menu.suppressClick = true;
+    if (navigator.vibrate) navigator.vibrate(10);
+    openChatMenu(row.dataset.taskId);
+  }, 500);
+});
+$("chat-list").addEventListener("pointermove", (event) => {
+  if (
+    menu.pressStart &&
+    Math.hypot(
+      event.clientX - menu.pressStart.x,
+      event.clientY - menu.pressStart.y,
+    ) > 10
+  )
+    cancelLongPress();
+});
+for (const type of ["pointerup", "pointercancel", "pointerleave"])
+  $("chat-list").addEventListener(type, cancelLongPress);
+$("chat-list").addEventListener("contextmenu", (event) => {
+  const row = event.target.closest(".chat-row");
+  if (!row) return;
+  event.preventDefault();
+  const id = row.querySelector(".row-main").dataset.taskId;
+  // Android raises contextmenu for the same long press; keep one menu and drop the click.
+  const touch = Boolean(menu.pressStart);
+  if (touch) menu.suppressClick = true;
+  cancelLongPress();
+  const point =
+    !touch && event.clientX && event.clientY
+      ? { x: event.clientX, y: event.clientY }
+      : null;
+  openChatMenu(id, null, point);
+});
+$("chat-list").addEventListener("keydown", (event) => {
+  const row = event.target.closest(".row-main");
+  if (
+    row &&
+    (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+  ) {
+    event.preventDefault();
+    openChatMenu(row.dataset.taskId);
+  }
+});
+$("chat-list").addEventListener("scroll", () => {
+  // Follow the row while it stays in view; close once it scrolls away.
+  if ($("chat-menu").hidden || $("chat-menu").classList.contains("sheet"))
+    return;
+  const list = $("chat-list").getBoundingClientRect();
+  const rect = menu.trigger?.getBoundingClientRect();
+  if (!rect || rect.bottom < list.top || rect.top > list.bottom)
+    closeChatMenu();
+  else positionChatMenu();
+});
+window.addEventListener("resize", () => closeChatMenu());
+$("menu-scrim").onclick = () => closeChatMenu();
+document.addEventListener("pointerdown", (event) => {
+  if (
+    !$("chat-menu").hidden &&
+    !$("chat-menu").contains(event.target) &&
+    event.target !== menu.trigger
+  )
+    closeChatMenu();
+});
+$("chat-menu").addEventListener("keydown", (event) => {
+  const items = menuItems();
+  const index = items.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeChatMenu(true);
+  } else if (event.key === "Tab") {
+    closeChatMenu(true);
+  } else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+    event.preventDefault();
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) %
+            items.length;
+    items[next]?.focus();
+  }
+});
+$("chat-menu").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-action]");
+  if (!button || button.disabled) return;
+  const id = menu.id;
+  const action = button.dataset.action;
+  menu.returnId = id;
+  closeChatMenu(action === "close" || action === "pin");
+  if (action === "pin") await togglePin(id);
+  else if (action === "rename") openRename(id);
+  else if (action === "delete") openDelete(id);
+});
+async function togglePin(id) {
+  const chat = chatById(id);
+  if (!chat) return;
+  sidebarError(null);
+  try {
+    const data = await api(`tasks/${encodeURIComponent(id)}/pin`, {
+      pinned: !chat.pinned,
+    });
+    chat.pinned = data.pinned;
+    state.chats.sort(chatOrder);
+    renderList();
+  } catch (error) {
+    sidebarError(error);
+  }
+}
+function openRename(id) {
+  const chat = chatById(id);
+  if (!chat) return;
+  $("rename-dialog").dataset.chatId = id;
+  $("rename-input").value = chat.title || "";
+  $("rename-save").disabled = false;
+  dialogError("rename", null);
+  $("rename-dialog").showModal();
+  $("rename-input").select();
+}
+$("rename-cancel").onclick = () => $("rename-dialog").close();
+$("rename-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const id = $("rename-dialog").dataset.chatId;
+  const title = $("rename-input").value.replace(/\s+/g, " ").trim();
+  if (!title) {
+    dialogError("rename", "Enter a title for this chat.");
+    return;
+  }
+  $("rename-save").disabled = true;
+  try {
+    const data = await api(`tasks/${encodeURIComponent(id)}/title`, { title });
+    const chat = chatById(id);
+    if (chat) chat.title = data.title;
+    if (state.task?.task_id === id) state.task.title = data.title;
+    if (state.id === id) $("chat-title").textContent = data.title;
+    renderList();
+    $("rename-dialog").close();
+  } catch (error) {
+    dialogError("rename", error);
+  } finally {
+    $("rename-save").disabled = false;
+  }
+});
+function openDelete(id) {
+  const chat = chatById(id);
+  if (!chat) return;
+  $("delete-dialog").dataset.chatId = id;
+  $("delete-text").textContent =
+    `“${chat.title || "Untitled chat"}” and its saved history will be removed. This cannot be undone.`;
+  $("delete-confirm").disabled = false;
+  dialogError("delete", null);
+  $("delete-dialog").showModal();
+  $("delete-cancel").focus();
+}
+$("delete-cancel").onclick = () => $("delete-dialog").close();
+for (const name of ["rename", "delete"])
+  $(name + "-dialog").addEventListener("close", () => {
+    // Return focus to the row's menu button, or to New chat when the row is gone.
+    const trigger = menu.returnId
+      ? $("chat-list").querySelector(
+          `[data-menu-for="${CSS.escape(menu.returnId)}"]`,
+        )
+      : null;
+    menu.returnId = null;
+    (trigger || $("new-chat")).focus();
+  });
+$("delete-confirm").onclick = async () => {
+  const id = $("delete-dialog").dataset.chatId;
+  $("delete-confirm").disabled = true;
+  try {
+    await api(`tasks/${encodeURIComponent(id)}`, undefined, "DELETE");
+    state.chats = state.chats.filter((chat) => chat.task_id !== id);
+    state.chatSettings.delete(id);
+    $("delete-dialog").close();
+    if (state.id === id) await selectChat(null);
+    state.drafts.delete(id);
+    renderList();
+    await loadList();
+  } catch (error) {
+    dialogError("delete", error);
+  } finally {
+    $("delete-confirm").disabled = false;
+  }
+};
 $("composer").addEventListener("submit", async (event) => {
   event.preventDefault();
   if ($("send").disabled) return;

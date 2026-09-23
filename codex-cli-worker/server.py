@@ -972,6 +972,8 @@ TURN_RESULT_FIELDS = (
 )
 CONTINUABLE_STATUSES = frozenset({"completed", "waiting_for_input", "failed", "cancelled"})
 TASK_STATUSES = CONTINUABLE_STATUSES | {"queued", "running"}
+TASK_ORDERS = frozenset({"created_asc", "updated_desc", "pinned_first"})
+TITLE_MAX_LENGTH = 200
 
 
 def atomic_json_write(path: Path, value: Any) -> None:
@@ -1192,6 +1194,7 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
         fields = ("task_id", "title", "status", "created_at", "updated_at", "summary", "question")
         result = {key: task.get(key, "") for key in fields}
         result["summary"] = str(result["summary"])[:240]
+        result["pinned"] = bool(task.get("pinned"))
     else:
         result = copy.deepcopy(task)
         result["chat_settings"] = copy.deepcopy(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
@@ -1214,6 +1217,67 @@ def update_task(task_id: str, **updates: Any) -> bool:
         atomic_json_write(task_dir / "task.json", task)
     save_task_index()
     return True
+
+
+def normalize_title(value: Any) -> str:
+    """Keep a renamed chat on one line and within the sidebar's limits."""
+    if not isinstance(value, str):
+        raise ValueError("title must be text")
+    title = " ".join(value.split())
+    if not title:
+        raise ValueError("title is required")
+    if len(title) > TITLE_MAX_LENGTH:
+        raise ValueError(f"title must be at most {TITLE_MAX_LENGTH} characters")
+    return title
+
+
+def save_task_fields(task_id: str, **fields: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Persist sidebar metadata in place without touching updated_at or the current turn.
+
+    Pinning or renaming must neither move a chat in the recent list nor rewrite
+    the outcome of an exchange, so this bypasses update_task on purpose. The
+    task dict is mutated under the lock so a running task's later writes keep
+    the new values.
+    """
+    missing = object()
+    with lock:
+        task = tasks.get(task_id)
+        if task is None:
+            return None, "task not found"
+        previous = {key: task.get(key, missing) for key in fields}
+        task.update(fields)
+        try:
+            task_dir = get_task_dir(task_id)
+            task_dir.mkdir(parents=True, exist_ok=True)
+            atomic_json_write(task_dir / "task.json", task)
+        except OSError:
+            for key, value in previous.items():
+                if value is missing:
+                    task.pop(key, None)
+                else:
+                    task[key] = value
+            return None, "Could not save the conversation. Try again."
+        save_task_index()
+        return task, None
+
+
+def remove_session_files(session_id: str) -> None:
+    """Best-effort removal of the Codex session a deleted chat could resume."""
+    if not session_id:
+        return
+    rollout = session_rollout_path(session_id)
+    targets = [rollout] if rollout else []
+    images = generated_images_dir(session_id)
+    if UUID_RE.fullmatch(session_id) and images.is_dir():
+        targets.append(images)
+    for target in targets:
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        except OSError as exc:
+            print(f"Could not remove session data {target}: {exc}", flush=True)
 
 
 def task_cancellation_requested(task_id: str) -> bool:
@@ -2648,12 +2712,15 @@ def list_tasks() -> Response:
     order = request.args.get("order", "created_asc")
     if status and status not in TASK_STATUSES:
         return jsonify({"ok": False, "error": "invalid task status"}), 400
-    if order not in {"created_asc", "updated_desc"}:
+    if order not in TASK_ORDERS:
         return jsonify({"ok": False, "error": "invalid task order"}), 400
     with lock:
         filtered = [task for task in tasks.values() if not status or task.get("status") == status]
-        key = "updated_at" if order == "updated_desc" else "created_at"
-        ordered = sorted(filtered, key=lambda item: (item.get(key) or item.get("created_at", ""), item["task_id"]), reverse=order == "updated_desc")
+        key = "created_at" if order == "created_asc" else "updated_at"
+        ordered = sorted(filtered, key=lambda item: (item.get(key) or item.get("created_at", ""), item["task_id"]), reverse=order != "created_asc")
+        if order == "pinned_first":
+            # Stable sort keeps the recent-activity order inside each group.
+            ordered.sort(key=lambda item: not item.get("pinned"))
         page = ordered[offset:offset + limit] if limit is not None else ordered[offset:]
         # Preserve the original unfiltered response shape for existing automations.
         summaries = request.args.get("summary") == "true"
@@ -2706,6 +2773,57 @@ def save_chat_settings(task_id: str) -> Response:
         tasks[task_id] = updated
         save_task_index()
     return jsonify({"ok": True, "chat_settings": settings})
+
+
+@app.post("/tasks/<task_id>/pin")
+@require_auth
+def pin_task(task_id: str) -> Response:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("pinned"), bool):
+        return jsonify({"ok": False, "error": "pinned must be true or false"}), 400
+    task, error = save_task_fields(task_id, pinned=payload["pinned"])
+    if task is None:
+        return jsonify({"ok": False, "error": error}), 404 if error == "task not found" else 500
+    return jsonify({"ok": True, "task_id": task_id, "pinned": bool(task.get("pinned"))})
+
+
+@app.post("/tasks/<task_id>/title")
+@require_auth
+def rename_task(task_id: str) -> Response:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "title is required"}), 400
+    try:
+        title = normalize_title(payload.get("title"))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    task, error = save_task_fields(task_id, title=title)
+    if task is None:
+        return jsonify({"ok": False, "error": error}), 404 if error == "task not found" else 500
+    return jsonify({"ok": True, "task_id": task_id, "title": task["title"]})
+
+
+@app.delete("/tasks/<task_id>")
+@require_auth
+def delete_task(task_id: str) -> Response:
+    with lock:
+        task = tasks.get(task_id)
+        if task is None:
+            return jsonify({"ok": False, "error": "task not found"}), 404
+        if task.get("status") in {"queued", "running"} or task_id in _active_task_ids_locked():
+            return jsonify({"ok": False, "error": "Stop this task before deleting it."}), 409
+        task_dir = get_task_dir(task_id)
+        try:
+            if task_dir.exists():
+                shutil.rmtree(task_dir)
+        except OSError:
+            # The chat stays listed so the user can retry instead of losing track of it.
+            return jsonify({"ok": False, "error": "Could not delete the conversation files. Try again."}), 500
+        tasks.pop(task_id, None)
+        save_task_index()
+        session_id = str(task.get("session_id") or "")
+    remove_session_files(session_id)
+    return jsonify({"ok": True, "task_id": task_id, "deleted": True})
 
 
 @app.post("/tasks")

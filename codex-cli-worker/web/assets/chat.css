@@ -142,30 +142,185 @@ aside {
   flex: 1;
   scrollbar-width: thin;
 }
+.list-group {
+  margin: 8px 0 3px;
+  padding: 0 11px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.list-group + .list-group,
+.chat-row + .list-group {
+  margin-top: 14px;
+}
 .chat-row {
+  position: relative;
+  margin: 2px 0;
+  border-radius: 8px;
+}
+.chat-row:hover,
+.chat-row.current,
+.chat-row.menu-open {
+  background: var(--hover);
+}
+.chat-row.current {
+  box-shadow: inset 3px 0 var(--accent);
+}
+.row-main {
   display: block;
   text-align: left;
   width: 100%;
   padding: 12px 11px;
-  margin: 2px 0;
   border-radius: 8px;
   background: transparent;
   color: var(--text);
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: pan-y;
 }
-.chat-row:hover,
-.chat-row[aria-current="true"] {
+.row-main:hover:not(:disabled) {
+  filter: none;
+}
+.row-menu {
+  position: absolute;
+  top: 7px;
+  right: 6px;
+  padding: 1px 6px 3px;
+  font-size: 18px;
+  line-height: 1.1;
+  border-radius: 6px;
+  color: var(--muted);
   background: var(--hover);
+  opacity: 0;
+  transition: opacity 0.12s;
 }
-.chat-row[aria-current="true"] {
-  box-shadow: inset 3px 0 var(--accent);
+.chat-row:hover .row-menu,
+.chat-row:focus-within .row-menu,
+.chat-row.menu-open .row-menu,
+.row-menu:focus-visible {
+  opacity: 1;
+}
+.row-menu:hover,
+.row-menu[aria-expanded="true"] {
+  background: var(--surface);
+  color: var(--text);
 }
 .row-title {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  font-weight: 500;
+  line-height: 1.5;
+  padding-right: 24px;
+}
+.row-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pin-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  fill: var(--accent);
+}
+@media (hover: none) {
+  .row-title {
+    padding-right: 0;
+  }
+  .chat-row:hover .row-menu,
+  .chat-row:focus-within .row-menu {
+    opacity: 0;
+  }
+  .chat-row.menu-open .row-menu,
+  .row-menu:focus-visible {
+    opacity: 1;
+  }
+}
+.sidebar-error {
+  margin: 0 0 6px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--error);
+}
+.chat-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 190px;
+  padding: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow:
+    0 5px 22px #00000018,
+    0 1px 4px #00000008;
+}
+.chat-menu-title {
+  display: none;
+  margin: 4px 10px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
-  line-height: 1.5;
+}
+.chat-menu [role="menuitem"] {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.chat-menu [role="menuitem"]:hover:not(:disabled),
+.chat-menu [role="menuitem"]:focus-visible {
+  background: var(--surface);
+  filter: none;
+  outline-offset: -2px;
+}
+.chat-menu .danger {
+  color: var(--error);
+}
+.chat-menu [data-action="close"] {
+  display: none;
+}
+.menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: #0006;
+  border: 0;
+  border-radius: 0;
+}
+.chat-menu.sheet {
+  inset: auto 0 0 0;
+  min-width: 0;
+  padding: 10px 12px max(12px, env(safe-area-inset-bottom));
+  border-radius: 18px 18px 0 0;
+  border-bottom: 0;
+}
+.chat-menu.sheet .chat-menu-title {
+  display: block;
+  margin: 6px 12px 10px;
+}
+.chat-menu.sheet [role="menuitem"] {
+  min-height: 46px;
+  padding: 12px;
+  font-size: 15px;
+}
+.chat-menu.sheet [data-action="close"] {
+  display: block;
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 8px 8px;
+  color: var(--muted);
 }
 .row-preview {
   display: block;
@@ -797,6 +952,44 @@ dialog {
 dialog::backdrop {
   background: #0007;
 }
+.small-dialog {
+  width: min(420px, calc(100% - 28px));
+}
+.small-dialog h2 {
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 500;
+}
+.small-dialog p {
+  margin: 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+#rename-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+#rename-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.dialog-error {
+  margin-top: 10px !important;
+  color: var(--error);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+.dialog-actions .danger {
+  background: var(--error);
+  color: #fff;
+}
 .dialog-header {
   display: flex;
   align-items: center;
@@ -941,7 +1134,8 @@ dialog label {
   .row-title {
     font-size: 14px;
   }
-  #message {
+  #message,
+  #rename-input {
     font-size: 16px;
   }
 }

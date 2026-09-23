@@ -28,6 +28,74 @@ const os = require("node:os");
     await page.waitForFunction(
       () => document.querySelectorAll(".chat-row").length === 25,
     );
+    // Chat actions: hovering a row reveals its menu button; pin, rename, delete.
+    await page.locator('.chat-row:has([data-task-id="preview-05"])').hover();
+    await page.locator('[data-menu-for="preview-05"]').click();
+    await page.locator("#chat-menu").waitFor({ state: "visible" });
+    assert.equal(
+      await page.locator('#chat-menu [data-action="close"]').isVisible(),
+      false,
+    );
+    await page.screenshot({
+      path: path.join(output, "chat-menu.png"),
+      animations: "disabled",
+    });
+    await page.getByRole("menuitem", { name: "Pin chat" }).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".list-group")?.textContent === "Pinned" &&
+        document.querySelector(".row-main").dataset.taskId === "preview-05",
+    );
+    assert.equal(await page.locator(".pin-icon").count(), 1);
+    // Keyboard: Shift+F10 opens the menu, arrows move, Enter activates.
+    await page.locator('[data-task-id="preview-06"]').focus();
+    await page.keyboard.press("Shift+F10");
+    await page.locator("#chat-menu").waitFor({ state: "visible" });
+    await page.keyboard.press("ArrowDown");
+    assert.equal(
+      await page.evaluate(() => document.activeElement.dataset.action),
+      "rename",
+    );
+    await page.keyboard.press("Enter");
+    await page.locator("#rename-dialog").waitFor({ state: "visible" });
+    await page.locator("#rename-input").fill("  Porch   lights ");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-task-id="preview-06"] .row-title')
+          .textContent === "Porch lights",
+    );
+    // Right-click opens the same menu; Delete asks for confirmation first.
+    await page
+      .locator('[data-task-id="preview-07"]')
+      .click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Delete" }).click();
+    await page.locator("#delete-dialog").waitFor({ state: "visible" });
+    await page.locator("#delete-cancel").click();
+    assert.equal(await page.locator(".chat-row").count(), 25);
+    await page
+      .locator('[data-task-id="preview-07"]')
+      .click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Delete" }).click();
+    await page.locator("#delete-confirm").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".chat-row").length === 24 &&
+        !document.querySelector('[data-task-id="preview-07"]'),
+    );
+    const managed = await page.evaluate(async () => ({
+      listing: (
+        await (
+          await fetch("tasks?summary=true&order=pinned_first&limit=3")
+        ).json()
+      ).tasks,
+      deleted: (await fetch("tasks/preview-07")).status,
+      renamed: (await (await fetch("tasks/preview-06")).json()).task.title,
+    }));
+    assert.equal(managed.listing[0].task_id, "preview-05");
+    assert.equal(managed.listing[0].pinned, true);
+    assert.equal(managed.deleted, 404);
+    assert.equal(managed.renamed, "Porch lights");
     await page.locator('[data-task-id="preview-02"]').click();
     const image = page.locator("#messages img.attachment-image");
     await image.waitFor();
@@ -310,9 +378,60 @@ const os = require("node:os");
       fullPage: true,
       animations: "disabled",
     });
+    // Long press on a phone opens the actions sheet without selecting the chat.
+    const touch = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+    });
+    const phone = await touch.newPage();
+    phone.on("pageerror", (error) => errors.push(error.message));
+    await phone.goto("http://127.0.0.1:9137/preview/");
+    await phone.locator(".chat-row").first().waitFor({ state: "attached" });
+    await phone
+      .getByRole("button", { name: "Open conversations", exact: true })
+      .click();
+    await phone.waitForFunction(
+      () => document.querySelector("#sidebar").getBoundingClientRect().x >= 0,
+    );
+    const input = await touch.newCDPSession(phone);
+    const press = async (hold) => {
+      const row = phone.locator('[data-task-id="preview-01"]');
+      await row.scrollIntoViewIfNeeded();
+      const box = await row.boundingBox();
+      const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      await input.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [point],
+      });
+      await phone.waitForTimeout(hold);
+      await input.send("Input.dispatchTouchEvent", {
+        type: "touchEnd",
+        touchPoints: [],
+      });
+    };
+    await press(700);
+    await phone.locator("#chat-menu.sheet").waitFor({ state: "visible" });
+    assert.equal(await phone.locator("#chat-title").textContent(), "New chat");
+    assert.equal(
+      await phone.locator("#chat-menu-title").textContent(),
+      "Check the energy dashboard",
+    );
+    await phone.screenshot({
+      path: path.join(output, "mobile-chat-menu.png"),
+      animations: "disabled",
+    });
+    await phone.getByRole("menuitem", { name: "Cancel" }).click();
+    assert.equal(await phone.locator("#chat-menu").isHidden(), true);
+    await press(50);
+    await phone
+      .locator("#messages")
+      .getByText("The dashboard configuration is valid.", { exact: true })
+      .waitFor();
+    await touch.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

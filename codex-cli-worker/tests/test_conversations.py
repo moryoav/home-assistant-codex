@@ -301,6 +301,109 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(server.tasks[task_id]["turns"][0]["changes"]["added"], ["first.yaml"])
         self.assertEqual(server.tasks[task_id]["turns"][1]["changes"]["added"], ["second.yaml"])
 
+    def test_pin_persists_without_reordering_and_lists_first(self):
+        ids = []
+        for index in range(3):
+            task_id = self.create(f"Prompt {index}")
+            self.finish(task_id)
+            server.tasks[task_id]["updated_at"] = f"2026-09-2{index}T12:00:00+00:00"
+            ids.append(task_id)
+        oldest = ids[0]
+        before = copy.deepcopy(server.tasks[oldest])
+        for body in ({}, [], {"pinned": "yes"}, {"pinned": 1}):
+            self.assertEqual(self.post(f"/tasks/{oldest}/pin", body).status_code, 400)
+        self.assertEqual(self.post("/tasks/missing/pin", {"pinned": True}).status_code, 404)
+        self.assertEqual(self.client.post(f"/tasks/{oldest}/pin", json={"pinned": True}).status_code, 401)
+        self.assertEqual(server.tasks[oldest], before)
+        with patch.object(server, "utc_now", return_value="2027-01-01T00:00:00+00:00"):
+            response = self.post(f"/tasks/{oldest}/pin", {"pinned": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"ok": True, "task_id": oldest, "pinned": True})
+        self.assertEqual(server.tasks[oldest]["updated_at"], before["updated_at"])
+        self.assertEqual(server.tasks[oldest]["turns"], before["turns"])
+        recent = self.client.get("/tasks?summary=true&order=updated_desc", headers=self.headers).json["tasks"]
+        self.assertEqual([item["task_id"] for item in recent], ids[::-1])
+        self.assertEqual([item["pinned"] for item in recent], [False, False, True])
+        pinned_first = self.client.get("/tasks?summary=true&order=pinned_first&limit=2", headers=self.headers).json
+        self.assertEqual([item["task_id"] for item in pinned_first["tasks"]], [oldest, ids[2]])
+        self.assertEqual(pinned_first["next_offset"], 2)
+        created = self.client.get("/tasks", headers=self.headers).json["tasks"]
+        self.assertEqual([item["task_id"] for item in created], sorted(ids, key=lambda i: (server.tasks[i]["created_at"], i)))
+        server.tasks.clear()
+        server.load_task_index()
+        self.assertTrue(server.tasks[oldest]["pinned"])
+        self.assertEqual(self.post(f"/tasks/{oldest}/pin", {"pinned": False}).json["pinned"], False)
+        server.tasks.clear()
+        server.load_task_index()
+        self.assertFalse(server.tasks[oldest]["pinned"])
+        # Pinning a running chat is allowed and must not disturb its run state.
+        running = self.create("Working")
+        self.assertEqual(self.post(f"/tasks/{running}/pin", {"pinned": True}).status_code, 200)
+        self.assertEqual(server.tasks[running]["status"], "queued")
+        self.finish(running)
+        self.assertTrue(server.tasks[running]["pinned"])
+        self.assertEqual(server.tasks[running]["status"], "completed")
+
+    def test_rename_validates_and_persists_without_touching_history(self):
+        task_id = self.create()
+        self.finish(task_id)
+        before = copy.deepcopy(server.tasks[task_id])
+        for body in ({}, [], {"title": ""}, {"title": "   \n\t "}, {"title": 5}, {"title": "x" * 201}):
+            self.assertEqual(self.post(f"/tasks/{task_id}/title", body).status_code, 400)
+        self.assertEqual(self.post("/tasks/missing/title", {"title": "New"}).status_code, 404)
+        self.assertEqual(self.client.post(f"/tasks/{task_id}/title", json={"title": "New"}).status_code, 401)
+        self.assertEqual(server.tasks[task_id], before)
+        with patch.object(server, "utc_now", return_value="2027-01-01T00:00:00+00:00"):
+            response = self.post(f"/tasks/{task_id}/title", {"title": "  Kitchen\n  lights   plan  "})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["title"], "Kitchen lights plan")
+        self.assertEqual(server.tasks[task_id]["updated_at"], before["updated_at"])
+        self.assertEqual(server.tasks[task_id]["turns"], before["turns"])
+        self.assertEqual(self.post(f"/tasks/{task_id}/title", {"title": "x" * 200}).status_code, 200)
+        server.tasks.clear()
+        server.load_task_index()
+        task = self.client.get(f"/tasks/{task_id}", headers=self.headers).json["task"]
+        self.assertEqual(task["title"], "x" * 200)
+        summary = self.client.get("/tasks?summary=true", headers=self.headers).json["tasks"][0]
+        self.assertEqual(summary["title"], "x" * 200)
+        with patch.object(server, "atomic_json_write", side_effect=OSError("disk full")):
+            self.assertEqual(self.post(f"/tasks/{task_id}/title", {"title": "Lost"}).status_code, 500)
+            self.assertEqual(self.post(f"/tasks/{task_id}/pin", {"pinned": True}).status_code, 500)
+        self.assertEqual(server.tasks[task_id]["title"], "x" * 200)
+        self.assertNotIn("pinned", server.tasks[task_id])
+
+    def test_delete_removes_files_session_and_index_but_not_active_chats(self):
+        task_id = self.create()
+        self.assertEqual(self.client.delete(f"/tasks/{task_id}", headers=self.headers).status_code, 409)
+        self.finish(task_id)
+        other = self.create("Keep me")
+        self.finish(other)
+        (server.CODEX_HOME / "generated_images" / self.session_id).mkdir(parents=True)
+        task_dir = server.get_task_dir(task_id)
+        self.assertTrue((task_dir / "task.json").exists())
+        self.assertEqual(self.client.delete(f"/tasks/{task_id}").status_code, 401)
+        self.assertEqual(self.client.delete("/tasks/missing", headers=self.headers).status_code, 404)
+        with patch.object(server, "active_task_runners", {task_id}):
+            self.assertEqual(self.client.delete(f"/tasks/{task_id}", headers=self.headers).status_code, 409)
+        self.assertIn(task_id, server.tasks)
+        with patch.object(server.shutil, "rmtree", side_effect=OSError("busy")):
+            self.assertEqual(self.client.delete(f"/tasks/{task_id}", headers=self.headers).status_code, 500)
+        self.assertIn(task_id, server.tasks)
+        self.assertTrue(self.session_file.exists())
+        response = self.client.delete(f"/tasks/{task_id}", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"ok": True, "task_id": task_id, "deleted": True})
+        self.assertNotIn(task_id, server.tasks)
+        self.assertFalse(task_dir.exists())
+        self.assertFalse(self.session_file.exists())
+        self.assertFalse((server.CODEX_HOME / "generated_images" / self.session_id).exists())
+        self.assertNotIn(task_id, json.loads(server.TASK_STATE_FILE.read_text(encoding="utf-8")))
+        self.assertEqual(self.client.get(f"/tasks/{task_id}", headers=self.headers).status_code, 404)
+        server.tasks.clear()
+        server.load_task_index()
+        self.assertEqual(list(server.tasks), [other])
+        self.assertTrue(server.get_task_dir(other).exists())
+
     def test_web_assets_are_packaged_and_load_without_account_calls(self):
         self.assertEqual(self.client.get("/").status_code, 403)
         self.assertEqual(self.client.get("/assets/index.html").status_code, 404)

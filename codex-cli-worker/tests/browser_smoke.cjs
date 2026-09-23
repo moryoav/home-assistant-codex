@@ -36,10 +36,6 @@ const os = require("node:os");
       await page.locator('#chat-menu [data-action="close"]').isVisible(),
       false,
     );
-    await page.screenshot({
-      path: path.join(output, "chat-menu.png"),
-      animations: "disabled",
-    });
     await page.getByRole("menuitem", { name: "Pin chat" }).click();
     await page.waitForFunction(
       () =>
@@ -417,10 +413,6 @@ const os = require("node:os");
       await phone.locator("#chat-menu-title").textContent(),
       "Check the energy dashboard",
     );
-    await phone.screenshot({
-      path: path.join(output, "mobile-chat-menu.png"),
-      animations: "disabled",
-    });
     await phone.getByRole("menuitem", { name: "Cancel" }).click();
     assert.equal(await phone.locator("#chat-menu").isHidden(), true);
     await press(50);

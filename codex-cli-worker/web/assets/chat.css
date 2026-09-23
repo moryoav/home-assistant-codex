@@ -754,6 +754,11 @@ textarea::placeholder {
   font-size: 11px;
   color: var(--muted);
 }
+.pending-file.preparing {
+  min-height: 50px;
+  padding: 4px 12px;
+  font-style: italic;
+}
 .pending-file img {
   width: 40px;
   height: 40px;

@@ -396,6 +396,81 @@ function pngBuffer(width = 8, height = 6) {
       }),
       [200, "image/png"],
     );
+    // Timing regressions, made deterministic by gating image decoding: a
+    // batch stays with the chat it was picked in, and Send waits for images
+    // that are still being prepared.
+    await page.evaluate(() => {
+      const original = window.createImageBitmap.bind(window);
+      window.__bitmapGates = [];
+      window.__restoreBitmap = () => {
+        window.createImageBitmap = original;
+      };
+      window.createImageBitmap = (...args) =>
+        new Promise((resolve) => {
+          window.__bitmapGates.push(() => resolve(original(...args)));
+        });
+    });
+    const releaseDecode = async () => {
+      await page.waitForFunction(() => window.__bitmapGates.length > 0);
+      await page.evaluate(() => window.__bitmapGates.shift()());
+    };
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    await page.locator("#file-input").setInputFiles([
+      { name: "first.png", mimeType: "image/png", buffer: shot },
+      { name: "second.png", mimeType: "image/png", buffer: shot },
+    ]);
+    await page.waitForFunction(() => window.__bitmapGates.length === 1);
+    assert.equal(await page.locator(".pending-file.preparing").count(), 1);
+    // Switch chats while the first image is still decoding.
+    await page.locator('[data-task-id="preview-00"]').click();
+    await page
+      .locator("#messages")
+      .getByText("Your evening routine looks good.", { exact: false })
+      .first()
+      .waitFor();
+    assert.equal(await page.locator(".pending-file").count(), 0);
+    await releaseDecode();
+    await releaseDecode();
+    assert.equal(await page.locator(".pending-file").count(), 0);
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".pending-file:not(.preparing)").length ===
+          2 &&
+        document.querySelectorAll(".pending-file.preparing").length === 0,
+    );
+    // Send stays disabled until the third image is ready, then sends all three.
+    await page.locator("#message").fill("Compare these three.");
+    await page.locator("#file-input").setInputFiles({
+      name: "third.png",
+      mimeType: "image/png",
+      buffer: shot,
+    });
+    await page.waitForFunction(() => window.__bitmapGates.length === 1);
+    assert.equal(await page.locator(".pending-file.preparing").count(), 1);
+    assert.equal(await page.locator("#send").isDisabled(), true);
+    await page.locator("#message").press("Enter");
+    assert.equal(await page.locator(".answer").count(), 0);
+    await releaseDecode();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".pending-file:not(.preparing)").length ===
+        3,
+    );
+    assert.equal(await page.locator("#send").isDisabled(), false);
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
+    await page
+      .locator("#messages")
+      .getByText("Preview response: Compare these three.", { exact: true })
+      .waitFor();
+    assert.equal(
+      await page.locator("#messages .user-attachments img").count(),
+      3,
+    );
+    assert.equal(await page.locator(".pending-file").count(), 0);
+    await page.evaluate(() => window.__restoreBitmap());
     await page.getByRole("button", { name: "Open settings" }).click();
     await page
       .getByText("Signed in (local preview)", { exact: true })
@@ -532,7 +607,7 @@ function pngBuffer(width = 8, height = 6) {
     await touch.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: attached images (pick, reject, remove, send, render), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

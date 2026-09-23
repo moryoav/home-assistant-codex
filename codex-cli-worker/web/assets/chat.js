@@ -350,13 +350,15 @@ function controls() {
     state.loading ||
     active ||
     (state.id !== null && !task?.can_continue) ||
+    preparingCount(state.files) > 0 ||
     !$("message").value.trim();
   $("cancel").hidden = !task || !["queued", "running"].includes(task.status);
   $("cancel").disabled = state.busy;
   $("new-chat").disabled = state.busy || state.settingsBusy;
   $("message").readOnly = state.busy;
   $("attach").disabled =
-    state.busy || state.files.length >= UPLOADS_PER_MESSAGE;
+    state.busy ||
+    state.files.length + preparingCount(state.files) >= UPLOADS_PER_MESSAGE;
   $("compose-hint").textContent = state.id
     ? "Continue this conversation with its saved context."
     : "A new chat starts a separate conversation.";
@@ -1138,33 +1140,53 @@ async function prepareUpload(file) {
     url: URL.createObjectURL(blob),
   };
 }
+// Images still decoding or resizing, keyed by the pending list they belong to.
+const preparing = new Map();
+/** Count the images still being prepared for a pending list. */
+function preparingCount(list) {
+  return preparing.get(list) || 0;
+}
 /** Add chosen, dropped, or pasted files to the pending list after checks. */
 async function addUploads(fileList) {
   const files = [...(fileList || [])].filter((file) => file && file.size);
-  if (!files.length) return;
+  if (!files.length || state.busy) return;
+  // The batch belongs to the draft it was picked in. Switching chats swaps
+  // state.files for another list, so every step below works on this one.
+  const target = state.files;
+  const sync = () => {
+    if (target !== state.files) return;
+    renderPending();
+    controls();
+  };
   showError(null);
   for (const file of files) {
-    if (state.files.length >= UPLOADS_PER_MESSAGE) {
+    if (target.length + preparingCount(target) >= UPLOADS_PER_MESSAGE) {
       showError(
         new Error(`Attach at most ${UPLOADS_PER_MESSAGE} images per message.`),
       );
       break;
     }
+    preparing.set(target, preparingCount(target) + 1);
+    sync();
     try {
-      state.files.push(await prepareUpload(file));
+      target.push(await prepareUpload(file));
     } catch (error) {
       showError(error);
+    } finally {
+      if (preparingCount(target) > 1)
+        preparing.set(target, preparingCount(target) - 1);
+      else preparing.delete(target);
+      sync();
     }
   }
-  renderPending();
-  controls();
 }
 /** Drop one pending image and release its preview. */
 function removeUpload(id) {
-  const upload = state.files.find((item) => item.id === id);
-  if (!upload) return;
-  URL.revokeObjectURL(upload.url);
-  state.files = state.files.filter((item) => item !== upload);
+  const index = state.files.findIndex((item) => item.id === id);
+  if (index < 0) return;
+  URL.revokeObjectURL(state.files[index].url);
+  // Mutate in place: a batch still decoding holds a reference to this list.
+  state.files.splice(index, 1);
   renderPending();
   controls();
   $("attach").focus();
@@ -1193,7 +1215,9 @@ function renderPending() {
     item.append(img, name, remove);
     strip.append(item);
   }
-  strip.hidden = !state.files.length;
+  for (let count = preparingCount(state.files); count > 0; count--)
+    strip.append(textNode("div", "Preparing image…", "pending-file preparing"));
+  strip.hidden = !state.files.length && !preparingCount(state.files);
 }
 $("attach").onclick = () => $("file-input").click();
 $("file-input").addEventListener("change", async () => {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.51
+
+- **Attach images to a message.** Use the paperclip button next to the model pill, paste a screenshot into the message box, or drop image files onto the composer. Attached images are sent to Codex with the message, shown with your message in the chat, and kept with the conversation. Works for new chats and for continuing saved ones.
+- Images reach Codex through the CLI `--image` option and are named in the task prompt. PNG, JPEG, GIF, and WebP only; up to 6 images per message and 10 MB each. The UI shrinks images larger than 2048 pixels on their longest edge before uploading.
+- Worker API: `POST /tasks`, `POST /tasks/<task_id>/continue`, and `POST /tasks/<task_id>/reply` accept an optional `attachments` list of base64 images. Each turn reports its uploads under `prompt_attachments`, attachment entries carry an `origin` of `user` or `codex`, and `GET /tasks/<task_id>/attachments/<attachment_id>` serves both kinds.
+- Replace the reasoning level's text arrow with an aligned chevron icon.
+
+Update the **Codex CLI Worker** app to **0.1.51** to attach images to chats.
+
 ## 0.1.50
 
 - Add a chat actions menu to the sidebar. On desktop, hover over a chat and use its **⋯** button, or right-click the row; on phones, long-press the chat to open a bottom sheet. The menu also opens from the keyboard with Shift+F10.

@@ -92,6 +92,13 @@ CANCELLED_TASK_SUMMARY = "Task cancelled"
 IMAGE_GENERATION_KIND = "image_gen.generation"
 ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 ATTACHMENTS_PER_TURN_MAX = 12
+# Images the user attaches to a message. They travel as base64 inside the JSON
+# request, so the request limit below leaves room for the largest allowed set.
+UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+UPLOADS_PER_MESSAGE_MAX = 6
+UPLOAD_NAME_MAX_LENGTH = 120
+UPLOAD_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+REQUEST_MAX_BYTES = UPLOADS_PER_MESSAGE_MAX * (UPLOAD_MAX_BYTES * 4 // 3) + 1024 * 1024
 TASK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 ATTACHMENT_ID_RE = re.compile(r"[0-9a-f]{32}")
 IMAGE_SIGNATURES = (
@@ -197,6 +204,7 @@ SENSITIVE_REPLACEMENTS = [
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 app = Flask(__name__, static_folder=str(WEB_ROOT / "assets"), static_url_path="/assets")
+app.config["MAX_CONTENT_LENGTH"] = REQUEST_MAX_BYTES
 lock = threading.RLock()
 auth_lock = threading.RLock()
 tasks: dict[str, dict[str, Any]] = {}
@@ -1110,12 +1118,14 @@ def _image_generation_source(item: dict[str, Any], session_id: str) -> Path | by
         return None
 
 
-def store_attachment(
-    task_id: str, source: Path | bytes | None, item: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Copy verified image content into this exchange's attachment directory."""
-    if source is None:
-        return None
+def _write_attachment_file(
+    task_id: str, source: Path | bytes, turn_id: str | None = None,
+) -> tuple[str, Path, str] | None:
+    """Verify image content and copy it into an exchange's attachment directory.
+
+    Returns the attachment id, the stored path and the MIME type, or None when
+    the content is empty, too large, or not a supported image.
+    """
     if isinstance(source, Path):
         size = source.stat().st_size
         with source.open("rb") as handle:
@@ -1128,7 +1138,8 @@ def store_attachment(
         return None
     mime_type, suffix = sniffed
     attachment_id = uuid.uuid4().hex
-    target_dir = get_run_dir(task_id) / "attachments"
+    run_dir = get_task_dir(task_id) / "turns" / turn_id if turn_id else get_run_dir(task_id)
+    target_dir = run_dir / "attachments"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{attachment_id}{suffix}"
     if isinstance(source, Path):
@@ -1139,19 +1150,118 @@ def store_attachment(
         target.chmod(0o600)
     except OSError:
         pass
+    return attachment_id, target, mime_type
+
+
+def attachment_record(
+    task_id: str, attachment_id: str, target: Path, mime_type: str, *, name: str, origin: str, **extra: Any,
+) -> dict[str, Any]:
+    """Describe a stored image so the UI, API and result event can reference it."""
     return {
         "attachment_id": attachment_id,
         "kind": "image",
-        "name": f"codex-image-{attachment_id[:8]}{suffix}",
+        "origin": origin,
+        "name": name,
         "mime_type": mime_type,
         "size": target.stat().st_size,
         "sha256": file_hash(target),
         "created_at": utc_now(),
-        "revised_prompt": str(item.get("revised_prompt") or "")[:2000],
-        "generation_id": str(item.get("id") or ""),
+        **extra,
         "path": target.relative_to(get_task_dir(task_id)).as_posix(),
         "url": f"/tasks/{task_id}/attachments/{attachment_id}",
     }
+
+
+def store_attachment(
+    task_id: str, source: Path | bytes | None, item: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Copy a generated image into this exchange's attachment directory."""
+    if source is None:
+        return None
+    stored = _write_attachment_file(task_id, source)
+    if stored is None:
+        return None
+    attachment_id, target, mime_type = stored
+    return attachment_record(
+        task_id, attachment_id, target, mime_type,
+        name=f"codex-image-{attachment_id[:8]}{target.suffix}", origin="codex",
+        revised_prompt=str(item.get("revised_prompt") or "")[:2000],
+        generation_id=str(item.get("id") or ""),
+    )
+
+
+def upload_name(value: Any, suffix: str) -> str:
+    """Keep a user-supplied file name safe for captions, downloads and logs."""
+    name = str(value or "").replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(ch for ch in name if ch.isprintable() and ch not in '"<>:|?*')
+    name = " ".join(name.split())[:UPLOAD_NAME_MAX_LENGTH].strip(" .")
+    if not name:
+        name = "image"
+    if not name.lower().endswith(UPLOAD_SUFFIXES):
+        name += suffix
+    return name
+
+
+def parse_uploads(payload: dict[str, Any]) -> list[tuple[Any, bytes]]:
+    """Validate the images attached to a message: base64 PNG, JPEG, GIF or WebP only."""
+    raw = payload.get("attachments")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("attachments must be a list")
+    if len(raw) > UPLOADS_PER_MESSAGE_MAX:
+        raise ValueError(f"Attach at most {UPLOADS_PER_MESSAGE_MAX} images per message.")
+    too_large = f"Each attached image must be {UPLOAD_MAX_BYTES // (1024 * 1024)} MB or smaller."
+    uploads: list[tuple[Any, bytes]] = []
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("data"), str):
+            raise ValueError("Each attachment needs base64 image data.")
+        data = item["data"]
+        if data.startswith("data:"):
+            data = data.split(",", 1)[-1]
+        if len(data) > UPLOAD_MAX_BYTES * 4 // 3 + 4:
+            raise ValueError(too_large)
+        try:
+            content = base64.b64decode(data, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("Attachment data is not valid base64.") from exc
+        if not content:
+            raise ValueError("An attached image is empty.")
+        if len(content) > UPLOAD_MAX_BYTES:
+            raise ValueError(too_large)
+        if sniff_image(content[:16]) is None:
+            raise ValueError("Only PNG, JPEG, GIF, and WebP images can be attached.")
+        uploads.append((item.get("name"), content))
+    return uploads
+
+
+def store_uploads(task_id: str, turn_id: str, uploads: list[tuple[Any, bytes]]) -> list[dict[str, Any]]:
+    """Save the images attached to a message with the exchange they belong to."""
+    stored: list[dict[str, Any]] = []
+    for name, content in uploads:
+        written = _write_attachment_file(task_id, content, turn_id)
+        if written is None:
+            continue
+        attachment_id, target, mime_type = written
+        stored.append(attachment_record(
+            task_id, attachment_id, target, mime_type,
+            name=upload_name(name, target.suffix), origin="user",
+        ))
+    return stored
+
+
+def prompt_attachment_paths(task_id: str, turn: dict[str, Any]) -> list[Path]:
+    """Return the stored files for a turn's attached images, ignoring anything outside the task directory."""
+    task_dir = get_task_dir(task_id).resolve()
+    paths: list[Path] = []
+    for attachment in turn.get("prompt_attachments") or []:
+        relative = str(attachment.get("path") or "") if isinstance(attachment, dict) else ""
+        if not relative or Path(relative).is_absolute():
+            continue
+        path = (task_dir / relative).resolve()
+        if path.is_relative_to(task_dir) and path.is_file():
+            paths.append(path)
+    return paths
 
 
 def collect_generated_images(task_id: str, session_id: str, known_ids: set[str]) -> list[dict[str, Any]]:
@@ -1183,7 +1293,7 @@ def collect_generated_images(task_id: str, session_id: str, known_ids: set[str])
 def find_attachment(task: dict[str, Any], attachment_id: str) -> dict[str, Any] | None:
     """Return the recorded metadata for an attachment id, newest exchange first."""
     for turn in reversed(task_turns(task)):
-        for attachment in turn.get("attachments") or []:
+        for attachment in [*(turn.get("prompt_attachments") or []), *(turn.get("attachments") or [])]:
             if isinstance(attachment, dict) and attachment.get("attachment_id") == attachment_id:
                 return attachment
     return None
@@ -1947,8 +2057,26 @@ def extract_session_id(obj: Any) -> str | None:
     return thread_id
 
 
+def attached_image_note(task_id: str) -> str:
+    """Tell Codex which images the user attached to the current message."""
+    with lock:
+        turns = tasks.get(task_id, {}).get("turns") or []
+        names = [
+            str(item.get("name") or "image")
+            for item in (turns[-1].get("prompt_attachments") or [])
+            if isinstance(item, dict)
+        ] if turns else []
+    if not names:
+        return ""
+    return (
+        f"The user attached {len(names)} image(s) to this message: {', '.join(names)}. "
+        "They are included with this prompt; look at them before answering.\n\n"
+    )
+
+
 def build_prompt(user_prompt: str, task_id: str, reply: str | None = None) -> str:
     current_request = reply if reply is not None else user_prompt
+    attached = attached_image_note(task_id)
     return f"""You are Codex running as a Home Assistant add-on worker.
 
 Workspace: /config
@@ -1965,7 +2093,7 @@ At the end, return only an object matching the provided JSON schema:
 - summary: concise result
 - question: use an empty string unless status is "needs_input"
 - details: use an empty string unless there are useful implementation/test notes
-Current user message:
+{attached}Current user message:
 {current_request}
 """
 
@@ -1976,11 +2104,17 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
         task = tasks.get(task_id, {})
         turns = task.get("turns") or []
         execution = copy.deepcopy(turns[-1].get("execution_settings")) if turns else None
+        latest_turn = copy.deepcopy(turns[-1]) if turns else {}
     if execution is None:
         execution = resolve_chat_settings(task.get("chat_settings", DEFAULT_CHAT_SETTINGS), options)
-    args = [
-        CODEX_BINARY,
-        "exec",
+    images = prompt_attachment_paths(task_id, latest_turn)
+    args = [CODEX_BINARY, "exec"]
+    # `exec --image` is repeatable; keeping each one before another flag stops
+    # the variadic option from swallowing the "-" that selects stdin.
+    if not session_id:
+        for path in images:
+            args.extend(["--image", str(path)])
+    args += [
         "--cd",
         "/config",
         "--skip-git-repo-check",
@@ -1999,7 +2133,11 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
         args.extend(["--model", model])
     args.extend(["--config", f'model_reasoning_effort="{execution["reasoning_effort"]}"'])
     if session_id:
-        args.extend(["resume", session_id, "-"])
+        # `resume` has its own single-value --image option, so the flags go after the subcommand.
+        args.extend(["resume", session_id])
+        for path in images:
+            args.extend(["--image", str(path)])
+        args.append("-")
     else:
         args.append("-")
     return args
@@ -2841,6 +2979,7 @@ def create_task() -> Response:
     try:
         settings = parse_chat_settings(payload)
         execution = resolve_chat_settings(settings, read_options())
+        uploads = parse_uploads(payload)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     task_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
@@ -2859,6 +2998,7 @@ def create_task() -> Response:
             ), 409
         active_task_runners.add(task_id)
     try:
+        turn["prompt_attachments"] = store_uploads(task_id, turn["turn_id"], uploads)
         update_task(
             task_id,
             status="queued",
@@ -2917,7 +3057,7 @@ def get_log(task_id: str) -> Response:
 @app.get("/tasks/<task_id>/attachments/<attachment_id>")
 @require_auth
 def get_attachment(task_id: str, attachment_id: str) -> Response:
-    """Serve a generated image recorded for this conversation."""
+    """Serve an image recorded for this conversation, generated by Codex or attached by the user."""
     if TASK_ID_RE.fullmatch(task_id) is None or ATTACHMENT_ID_RE.fullmatch(attachment_id) is None:
         return jsonify({"ok": False, "error": "attachment not found"}), 404
     with lock:
@@ -3007,6 +3147,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
         try:
             settings = parse_chat_settings(payload, task)
             execution = resolve_chat_settings(settings, read_options())
+            uploads = parse_uploads(payload)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         turns = task_turns(task)
@@ -3018,6 +3159,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
         reply_history.append({"at": turn["created_at"], "reply": message})
         active_task_runners.add(task_id)
         try:
+            turn["prompt_attachments"] = store_uploads(task_id, turn["turn_id"], uploads)
             update_task(
                 task_id, status="queued", cancellation_requested=False,
                 chat_settings=settings,

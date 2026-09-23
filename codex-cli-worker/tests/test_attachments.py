@@ -319,6 +319,130 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual(len(server.tasks[task_id]["turns"][0]["attachments"]), 1)
         self.assertEqual(server.tasks[task_id]["turns"][1]["attachments"], [])
 
+    def upload(self, name, data):
+        """Build one attachment entry for a message request."""
+        return {"name": name, "data": base64.b64encode(data).decode()}
+
+    def test_attached_images_are_stored_served_and_passed_to_codex(self):
+        """Images attached to a message stay with the exchange and reach Codex through --image."""
+        png, jpeg = png_bytes(), b"\xff\xd8\xff\xe0" + b"\x00" * 64
+        response = self.client.post(
+            "/tasks",
+            json={"prompt": "Fix the card in this screenshot",
+                  "attachments": [self.upload("../../Screen shot.PNG", png), self.upload("photo", jpeg)]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        task_id = response.json["task_id"]
+        turn = server.tasks[task_id]["turns"][0]
+        sent = turn["prompt_attachments"]
+        self.assertEqual([(item["name"], item["mime_type"], item["origin"]) for item in sent],
+                         [("Screen shot.PNG", "image/png", "user"), ("photo.jpg", "image/jpeg", "user")])
+        for item in sent:
+            path = server.get_task_dir(task_id) / item["path"]
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.parent.parent.name, turn["turn_id"])
+        # Served like generated images, and reported by the task API.
+        served = self.client.get(f"/tasks/{task_id}/attachments/{sent[0]['attachment_id']}", headers=self.headers)
+        self.assertEqual((served.status_code, served.mimetype, served.data), (200, "image/png", png))
+        self.assertEqual(self.client.get(sent[0]["url"]).status_code, 401)
+        payload = self.client.get(f"/tasks/{task_id}", headers=self.headers).json["task"]
+        self.assertEqual([item["attachment_id"] for item in payload["turns"][0]["prompt_attachments"]],
+                         [item["attachment_id"] for item in sent])
+        self.assertEqual(payload["attachments"], [])
+        # The prompt names the images and the CLI receives them ahead of the other exec flags.
+        prompt = server.build_prompt("Fix the card in this screenshot", task_id)
+        self.assertIn("attached 2 image(s) to this message: Screen shot.PNG, photo.jpg", prompt)
+        with patch.object(server, "read_options", return_value={"codex_sandbox": "workspace-write"}):
+            args = server.build_codex_args(task_id, Path("prompt"), Path("final"), None)
+        paths = [str((server.get_task_dir(task_id) / item["path"]).resolve()) for item in sent]
+        self.assertEqual(args[1:7], ["exec", "--image", paths[0], "--image", paths[1], "--cd"])
+        self.assertEqual(args[-1], "-")
+        # A continued exchange puts its own images after the resume subcommand.
+        self.run_codex(task_id)
+        response = self.client.post(
+            f"/tasks/{task_id}/continue",
+            json={"message": "And this one?", "attachments": [self.upload("second.png", png)]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        second = server.tasks[task_id]["turns"][1]["prompt_attachments"]
+        self.assertEqual([item["name"] for item in second], ["second.png"])
+        self.assertEqual(server.tasks[task_id]["turns"][0]["prompt_attachments"], sent)
+        self.assertIn("attached 1 image(s) to this message: second.png", server.build_prompt("x", task_id, reply="And this one?"))
+        with patch.object(server, "read_options", return_value={"codex_sandbox": "workspace-write"}):
+            args = server.build_codex_args(task_id, Path("prompt"), Path("final"), SESSION_ID)
+        second_path = str((server.get_task_dir(task_id) / second[0]["path"]).resolve())
+        self.assertEqual(args[-5:], ["resume", SESSION_ID, "--image", second_path, "-"])
+        self.assertNotIn(paths[0], args)
+        # Uploads survive a worker restart and both kinds resolve through find_attachment.
+        server.tasks.clear()
+        server.load_task_index()
+        loaded = server.tasks[task_id]
+        self.assertEqual([item["name"] for item in loaded["turns"][1]["prompt_attachments"]], ["second.png"])
+        self.assertEqual(server.find_attachment(loaded, sent[1]["attachment_id"])["name"], "photo.jpg")
+        self.assertEqual(self.client.get(sent[1]["url"], headers=self.headers).mimetype, "image/jpeg")
+        # A message without attachments records an empty list and passes no image flags.
+        self.run_codex(task_id, session_id=SESSION_ID, reply="And this one?")
+        self.client.post(f"/tasks/{task_id}/continue", json={"message": "Thanks"}, headers=self.headers)
+        self.assertEqual(server.tasks[task_id]["turns"][2]["prompt_attachments"], [])
+        with patch.object(server, "read_options", return_value={"codex_sandbox": "workspace-write"}):
+            args = server.build_codex_args(task_id, Path("prompt"), Path("final"), SESSION_ID)
+        self.assertNotIn("--image", args)
+        self.assertNotIn("The user attached", server.build_prompt("x", task_id, reply="Thanks"))
+
+    def test_attached_image_validation(self):
+        """Bad attachments are rejected with HTTP 400 before any task is created."""
+        png = png_bytes()
+        cases = [
+            ({"attachments": "nope"}, "attachments must be a list"),
+            ({"attachments": [self.upload("a.png", png)] * (server.UPLOADS_PER_MESSAGE_MAX + 1)}, "at most 6 images"),
+            ({"attachments": [{"name": "a.png"}]}, "needs base64"),
+            ({"attachments": [{"name": "a.png", "data": "not base64!"}]}, "not valid base64"),
+            ({"attachments": [self.upload("notes.txt", b"just text")]}, "Only PNG, JPEG, GIF, and WebP"),
+            ({"attachments": [self.upload("empty.png", b"")]}, "is empty"),
+        ]
+        for extra, message in cases:
+            with self.subTest(message=message):
+                response = self.client.post("/tasks", json={"prompt": "Look", **extra}, headers=self.headers)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(message, response.json["error"])
+        with patch.object(server, "UPLOAD_MAX_BYTES", 64):
+            response = self.client.post(
+                "/tasks", json={"prompt": "Look", "attachments": [self.upload("big.png", png_bytes(width=64, height=64))]},
+                headers=self.headers,
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("MB or smaller", response.json["error"])
+        self.assertEqual(server.tasks, {})
+        self.assertFalse((self.root / "tasks").exists())
+        # Names are reduced to a safe basename and get the sniffed suffix.
+        self.assertEqual(server.upload_name("  C:\\Users\\me\\..\\..\\Shot: 1?.png ", ".png"), "Shot 1.png")
+        self.assertEqual(server.upload_name("", ".jpg"), "image.jpg")
+        self.assertEqual(server.upload_name("x" * 300, ".png"), "x" * server.UPLOAD_NAME_MAX_LENGTH + ".png")
+        self.assertEqual(server.upload_name("line\nbreak.gif", ".gif"), "linebreak.gif")
+        # Data URLs are accepted; a request beyond the size limit is refused outright.
+        data_url = "data:image/png;base64," + base64.b64encode(png).decode()
+        response = self.client.post(
+            "/tasks", json={"prompt": "Look", "attachments": [{"name": "shot.png", "data": data_url}]}, headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        with patch.dict(server.app.config, {"MAX_CONTENT_LENGTH": 100}):
+            response = self.client.post(
+                "/tasks", json={"prompt": "Look", "attachments": [self.upload("a.png", png)]}, headers=self.headers,
+            )
+        self.assertEqual(response.status_code, 413)
+        # Continuing checks the same rules and leaves the conversation untouched on failure.
+        task_id = self.client.get("/tasks?summary=true", headers=self.headers).json["tasks"][0]["task_id"]
+        self.run_codex(task_id)
+        response = self.client.post(
+            f"/tasks/{task_id}/continue", json={"message": "Again", "attachments": [self.upload("notes.txt", b"text")]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(len(server.tasks[task_id]["turns"]), 1)
+        self.assertEqual(server.tasks[task_id]["status"], "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

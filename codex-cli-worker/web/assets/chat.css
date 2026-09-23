@@ -603,6 +603,16 @@ h1 {
 .attachment figcaption a:hover {
   text-decoration: underline;
 }
+.user-attachments {
+  justify-content: flex-end;
+  margin: 0 0 8px;
+}
+.user-attachments .attachment {
+  flex: 0 1 220px;
+}
+.user-attachments .attachment-image {
+  max-height: 220px;
+}
 .attachment-missing {
   margin: 0;
   padding: 12px;
@@ -687,9 +697,92 @@ textarea::placeholder {
   margin: 8px 0 0;
   line-height: 1.5;
 }
-.chat-picker {
-  position: relative;
+.compose-tools {
+  position: relative; /* Anchors the picker popovers, so they open from the left edge on phones. */
+  display: flex;
+  align-items: center;
+  gap: 2px;
   min-width: 0;
+}
+.chat-picker {
+  min-width: 0;
+}
+#attach {
+  width: 35px;
+  height: 35px;
+  border-radius: 50%;
+  padding: 0;
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#attach svg {
+  width: 18px;
+  height: 18px;
+}
+#attach:hover:not(:disabled),
+#attach:focus-visible {
+  background: var(--surface);
+  color: var(--text);
+}
+#attach:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+#composer.dropping {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.pending-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.pending-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 240px;
+  padding: 4px 6px 4px 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  font-size: 11px;
+  color: var(--muted);
+}
+.pending-file img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex-shrink: 0;
+  background: var(--bg);
+}
+.pending-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pending-remove {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+.pending-remove:hover,
+.pending-remove:focus-visible {
+  background: var(--bg);
+  color: var(--text);
 }
 .picker-pill {
   display: flex;
@@ -715,7 +808,10 @@ textarea::placeholder {
   gap: 8px;
 }
 .picker-chevron {
-  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  opacity: 0.85;
 }
 .picker-popover {
   position: absolute;

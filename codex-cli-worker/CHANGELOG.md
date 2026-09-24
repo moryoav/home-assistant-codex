@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.55
+
+- **The remembered chat opens immediately.** In 0.1.54 the welcome screen showed for a moment on each load while the chat list was fetched, then switched to the remembered chat. The web UI now opens that chat before anything else loads, so the switch is gone. A remembered chat that no longer exists still falls back to a new chat without an error.
+
+Update the **Codex CLI Worker** app to **0.1.55** for the smoother return to your chat.
+
 ## 0.1.54
 
 - **The chat you left open is reopened when you return.** Switching to another app on a phone often reloads the panel, which used to land on the welcome screen every time. The web UI now remembers the open chat in the browser and reopens it on the next load. Choosing **New chat** is remembered as well, so the next visit starts fresh.

@@ -13,19 +13,25 @@ from test_server import server
 
 
 class FakeResponse:
+    """A minimal stand-in for a `requests` response."""
+
     def __init__(self, status_code=200, payload=None, text=""):
         self.status_code = status_code
         self._payload = payload
         self.text = text
 
     def json(self):
+        """Return the canned payload, or fail like a non-JSON body would."""
         if self._payload is None:
             raise ValueError("no json")
         return self._payload
 
 
 class CheckConfigApiTests(unittest.TestCase):
+    """The call to Home Assistant's configuration check endpoint."""
+
     def setUp(self):
+        """Pretend to run inside the add-on with a Supervisor token."""
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.object(server, "ha_token", return_value="supervisor-token"))
@@ -63,7 +69,10 @@ class CheckConfigApiTests(unittest.TestCase):
 
 
 class AssessChangesTests(unittest.TestCase):
+    """Validation, the configuration check, recovery copies, and dashboard saves after a run."""
+
     def setUp(self):
+        """Use a temporary config tree and run directory with the Home Assistant calls faked."""
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
@@ -82,6 +91,7 @@ class AssessChangesTests(unittest.TestCase):
         self.stack.enter_context(patch.object(server, "read_lovelace_registry", return_value={}))
 
     def snapshot(self, files):
+        """Write files into the config tree and record them in the run's pre-change snapshot."""
         with tarfile.open(self.run_dir / "snapshot-before.tar.gz", "w:gz") as tar:
             for rel, content in files.items():
                 path = self.config / rel
@@ -90,6 +100,7 @@ class AssessChangesTests(unittest.TestCase):
                 tar.add(path, arcname=rel)
 
     def write(self, rel, content):
+        """Write a file into the config tree as the task would."""
         path = self.config / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -164,6 +175,7 @@ class RunTaskWiringTests(unittest.TestCase):
     """The assessment reaches the task record, the details text, and the result event."""
 
     def run_with(self, assessment):
+        """Run a resumed task through the test harness with a canned assessment."""
         from test_server import SessionIdParsingTests
         harness = SessionIdParsingTests("read_stdout")
         with patch.object(server, "assess_changes", return_value=assessment):
@@ -197,6 +209,76 @@ class RunTaskWiringTests(unittest.TestCase):
         self.assertTrue(task["details"].startswith("Notes\n\nHome Assistant could not check the configuration"))
         self.assertIn("HTTP 502", task["details"])
         self.assertEqual(events[-1]["config_check"]["result"], "unavailable")
+
+
+class TerminalOutcomeResetTests(unittest.TestCase):
+    """Launch failures, cancellations, and new turns never carry the previous turn's check."""
+
+    STALE = {
+        "config_check": {"result": "invalid", "errors": "old", "warnings": ""},
+        "recovery_files": [{"path": "automations.yaml", "copy": "/old/copy"}],
+    }
+
+    def setUp(self):
+        """Give the worker one task whose previous turn failed the check."""
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        for name, value in (("tasks", {}), ("active_task_runners", set()), ("running_processes", {})):
+            self.stack.enter_context(patch.object(server, name, value))
+        self.stack.enter_context(patch.object(server, "task_root", return_value=root / "tasks"))
+        self.stack.enter_context(patch.object(server, "TASK_STATE_FILE", root / "index.json"))
+        self.stack.enter_context(patch.object(server, "CODEX_HOME", root / "codex"))
+        self.stack.enter_context(patch.object(server, "api_token", return_value="test-token"))
+        self.stack.enter_context(patch.object(server, "write_task_log"))
+        self.stack.enter_context(patch.object(server, "notify"))
+        self.stack.enter_context(patch.object(server, "refresh_usage_status_async"))
+        self.events = []
+        self.stack.enter_context(patch.object(
+            server, "fire_ha_event", side_effect=lambda _event, data: (self.events.append(data) or True, "")))
+        self.stack.enter_context(patch.object(server, "start_background_task"))
+        self.client = server.app.test_client()
+        self.headers = {"Authorization": "Bearer test-token"}
+        self.session_id = "019fc242-910a-7c92-a17d-54c014e19fc4"
+        session_dir = server.CODEX_HOME / "sessions" / "2026" / "09" / "20"
+        session_dir.mkdir(parents=True)
+        (session_dir / f"rollout-2026-09-20T01-00-00-{self.session_id}.jsonl").write_text("{}\n")
+        response = self.client.post("/tasks", json={"prompt": "Edit the automation"}, headers=self.headers)
+        self.task_id = response.json["task_id"]
+        server.update_task(self.task_id, status="failed", session_id=self.session_id, summary="Bad edit",
+                           completed_at=server.utc_now(), **self.STALE)
+        server.active_task_runners.discard(self.task_id)
+
+    def assert_reset(self, record):
+        """The record carries an empty check and no recovery files."""
+        self.assertEqual(record["config_check"], server.EMPTY_CONFIG_CHECK)
+        self.assertEqual(record["recovery_files"], [])
+
+    def test_new_turn_starts_without_the_previous_check(self):
+        response = self.client.post(f"/tasks/{self.task_id}/continue", json={"message": "Try again"}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        task = server.tasks[self.task_id]
+        self.assert_reset(task)
+        self.assert_reset(task["turns"][-1])
+        self.assertEqual(task["turns"][0]["config_check"]["result"], "invalid")
+
+    def test_failed_launch_resets_and_reports_the_fields(self):
+        self.client.post(f"/tasks/{self.task_id}/continue", json={"message": "Try again"}, headers=self.headers)
+        server.tasks[self.task_id].update(self.STALE)
+        server.fail_task_launch(self.task_id, RuntimeError("no binary"))
+        self.assert_reset(server.tasks[self.task_id])
+        self.assert_reset(server.tasks[self.task_id]["turns"][-1])
+        self.assert_reset(self.events[-1])
+
+    def test_cancellation_resets_and_reports_the_fields(self):
+        self.client.post(f"/tasks/{self.task_id}/continue", json={"message": "Try again"}, headers=self.headers)
+        server.tasks[self.task_id].update(self.STALE)
+        ok, _proc, error = server.request_task_cancellation(self.task_id)
+        self.assertTrue(ok, error)
+        self.assert_reset(server.tasks[self.task_id])
+        self.assert_reset(server.tasks[self.task_id]["turns"][-1])
+        self.assertTrue(server.publish_cancelled_task_outcome(self.task_id))
+        self.assert_reset(self.events[-1])
 
 
 if __name__ == "__main__":

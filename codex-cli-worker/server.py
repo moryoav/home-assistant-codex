@@ -1241,6 +1241,8 @@ TURN_RESULT_FIELDS = (
     "returncode", "changes", "validation_errors", "lovelace_results", "error",
     "attachments", "config_check", "recovery_files",
 )
+# The check result recorded when no check ran: launch failures, cancellations, and new turns.
+EMPTY_CONFIG_CHECK = {"result": "skipped", "errors": "", "warnings": ""}
 CONTINUABLE_STATUSES = frozenset({"completed", "waiting_for_input", "failed", "cancelled"})
 TASK_STATUSES = CONTINUABLE_STATUSES | {"queued", "running"}
 TASK_ORDERS = frozenset({"created_asc", "updated_desc", "pinned_first"})
@@ -1948,7 +1950,7 @@ def assess_changes(task_id: str, run_dir: Path, changes: dict[str, list[str]]) -
     """
     options = read_options()
     validation_errors = validate_changed_files(changes)
-    config_check = {"result": "skipped", "errors": "", "warnings": ""}
+    config_check = dict(EMPTY_CONFIG_CHECK)
     yaml_changes = yaml_config_changes(changes)
     if validation_errors:
         config_check["result"] = "skipped"
@@ -2698,6 +2700,8 @@ def request_task_cancellation(
                 "validation_errors": [],
                 "lovelace_results": [],
                 "attachments": [],
+                "config_check": dict(EMPTY_CONFIG_CHECK),
+                "recovery_files": [],
                 "updated_at": utc_now(),
             }
         )
@@ -2747,6 +2751,8 @@ def publish_cancelled_task_outcome(task_id: str, returncode: int | None = None) 
         "validation_errors": validation_errors,
         "lovelace_results": lovelace_results,
         "attachments": [],
+        "config_check": dict(EMPTY_CONFIG_CHECK),
+        "recovery_files": [],
         "response": {
             "status": "cancelled",
             "summary": CANCELLED_TASK_SUMMARY,
@@ -2792,6 +2798,8 @@ def fail_task_launch(
         "validation_errors": [],
         "lovelace_results": [],
         "attachments": [],
+        "config_check": dict(EMPTY_CONFIG_CHECK),
+        "recovery_files": [],
     }
     if resolved_session_id:
         task_updates["session_id"] = resolved_session_id
@@ -2811,6 +2819,8 @@ def fail_task_launch(
         "validation_errors": [],
         "lovelace_results": [],
         "attachments": [],
+        "config_check": dict(EMPTY_CONFIG_CHECK),
+        "recovery_files": [],
         "response": {
             "status": "failed",
             "summary": summary,
@@ -2856,6 +2866,8 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
                         "validation_errors": [],
                         "lovelace_results": [],
                         "attachments": [],
+                        "config_check": dict(EMPTY_CONFIG_CHECK),
+                        "recovery_files": [],
                         "updated_at": completed_at,
                     }
                 )
@@ -3641,6 +3653,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
                 reply_history=reply_history, summary="", question="", details="",
                 error="", started_at="", completed_at="", returncode=None,
                 changes={}, validation_errors=[], lovelace_results=[], attachments=[],
+                config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[],
             )
         except Exception as exc:
             record_background_start_failure(task_id, exc)

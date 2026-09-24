@@ -215,6 +215,8 @@ The sidebar shows recently active chats first and includes **Load older chats**.
 
 From **0.1.47**, the sidebar also shows the remaining **5h** and **7d** account quota below **Home Assistant workspace**. Values refresh automatically; hover over a percentage to see its reset time when available. While a task is running, the display identifies the last known quota.
 
+From **0.1.54**, the web UI **reopens the chat you left open** the next time it loads, for example after the Home Assistant app on a phone reloads the panel. Choosing **New chat** is remembered as well. The chat id stays in the browser and is never sent to the worker.
+
 From **0.1.53**, the chat shows **what Codex is doing while it works**. Reasoning headlines, progress notes, the commands it runs, the files it edits, web searches, and tool calls appear under your message as they happen, and collapse to **Show activity** under the answer when the run finishes. Command output stays hidden behind **Show output** and is redacted like the task log. The `reasoning_summary` add-on option controls the reasoning headlines.
 
 From **0.1.48**, choose a **model and reasoning level for each conversation** using the pill below the message box. Click the model name to open the model menu, or the reasoning label to open the blue slider. Choices are saved for that chat and apply to its next message, including when continuing a saved conversation. New chats start with the add-on defaults. Choose **Default** in the model menu or the reset button in the reasoning picker to inherit the corresponding add-on setting again.

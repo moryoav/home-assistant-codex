@@ -878,12 +878,47 @@ async function fetchSelected(force = false) {
   state.loading = false;
   renderTask(force);
 }
+const LAST_CHAT_KEY = "codex-last-chat";
+/** Remember the open chat, or forget it for a new chat, so a reload returns to it. */
+function rememberChat(id) {
+  try {
+    if (id) localStorage.setItem(LAST_CHAT_KEY, id);
+    else localStorage.removeItem(LAST_CHAT_KEY);
+  } catch (_) {
+    /* Storage may be disabled. */
+  }
+}
+/** Return the remembered chat id when it looks like a task id, else null. */
+function rememberedChat() {
+  try {
+    const id = localStorage.getItem(LAST_CHAT_KEY);
+    return id && /^[A-Za-z0-9_-]{1,80}$/.test(id) ? id : null;
+  } catch (_) {
+    return null;
+  }
+}
+/** Reopen the remembered chat once the list is loaded; forget it if it is gone. */
+async function reopenLastChat() {
+  const id = rememberedChat();
+  if (!id || state.id) return;
+  if (!chatById(id)) {
+    // Older than the loaded page, or deleted from another tab or device.
+    try {
+      await api(`tasks/${encodeURIComponent(id)}`);
+    } catch (_) {
+      rememberChat(null);
+      return;
+    }
+  }
+  await selectChat(id);
+}
 async function selectChat(id) {
   if (state.busy || state.settingsBusy) return;
   closePicker();
   state.drafts.set(state.id, $("message").value);
   state.draftFiles.set(state.id, state.files);
   state.id = id;
+  rememberChat(id);
   state.files = state.draftFiles.get(id) || [];
   renderPending();
   state.task = null;
@@ -1675,13 +1710,19 @@ $("save-agents").onclick = async () => {
     $("save-agents").disabled = false;
   }
 };
+let reopenPending = true;
 async function refresh() {
   clearTimeout(refreshTimer);
   if (!document.hidden && !state.busy) {
     try {
       if (!state.catalog) await loadChatOptions();
       await loadList();
-      await fetchSelected();
+      if (reopenPending) {
+        // Only after the first successful list load, so an unreachable
+        // worker does not make the remembered chat look deleted.
+        reopenPending = false;
+        await reopenLastChat();
+      } else await fetchSelected();
     } catch (error) {
       showError(error);
     }

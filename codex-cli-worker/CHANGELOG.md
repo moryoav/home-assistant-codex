@@ -3,7 +3,7 @@
 ## 0.1.54
 
 - **The chat you left open is reopened when you return.** Switching to another app on a phone often reloads the panel, which used to land on the welcome screen every time. The web UI now remembers the open chat in the browser and reopens it on the next load. Choosing **New chat** is remembered as well, so the next visit starts fresh.
-- If the remembered chat was deleted in the meantime, from another tab or device, the UI opens a new chat without showing an error. The chat id is stored in the browser only; nothing is sent to or saved by the worker.
+- If the remembered chat was deleted in the meantime, from another tab or device, the UI opens a new chat without showing an error. The choice is kept in the browser only; the worker does not record which chat you had open.
 
 Update the **Codex CLI Worker** app to **0.1.54** to return to the chat you left open.
 

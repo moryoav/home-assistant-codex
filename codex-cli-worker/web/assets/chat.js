@@ -298,16 +298,24 @@ async function api(path, body, method) {
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const data = await response.json().catch(() => {
-    throw new Error(
+  const data = await response.json().catch(() => null);
+  if (!data)
+    throw workerError(
       `The worker returned HTTP ${response.status}. Try refreshing.`,
+      response.status,
     );
-  });
   if (!response.ok || !data.ok)
-    throw new Error(
+    throw workerError(
       data.error || `The worker returned HTTP ${response.status}.`,
+      response.status,
     );
   return data;
+}
+/** Build an error that keeps the HTTP status so callers can tell 404 apart. */
+function workerError(message, status) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
 }
 function textNode(tag, text, className) {
   const node = document.createElement(tag);
@@ -905,13 +913,17 @@ async function reopenLastChat() {
     // Older than the loaded page, or deleted from another tab or device.
     try {
       await api(`tasks/${encodeURIComponent(id)}`);
-    } catch (_) {
-      rememberChat(null);
+    } catch (error) {
+      // Forget a chat the worker says is gone; keep it through other failures.
+      if (error.status === 404) rememberChat(null);
       return;
     }
+    // The user may have picked a chat or New chat while that request ran.
+    if (rememberedChat() !== id || state.id) return;
   }
   await selectChat(id);
 }
+/** Open a chat, or the welcome screen for null, keeping the draft of the one left. */
 async function selectChat(id) {
   if (state.busy || state.settingsBusy) return;
   closePicker();
@@ -1711,6 +1723,7 @@ $("save-agents").onclick = async () => {
   }
 };
 let reopenPending = true;
+/** Poll the list and open chat, reopening the remembered chat on the first pass. */
 async function refresh() {
   clearTimeout(refreshTimer);
   if (!document.hidden && !state.busy) {

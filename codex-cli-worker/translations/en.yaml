@@ -23,6 +23,9 @@ configuration:
   auto_save_lovelace:
     name: Auto-save Lovelace dashboards
     description: After Codex edits storage-mode Lovelace files, save changed dashboards through the Home Assistant WebSocket API so the UI updates in memory.
+  config_check:
+    name: Home Assistant configuration check
+    description: After a task changes YAML files, ask Home Assistant to check its configuration, as Developer Tools does. A failing check marks the task as failed and keeps pre-change copies of the affected files. Turn off to skip the check on slow systems.
   ha_url:
     name: Home Assistant API URL
     description: API base URL used by the app for Home Assistant calls. The default Supervisor Core proxy is recommended.

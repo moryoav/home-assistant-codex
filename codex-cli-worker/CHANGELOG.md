@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.56
+
+- **Home Assistant checks the configuration after YAML edits.** When a task adds, changes, or deletes YAML files outside `.storage`, the worker now asks Home Assistant to check its configuration, the same check as Developer Tools, in addition to the existing YAML and JSON syntax pass. A failing check marks the task as failed and shows Home Assistant's error in the chat under the answer; a passing check shows a short confirmation. If the check cannot run, the task still completes and the answer says the change is applied but unverified.
+- **Pre-change copies are kept when validation fails.** The previous version of every affected file is copied out of the turn's snapshot into `turns/<turn_id>/recovery/` and the paths are listed in the task details, so a broken edit can be restored with one copy. Files the task created are listed separately.
+- Dashboard saves are skipped for storage files that failed validation, and the skip is reported in `lovelace_results` instead of silently doing nothing.
+- New add-on option `config_check` (on by default) turns the Home Assistant check off for slow systems. The syntax pass always runs.
+- Worker API and the `codex_cli_task_result` event carry `config_check` (`result` of `valid`, `invalid`, `unavailable`, `skipped`, or `disabled`, with `errors` and `warnings`) and `recovery_files` (`path` and `copy`) on the task result and on each turn.
+
+Update the **Codex CLI Worker** app to **0.1.56** to have Home Assistant check YAML changes.
+
 ## 0.1.55
 
 - **The remembered chat opens immediately.** In 0.1.54 the welcome screen showed for a moment on each load while the chat list was fetched, then switched to the remembered chat. The web UI now opens that chat before anything else loads, so the switch is gone. A remembered chat that no longer exists still falls back to a new chat without an error.

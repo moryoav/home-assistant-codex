@@ -592,6 +592,29 @@ function renderAttachments(
   }
   return list;
 }
+// Home Assistant's own configuration check runs after YAML changes; say how it went.
+const checkLabels = {
+  valid: "Home Assistant configuration check passed",
+  invalid: "Home Assistant configuration check failed",
+  unavailable: "Home Assistant could not check the configuration",
+};
+function renderConfigCheck(check) {
+  if (!check || !checkLabels[check.result]) return null;
+  const node = textNode("div", "", `check check-${check.result}`);
+  node.append(
+    textNode(
+      "span",
+      { valid: "✓", invalid: "✕", unavailable: "?" }[check.result],
+      "check-mark",
+    ),
+    textNode("span", checkLabels[check.result]),
+  );
+  if (check.result !== "valid" && check.errors)
+    node.append(textNode("pre", check.errors, "check-detail"));
+  if (check.warnings)
+    node.append(textNode("pre", `Warnings: ${check.warnings}`, "check-detail"));
+  return node;
+}
 function renderTask(force = false) {
   const task = state.task;
   if (!task) return;
@@ -651,6 +674,8 @@ function renderTask(force = false) {
         answer.append(textNode("div", turn.details, "message details"));
       if (turn.question && turn.question !== turn.summary)
         answer.append(textNode("div", turn.question, "message question"));
+      const check = renderConfigCheck(turn.config_check);
+      if (check) answer.append(check);
       if (attachments.length)
         answer.append(renderAttachments(task.task_id, attachments));
       answer.append(

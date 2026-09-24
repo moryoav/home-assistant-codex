@@ -137,11 +137,22 @@ def main():
                                 "created_at": "2026-09-18T10:00:00+00:00", "revised_prompt": "A cartoon sheep on grass",
                                 "generation_id": "exec-preview", "path": target.relative_to(root / "tasks" / "preview-02").as_posix(),
                                 "url": f"/tasks/preview-02/attachments/{attachment_id}"}]
+            extra = {}
+            if index == 1:
+                extra["config_check"] = {"result": "valid", "errors": "", "warnings": ""}
+            if index == 3:
+                # A YAML edit that Home Assistant rejected; the worker kept the previous file.
+                extra.update(config_check={"result": "invalid", "warnings": "",
+                                           "errors": "Invalid config for 'automation' at automations.yaml, line 12: required key 'trigger' not provided"},
+                             validation_errors=["Home Assistant configuration check failed: required key 'trigger' not provided"],
+                             recovery_files=[{"path": "automations.yaml", "copy": "/config/codex_tasks/preview-03/turns/x/recovery/automations.yaml"}])
             server.update_task(f"preview-{index:02}", title=title if index < 3 else f"Earlier chat {index}",
                                prompt=message, created_at=f"2026-09-{20 - index % 19:02}T10:00:00+00:00",
-                               turns=[turn], current_turn_id=turn["turn_id"], status="completed",
-                               session_id=task_session, summary=summary, details=details, question="",
-                               attachments=attachments)
+                               turns=[turn], current_turn_id=turn["turn_id"],
+                               status="failed" if index == 3 else "completed",
+                               session_id=task_session, summary=summary, question="",
+                               details="Validation errors: Home Assistant configuration check failed. Pre-change copies of the affected files are kept at: /config/codex_tasks/preview-03/turns/x/recovery/automations.yaml" if index == 3 else details,
+                               attachments=attachments, **extra)
             server.tasks[f"preview-{index:02}"]["updated_at"] = f"2026-09-{20 - index % 19:02}T10:00:00+00:00"
             if index == 0:
                 # The first chat keeps the steps of its last exchange, as a finished run would.

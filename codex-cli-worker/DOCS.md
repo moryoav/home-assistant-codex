@@ -48,6 +48,19 @@ For GPT-6 Astra, select `low`, `medium`, `high`, or `xhigh`; `minimal` is not su
 
 There is no web UI control for this setting; change it in the add-on configuration.
 
+## Validation
+
+After every task the worker compares the `/config` tree with the snapshot it took before the run, then validates what changed in two passes.
+
+1. **Syntax.** Changed YAML files are parsed with Home Assistant's YAML loader and changed JSON and `.storage` files are parsed as JSON. Any parse error fails the task.
+2. **Home Assistant's configuration check.** From **0.1.56**, when YAML files outside `.storage` were added, changed, or deleted and the syntax pass succeeded, the worker calls `POST /api/config/core/check_config`, the same check as Developer Tools. An `invalid` result fails the task with Home Assistant's error text. The check needs the Supervisor's Core API access the app already has, and can take some seconds on large configurations; the worker waits up to three minutes. If the check cannot run, because Core is restarting or the API is unreachable, the task still completes and its details say the change is applied but unverified. Set `config_check` to `false` to skip this pass.
+
+When validation fails, the worker copies the previous version of each affected file out of the turn's snapshot into `<task_root>/<task_id>/turns/<turn_id>/recovery/` and lists the paths in the task details, so a broken edit can be restored by copying the file back. Files the task created have no previous version and are listed separately. The snapshot itself remains available as `snapshot-before.tar.gz` in the same turn directory.
+
+Dashboard auto-save skips storage files that failed validation and reports the skip in `lovelace_results`. A YAML failure does not block saving an unrelated, valid dashboard file.
+
+The chat shows the outcome under the answer: a passing check as a short confirmation, a failing check with Home Assistant's error, and an unavailable check as a note. `GET /tasks/<task_id>`, `codex_cli.get_task`, and the `codex_cli_task_result` event carry `config_check` with `result` (`valid`, `invalid`, `unavailable`, `skipped` when no YAML changed or syntax already failed, or `disabled`), `errors`, and `warnings`, and `recovery_files` with `path` and `copy` per affected file. A configuration check does not prove that an automation behaves as intended; it only confirms Home Assistant would load the configuration.
+
 ## Sandbox
 
 - `read-only`: Codex can inspect files and run read-only commands, but should not edit `/config`.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.52
+
+- Report why an attached image was not added instead of doing nothing. A file the picker hands over empty or unreadable, a pick made while a message is still sending, and any unexpected failure while preparing an image now show a message above the composer.
+- Read images whose size the picker reports as zero before giving up, since some mobile pickers only reveal the content when it is read.
+- Do not rely on `crypto.randomUUID` being available; it is missing over plain HTTP in some mobile browsers.
+
+Update the **Codex CLI Worker** app to **0.1.52** to see why an image could not be attached on a phone.
+
 ## 0.1.51
 
 - **Attach images to a message.** Use the paperclip button next to the model pill, paste a screenshot into the message box, or drop image files onto the composer. Attached images are sent to Codex with the message, shown with your message in the chat, and kept with the conversation. Works for new chats and for continuing saved ones.

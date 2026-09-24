@@ -484,6 +484,15 @@ function pngBuffer(width = 8, height = 6) {
       "untyped-shot",
     );
     await page.getByRole("button", { name: "Remove untyped-shot" }).click();
+    // A file the picker cannot deliver is reported instead of vanishing.
+    await page.evaluate(async () => {
+      await acceptFiles([new File([], "cloud-photo.jpg", { type: "image/jpeg" })]);
+    });
+    assert.equal(await page.locator(".pending-file").count(), 0);
+    assert.match(
+      await page.locator("#error").textContent(),
+      /cloud-photo\.jpg is empty or could not be read/,
+    );
     await page.getByRole("button", { name: "Open settings" }).click();
     await page
       .getByText("Signed in (local preview)", { exact: true })

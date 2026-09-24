@@ -537,12 +537,47 @@ function pngBuffer(width = 8, height = 6) {
     await page.getByRole("button", { name: "Save instructions" }).click();
     await page.getByText("Instructions saved.").waitFor();
     await page.getByRole("button", { name: "Close settings" }).click();
+    // The open chat, here the one created by sending a message above, is
+    // remembered across a reload of the panel.
+    const openTitle = await page.locator("#chat-title").textContent();
+    assert.notEqual(openTitle, "New chat");
     await page.reload();
     await page.locator(".chat-row").first().waitFor();
     assert.equal(
       await page.locator("#divider").getAttribute("aria-valuenow"),
       "335",
     );
+    await page.locator("#chat-title").getByText(openTitle).waitFor();
+    await page.locator('[data-task-id="preview-03"]').click();
+    await page.locator("#chat-title").getByText("Earlier chat 3").waitFor();
+    await page.reload();
+    await page.locator("#chat-title").getByText("Earlier chat 3").waitFor();
+    assert.equal(
+      await page
+        .locator('[data-task-id="preview-03"]')
+        .getAttribute("aria-current"),
+      "true",
+    );
+    assert.equal(await page.locator("#error").isHidden(), true);
+    // A remembered chat that no longer exists falls back to a new chat quietly.
+    await page.evaluate(() =>
+      localStorage.setItem("codex-last-chat", "preview-gone"),
+    );
+    await page.reload();
+    await page.locator(".chat-row").first().waitFor();
+    assert.equal(await page.locator("#chat-title").textContent(), "New chat");
+    assert.equal(await page.locator("#error").isHidden(), true);
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("codex-last-chat")),
+      null,
+    );
+    // Choosing New chat is remembered too.
+    await page.locator('[data-task-id="preview-03"]').click();
+    await page.locator("#chat-title").getByText("Earlier chat 3").waitFor();
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    await page.reload();
+    await page.locator(".chat-row").first().waitFor();
+    assert.equal(await page.locator("#chat-title").textContent(), "New chat");
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(
       await page.locator("#sidebar").evaluate((el) => el.inert),
@@ -686,7 +721,7 @@ function pngBuffer(width = 8, height = 6) {
     await webview.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

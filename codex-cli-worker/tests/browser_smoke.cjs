@@ -233,6 +233,21 @@ function pngBuffer(width = 8, height = 6) {
       .locator("#messages")
       .getByText("The dashboard configuration is valid.", { exact: true })
       .waitFor();
+    assert.equal(
+      await page.locator("#messages .check.check-valid").textContent(),
+      "✓Home Assistant configuration check passed",
+    );
+    await page.locator('[data-task-id="preview-03"]').click();
+    await page.locator("#messages .check.check-invalid").waitFor();
+    assert.match(
+      await page.locator("#messages .check-invalid .check-detail").textContent(),
+      /required key 'trigger'/,
+    );
+    await page.screenshot({
+      path: path.join(output, "config-check-failed.png"),
+      fullPage: true,
+    });
+    await page.locator('[data-task-id="preview-01"]').click();
     await page.locator('[data-task-id="preview-00"]').click();
     assert.equal(
       await page.locator("#message").inputValue(),

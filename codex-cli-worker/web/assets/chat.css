@@ -550,6 +550,39 @@ h1 {
   margin-top: 14px;
   font-weight: 500;
 }
+.check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.check-mark {
+  font-weight: 700;
+}
+.check-valid .check-mark {
+  color: var(--accent);
+}
+.check-invalid {
+  color: var(--error);
+}
+.check-detail {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
 .turn-meta {
   color: var(--muted);
   font-size: 10px;

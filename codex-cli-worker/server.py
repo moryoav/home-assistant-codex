@@ -54,6 +54,7 @@ DEFAULT_OPTIONS = {
     "notify_service": "",
     "task_timeout_seconds": 3600,
     "auto_save_lovelace": True,
+    "config_check": True,
     "ha_url": "http://supervisor/core",
     "HA_TOKEN": "",
 }
@@ -1238,8 +1239,10 @@ def load_stored_activity(task_id: str, turn_id: str) -> dict[str, Any] | None:
 TURN_RESULT_FIELDS = (
     "status", "summary", "details", "question", "started_at", "completed_at",
     "returncode", "changes", "validation_errors", "lovelace_results", "error",
-    "attachments",
+    "attachments", "config_check", "recovery_files",
 )
+# The check result recorded when no check ran: launch failures, cancellations, and new turns.
+EMPTY_CONFIG_CHECK = {"result": "skipped", "errors": "", "warnings": ""}
 CONTINUABLE_STATUSES = frozenset({"completed", "waiting_for_input", "failed", "cancelled"})
 TASK_STATUSES = CONTINUABLE_STATUSES | {"queued", "running"}
 TASK_ORDERS = frozenset({"created_asc", "updated_desc", "pinned_first"})
@@ -1834,6 +1837,176 @@ def validate_changed_files(changes: dict[str, list[str]]) -> list[str]:
     return errors
 
 
+CONFIG_CHECK_TIMEOUT = 180
+CONFIG_CHECK_SUFFIXES = {".yaml", ".yml"}
+CONFIG_CHECK_TEXT_MAX = 4000
+RECOVERY_DIR = "recovery"
+
+
+def yaml_config_changes(changes: dict[str, list[str]]) -> list[str]:
+    """YAML files outside .storage that this exchange added, changed, or deleted."""
+    paths = set(changes.get("added", [])) | set(changes.get("changed", [])) | set(changes.get("deleted", []))
+    return sorted(
+        rel for rel in paths
+        if not rel.startswith(".storage/") and Path(rel).suffix.lower() in CONFIG_CHECK_SUFFIXES
+    )
+
+
+def check_home_assistant_config() -> dict[str, str]:
+    """Ask Home Assistant to check its configuration, as Developer Tools does.
+
+    Returns a result of "valid", "invalid", or "unavailable" when the check could
+    not run, with the errors and warnings Home Assistant reported.
+    """
+    token = ha_token()
+    if not token:
+        return {"result": "unavailable", "errors": "No Home Assistant token available", "warnings": ""}
+    url = ha_api_url("config/core/check_config")
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    attempts = [url]
+    if ha_token_source() == "supervisor" and not url.startswith("http://supervisor/core/api/"):
+        attempts.insert(0, "http://supervisor/core/api/config/core/check_config")
+    problems: list[str] = []
+    for attempt_url in attempts:
+        try:
+            response = requests.post(attempt_url, headers=headers, timeout=CONFIG_CHECK_TIMEOUT)
+        except Exception as exc:
+            problems.append(f"{attempt_url}: {exc}")
+            continue
+        if response.status_code >= 400:
+            problems.append(f"{attempt_url}: HTTP {response.status_code}: {response.text[:300]}")
+            continue
+        try:
+            data = response.json()
+        except ValueError:
+            problems.append(f"{attempt_url}: response was not JSON")
+            continue
+        if not isinstance(data, dict):
+            problems.append(f"{attempt_url}: unexpected response")
+            continue
+        result = str(data.get("result") or "")
+        errors = redact(clean_cli_text(str(data.get("errors") or "")).strip())[:CONFIG_CHECK_TEXT_MAX]
+        warnings = redact(clean_cli_text(str(data.get("warnings") or "")).strip())[:CONFIG_CHECK_TEXT_MAX]
+        if result == "valid":
+            return {"result": "valid", "errors": "", "warnings": warnings}
+        if result == "invalid":
+            return {"result": "invalid", "errors": errors or "Home Assistant reported an invalid configuration.", "warnings": warnings}
+        problems.append(f"{attempt_url}: unexpected result {result!r}")
+    return {"result": "unavailable", "errors": redact("; ".join(problems)), "warnings": ""}
+
+
+def files_in_validation_errors(validation_errors: list[str]) -> list[str]:
+    """The relative paths named at the start of syntax validation messages."""
+    files = set()
+    for message in validation_errors:
+        rel, sep, _ = message.partition(": ")
+        if sep and not rel.startswith("Home Assistant"):
+            files.add(rel.strip())
+    return sorted(files)
+
+
+def preserve_recovery_copies(run_dir: Path, changes: dict[str, list[str]], affected: list[str]) -> list[dict[str, str]]:
+    """Copy the pre-change version of each affected file out of the snapshot.
+
+    Returns one entry per affected file: `copy` is the recovery file for files
+    that existed before the exchange, and empty for files the exchange added.
+    """
+    snapshot_path = run_dir / "snapshot-before.tar.gz"
+    added = set(changes.get("added", []))
+    wanted = [rel for rel in affected if rel and not rel.startswith("/") and ".." not in Path(rel).parts]
+    if not wanted:
+        return []
+    recovery_root = (run_dir / RECOVERY_DIR).resolve()
+    results: dict[str, dict[str, str]] = {rel: {"path": rel, "copy": ""} for rel in wanted}
+    if snapshot_path.is_file() and any(rel not in added for rel in wanted):
+        with tarfile.open(snapshot_path, "r:gz") as tar:
+            for rel in wanted:
+                if rel in added:
+                    continue
+                try:
+                    member = tar.getmember(rel)
+                except KeyError:
+                    continue
+                if not member.isfile():
+                    continue
+                target = (recovery_root / rel).resolve()
+                if not target.is_relative_to(recovery_root):
+                    continue
+                source = tar.extractfile(member)
+                if source is None:
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read())
+                results[rel]["copy"] = str(target)
+    return [results[rel] for rel in wanted]
+
+
+def assess_changes(task_id: str, run_dir: Path, changes: dict[str, list[str]]) -> dict[str, Any]:
+    """Validate what the exchange changed and prepare recovery copies when it failed.
+
+    Syntax validation runs first. When it passes and YAML files changed, Home
+    Assistant's own configuration check runs, unless the add-on option disables
+    it. Dashboard saves are skipped for storage files that failed validation.
+    """
+    options = read_options()
+    validation_errors = validate_changed_files(changes)
+    config_check = dict(EMPTY_CONFIG_CHECK)
+    yaml_changes = yaml_config_changes(changes)
+    if validation_errors:
+        config_check["result"] = "skipped"
+    elif not options.get("config_check", DEFAULT_OPTIONS["config_check"]):
+        config_check["result"] = "disabled"
+    elif yaml_changes:
+        write_task_log(task_id, "worker", "Asking Home Assistant to check the configuration: " + ", ".join(yaml_changes[:10]))
+        config_check = check_home_assistant_config()
+        write_task_log(task_id, "worker", f"Home Assistant configuration check: {config_check['result']}")
+        if config_check["result"] == "invalid":
+            validation_errors.append("Home Assistant configuration check failed: " + config_check["errors"])
+    affected = files_in_validation_errors(validation_errors)
+    if config_check["result"] == "invalid":
+        affected = sorted(set(affected) | set(yaml_changes))
+    recovery_files: list[dict[str, str]] = []
+    if affected:
+        try:
+            recovery_files = preserve_recovery_copies(run_dir, changes, affected)
+        except Exception as exc:
+            write_task_log(task_id, "worker", f"Could not keep recovery copies: {exc}")
+    lovelace_results: list[dict[str, Any]] = []
+    failed_storage = {rel for rel in files_in_validation_errors(validation_errors) if rel.startswith(".storage/")}
+    for rel in sorted(failed_storage):
+        if rel.startswith(".storage/lovelace."):
+            lovelace_results.append({
+                "dashboard_id": Path(rel).name.removeprefix("lovelace."), "url_path": "", "storage_file": rel,
+                "success": False, "message": "Not saved: the file failed validation.",
+            })
+    if options.get("auto_save_lovelace"):
+        for ref in find_lovelace_dashboard_refs(changes):
+            if ref["storage_file"] in failed_storage:
+                continue
+            if task_cancellation_requested(task_id):
+                break
+            ok, detail = save_lovelace_dashboard(ref)
+            lovelace_results.append({**ref, "success": ok, "message": detail})
+    return {
+        "validation_errors": validation_errors, "config_check": config_check,
+        "recovery_files": recovery_files, "lovelace_results": lovelace_results,
+    }
+
+
+def validation_details(validation_errors: list[str], config_check: dict[str, str], recovery_files: list[dict[str, str]]) -> str:
+    """The details text for a failed validation, with how to recover."""
+    lines = ["Validation errors: " + "; ".join(validation_errors[:5])]
+    copies = [entry for entry in recovery_files if entry.get("copy")]
+    added = [entry["path"] for entry in recovery_files if not entry.get("copy")]
+    if copies:
+        lines.append("Pre-change copies of the affected files are kept at: " + ", ".join(entry["copy"] for entry in copies))
+    if added:
+        lines.append("New files that did not exist before: " + ", ".join(added))
+    if config_check.get("warnings"):
+        lines.append("Home Assistant warnings: " + config_check["warnings"])
+    return "\n".join(lines)
+
+
 def find_lovelace_dashboard_refs(changes: dict[str, list[str]]) -> list[dict[str, str]]:
     refs: list[dict[str, str]] = []
     changed_paths = sorted(set(changes.get("added", []) + changes.get("changed", [])))
@@ -2344,7 +2517,7 @@ def build_prompt(user_prompt: str, task_id: str, reply: str | None = None) -> st
 Workspace: /config
 Task id: {task_id}
 
-Follow /config/AGENTS.md. Treat this as a live Home Assistant config tree. Make focused edits, do not expose secrets, and validate changed YAML/JSON when practical.
+Follow /config/AGENTS.md. Treat this as a live Home Assistant config tree. Make focused edits, do not expose secrets, and validate changed YAML/JSON when practical. After you finish, the worker asks Home Assistant to check its configuration whenever YAML files changed; if that check fails, the task is reported as failed, so prefer a change you are confident is valid over a speculative one.
 
 This is a non-interactive run. Do not wait for terminal input. If you need the user's decision or verification before continuing, stop cleanly by returning status "needs_input" with one concise question.
 
@@ -2527,6 +2700,8 @@ def request_task_cancellation(
                 "validation_errors": [],
                 "lovelace_results": [],
                 "attachments": [],
+                "config_check": dict(EMPTY_CONFIG_CHECK),
+                "recovery_files": [],
                 "updated_at": utc_now(),
             }
         )
@@ -2576,6 +2751,8 @@ def publish_cancelled_task_outcome(task_id: str, returncode: int | None = None) 
         "validation_errors": validation_errors,
         "lovelace_results": lovelace_results,
         "attachments": [],
+        "config_check": dict(EMPTY_CONFIG_CHECK),
+        "recovery_files": [],
         "response": {
             "status": "cancelled",
             "summary": CANCELLED_TASK_SUMMARY,
@@ -2621,6 +2798,8 @@ def fail_task_launch(
         "validation_errors": [],
         "lovelace_results": [],
         "attachments": [],
+        "config_check": dict(EMPTY_CONFIG_CHECK),
+        "recovery_files": [],
     }
     if resolved_session_id:
         task_updates["session_id"] = resolved_session_id
@@ -2640,6 +2819,8 @@ def fail_task_launch(
         "validation_errors": [],
         "lovelace_results": [],
         "attachments": [],
+        "config_check": dict(EMPTY_CONFIG_CHECK),
+        "recovery_files": [],
         "response": {
             "status": "failed",
             "summary": summary,
@@ -2685,6 +2866,8 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
                         "validation_errors": [],
                         "lovelace_results": [],
                         "attachments": [],
+                        "config_check": dict(EMPTY_CONFIG_CHECK),
+                        "recovery_files": [],
                         "updated_at": completed_at,
                     }
                 )
@@ -2866,15 +3049,13 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     (task_dir / "changes.json").write_text(json.dumps(changes, indent=2), encoding="utf-8")
     if task_cancellation_requested(task_id):
         return
-    validation_errors = validate_changed_files(changes)
-
-    lovelace_results: list[dict[str, Any]] = []
-    if read_options().get("auto_save_lovelace"):
-        for ref in find_lovelace_dashboard_refs(changes):
-            if task_cancellation_requested(task_id):
-                return
-            ok, detail = save_lovelace_dashboard(ref)
-            lovelace_results.append({**ref, "success": ok, "message": detail})
+    assessment = assess_changes(task_id, task_dir, changes)
+    if task_cancellation_requested(task_id):
+        return
+    validation_errors = assessment["validation_errors"]
+    config_check = assessment["config_check"]
+    recovery_files = assessment["recovery_files"]
+    lovelace_results = assessment["lovelace_results"]
 
     if timed_out:
         final = {
@@ -2890,7 +3071,10 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     if validation_errors and status == "completed":
         status = "failed"
         final["status"] = "failed"
-        final["details"] = "Validation errors: " + "; ".join(validation_errors[:5])
+        final["details"] = validation_details(validation_errors, config_check, recovery_files)
+    elif config_check["result"] == "unavailable" and status == "completed":
+        note = "Home Assistant could not check the configuration, so the change is applied but unverified: " + config_check["errors"]
+        final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
 
     task_status = "waiting_for_input" if status == "needs_input" else status
     completed_at = utc_now() if status != "needs_input" else ""
@@ -2915,6 +3099,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         details=final.get("details", ""),
         changes=changes,
         validation_errors=validation_errors,
+        config_check=config_check,
+        recovery_files=recovery_files,
         lovelace_results=lovelace_results,
         attachments=attachments,
     ) is False:
@@ -2932,6 +3118,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         "completed_at": completed_at,
         "changes": changes,
         "validation_errors": validation_errors,
+        "config_check": config_check,
+        "recovery_files": recovery_files,
         "lovelace_results": lovelace_results,
         "attachments": attachments,
         "response": {
@@ -3465,6 +3653,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
                 reply_history=reply_history, summary="", question="", details="",
                 error="", started_at="", completed_at="", returncode=None,
                 changes={}, validation_errors=[], lovelace_results=[], attachments=[],
+                config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[],
             )
         except Exception as exc:
             record_background_start_failure(task_id, exc)

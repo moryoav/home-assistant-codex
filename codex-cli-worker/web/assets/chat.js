@@ -1097,6 +1097,15 @@ async function prepareUpload(file) {
     throw new Error(
       `${file.name || "This file"} is not a PNG, JPEG, GIF, or WebP image.`,
     );
+  if (!file.size) {
+    // Some mobile pickers hand over a file whose size is unknown until read.
+    const bytes = await file.arrayBuffer().catch(() => null);
+    if (!bytes || !bytes.byteLength)
+      throw new Error(
+        `${file.name || "The selected file"} is empty or could not be read from the picker.`,
+      );
+    file = new File([bytes], file.name || "image", { type });
+  }
   let blob = file;
   let name = file.name || "image";
   let bitmap = null;
@@ -1135,7 +1144,9 @@ async function prepareUpload(file) {
       `${file.name || "This image"} is larger than ${UPLOAD_MAX_BYTES / (1024 * 1024)} MB.`,
     );
   return {
-    id: crypto.randomUUID ? crypto.randomUUID() : String(Math.random()),
+    id: globalThis.crypto?.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random()}`,
     name,
     size: blob.size,
     blob,
@@ -1150,8 +1161,12 @@ function preparingCount(list) {
 }
 /** Add chosen, dropped, or pasted files to the pending list after checks. */
 async function addUploads(fileList) {
-  const files = [...(fileList || [])].filter((file) => file && file.size);
-  if (!files.length || state.busy) return;
+  const files = Array.from(fileList || []).filter(Boolean);
+  if (!files.length) return;
+  if (state.busy) {
+    showError(new Error("Wait for the current message to finish sending, then attach the image."));
+    return;
+  }
   // The batch belongs to the draft it was picked in. Switching chats swaps
   // state.files for another list, so every step below works on this one.
   const target = state.files;
@@ -1221,10 +1236,33 @@ function renderPending() {
     strip.append(textNode("div", "Preparing image…", "pending-file preparing"));
   strip.hidden = !state.files.length && !preparingCount(state.files);
 }
+// Android WebViews, including the Home Assistant app, ask the system Photo
+// Picker for a multi-select when the input allows several files, but their
+// file-chooser result handling reads only a single URI, so the page receives
+// nothing. Single selection returns a plain URI and works; pick again for more.
+if (
+  /Android/.test(navigator.userAgent) &&
+  /; wv\)|Home Assistant/.test(navigator.userAgent)
+)
+  $("file-input").removeAttribute("multiple");
 $("attach").onclick = () => $("file-input").click();
+/** Feed picked, pasted, or dropped files to addUploads and report any surprise. */
+async function acceptFiles(fileList) {
+  try {
+    await addUploads(fileList);
+  } catch (error) {
+    console.error("Attaching images failed", error);
+    showError(
+      new Error(
+        `Could not attach the image: ${String(error?.message || error)}`,
+      ),
+    );
+  }
+}
 $("file-input").addEventListener("change", async () => {
-  await addUploads($("file-input").files);
-  $("file-input").value = "";
+  const input = $("file-input");
+  await acceptFiles(input.files);
+  input.value = "";
 });
 $("message").addEventListener("paste", (event) => {
   const files = [...(event.clipboardData?.files || [])].filter(
@@ -1232,7 +1270,7 @@ $("message").addEventListener("paste", (event) => {
   );
   if (!files.length) return;
   event.preventDefault();
-  addUploads(files);
+  acceptFiles(files);
 });
 for (const type of ["dragenter", "dragover"])
   $("composer").addEventListener(type, (event) => {
@@ -1248,7 +1286,7 @@ $("composer").addEventListener("drop", (event) => {
   $("composer").classList.remove("dropping");
   if (!event.dataTransfer?.files?.length) return;
   event.preventDefault();
-  addUploads(event.dataTransfer.files);
+  acceptFiles(event.dataTransfer.files);
 });
 $("message").addEventListener("input", () => {
   resizeInput();

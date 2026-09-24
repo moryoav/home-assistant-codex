@@ -33,6 +33,7 @@ This repository contains two pieces:
 - Starts Codex tasks from Home Assistant actions, scripts, automations, or Assist/LLM tools.
 - Keeps saved conversations so you can return to an earlier chat and continue with its context.
 - Provides a chat UI with a resizable sidebar, mobile navigation, and light/dark themes.
+- Shows what Codex is doing while it works: reasoning headlines, commands, file edits, searches, and tool calls appear live under your message.
 - Mounts the Home Assistant config folder as `/config` inside the worker app.
 - Runs tasks non-interactively and stores task logs/results under `/config/codex_tasks`.
 - Supports Codex device-code sign-in through Home Assistant persistent notifications.
@@ -111,7 +112,7 @@ The app keeps an internal worker API token in private app storage. The **Codex**
 
 The app's web UI is available through Home Assistant Ingress. Do not try to open port `9123` directly; it is intentionally not exposed.
 
-The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model. You can also select GPT-6 Astra or GPT-5.6 Sol, Terra, or Luna explicitly, with GPT-5.5 retained as a previous-generation fallback. Model availability depends on your account. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota. For GPT-6 Astra, select `low`, `medium`, `high`, or `xhigh`.
+The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model. You can also select GPT-6 Astra or GPT-5.6 Sol, Terra, or Luna explicitly, with GPT-5.5 retained as a previous-generation fallback. Model availability depends on your account. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota. For GPT-6 Astra, select `low`, `medium`, `high`, or `xhigh`. The `reasoning_summary` option controls whether Codex reports its reasoning in the chat's activity list: `concise` headlines by default, `detailed`, or `none`.
 
 The app web UI can view and save `/config/AGENTS.md`. You can also set the masked `HA_TOKEN` option when Codex tasks need a Home Assistant token in their environment.
 
@@ -213,6 +214,8 @@ Open the worker web UI to browse saved chats in the left sidebar. Select a chat 
 The sidebar shows recently active chats first and includes **Load older chats**. Messages, responses, and per-exchange results are saved across worker restarts. Older tasks remain available, but responses overwritten before this feature was added cannot be recovered by the new history view.
 
 From **0.1.47**, the sidebar also shows the remaining **5h** and **7d** account quota below **Home Assistant workspace**. Values refresh automatically; hover over a percentage to see its reset time when available. While a task is running, the display identifies the last known quota.
+
+From **0.1.53**, the chat shows **what Codex is doing while it works**. Reasoning headlines, progress notes, the commands it runs, the files it edits, web searches, and tool calls appear under your message as they happen, and collapse to **Show activity** under the answer when the run finishes. Command output stays hidden behind **Show output** and is redacted like the task log. The `reasoning_summary` add-on option controls the reasoning headlines.
 
 From **0.1.48**, choose a **model and reasoning level for each conversation** using the pill below the message box. Click the model name to open the model menu, or the reasoning label to open the blue slider. Choices are saved for that chat and apply to its next message, including when continuing a saved conversation. New chats start with the add-on defaults. Choose **Default** in the model menu or the reset button in the reasoning picker to inherit the corresponding add-on setting again.
 

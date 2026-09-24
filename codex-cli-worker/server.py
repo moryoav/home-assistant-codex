@@ -48,6 +48,7 @@ TASK_STATE_FILE = DATA_ROOT / "task_index.json"
 DEFAULT_OPTIONS = {
     "codex_model": "default",
     "model_reasoning_effort": "medium",
+    "reasoning_summary": "concise",
     "codex_sandbox": "workspace-write",
     "task_root": "/config/codex_tasks",
     "notify_service": "",
@@ -57,6 +58,8 @@ DEFAULT_OPTIONS = {
     "HA_TOKEN": "",
 }
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+# Codex only emits reasoning items when summaries are requested; "auto" produced none.
+REASONING_SUMMARIES = {"concise", "detailed", "none"}
 # Supported choices in the bundled CLI 0.154.0 model catalog. Availability still
 # depends on the signed-in account; the CLI reports unavailable models normally.
 CHAT_MODELS = (
@@ -294,6 +297,12 @@ def model_reasoning_effort(options: dict[str, Any]) -> str:
     if effort not in REASONING_EFFORTS:
         return DEFAULT_OPTIONS["model_reasoning_effort"]
     return effort
+
+
+def reasoning_summary(options: dict[str, Any]) -> str:
+    """Return the add-on's reasoning summary level, falling back to the default."""
+    value = str(options.get("reasoning_summary") or DEFAULT_OPTIONS["reasoning_summary"]).strip().lower()
+    return value if value in REASONING_SUMMARIES else DEFAULT_OPTIONS["reasoning_summary"]
 
 
 def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
@@ -971,6 +980,259 @@ def write_task_log(task_id: str, stream: str, text: str) -> None:
 
 def get_task_dir(task_id: str) -> Path:
     return task_root() / task_id
+
+
+# Live activity: the steps Codex reports for the running exchange. Kept in
+# memory while the run lasts and written once to the turn directory at the end.
+ACTIVITY_MAX_STEPS = 500
+ACTIVITY_TEXT_MAX = 4000
+ACTIVITY_OUTPUT_MAX = 2048
+ACTIVITY_FILE = "activity.json"
+ACTIVITY_LIMIT_NOTE = "Step limit reached. The rest of this run is only in codex.log."
+SHELL_WRAPPER_RE = re.compile(r"^(?:/usr)?(?:/bin/)?(?:ba|z|da)?sh\s+-l?c\s+(['\"])(.*)\1\s*$", re.DOTALL)
+MARKDOWN_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+FILE_CHANGE_VERBS = {"add": "Added", "update": "Edited", "delete": "Deleted"}
+task_activity: dict[str, dict[str, Any]] = {}
+
+
+def start_activity(task_id: str, turn_id: str) -> None:
+    """Begin collecting steps for the exchange that is about to run."""
+    with lock:
+        task_activity[task_id] = {
+            "turn_id": turn_id, "seq": 0, "running": True, "capped": False,
+            "steps": [], "by_id": {}, "clock": {},
+        }
+
+
+def clip_activity_text(value: Any, limit: int) -> tuple[str, bool]:
+    text = redact(str(value or ""))
+    if len(text) > limit:
+        return text[:limit].rstrip() + "…", True
+    return text, False
+
+
+def display_command(command: str) -> str:
+    """Show the command Codex ran without the shell wrapper it is launched through."""
+    match = SHELL_WRAPPER_RE.match(command.strip())
+    return match.group(2).strip() if match else command.strip()
+
+
+def display_config_path(path: Any) -> str:
+    text = str(path or "")
+    prefix = CONFIG_ROOT.as_posix() + "/"
+    return text[len(prefix):] if text.startswith(prefix) else text
+
+
+def is_final_answer(text: str) -> bool:
+    """True for the structured JSON response the chat already shows as the answer."""
+    if "{" not in text:
+        return False
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match is None:
+        return False
+    try:
+        parsed = json.loads(match.group(0))
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(parsed, dict) and "status" in parsed and "summary" in parsed
+
+
+def activity_step_from_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Turn one `codex exec --json` item into a step for the chat, or None to skip it."""
+    kind = str(item.get("type") or "")
+    raw_status = str(item.get("status") or "")
+    step: dict[str, Any] = {"id": str(item.get("id") or ""), "kind": kind, "status": "done", "text": ""}
+    if raw_status == "in_progress":
+        step["status"] = "running"
+    elif raw_status in {"failed", "declined"}:
+        step["status"] = "failed"
+    if kind == "agent_message":
+        text = str(item.get("text") or "")
+        if not text.strip() or is_final_answer(text):
+            return None
+        step["kind"] = "message"
+        step["text"], _ = clip_activity_text(text.strip(), ACTIVITY_TEXT_MAX)
+    elif kind == "reasoning":
+        text = MARKDOWN_BOLD_RE.sub(r"\1", str(item.get("text") or "")).strip()
+        if not text:
+            return None
+        step["text"], _ = clip_activity_text(text, ACTIVITY_TEXT_MAX)
+    elif kind == "command_execution":
+        step["kind"] = "command"
+        step["text"], _ = clip_activity_text(display_command(str(item.get("command") or "")), ACTIVITY_TEXT_MAX)
+        step["output"], step["output_truncated"] = clip_activity_text(item.get("aggregated_output"), ACTIVITY_OUTPUT_MAX)
+        exit_code = item.get("exit_code")
+        step["exit_code"] = exit_code if isinstance(exit_code, int) else None
+        if step["status"] == "done" and step["exit_code"] not in (None, 0):
+            step["status"] = "failed"
+    elif kind == "file_change":
+        changes = [
+            {"path": display_config_path(change.get("path")), "kind": str(change.get("kind") or "update")}
+            for change in item.get("changes") or []
+            if isinstance(change, dict)
+        ][:50]
+        step["files"] = changes
+        labels = [f"{FILE_CHANGE_VERBS.get(change['kind'], 'Changed')} {change['path']}" for change in changes[:5]]
+        if len(changes) > 5:
+            labels.append(f"and {len(changes) - 5} more")
+        step["text"] = redact(", ".join(labels)) or "Changed files"
+    elif kind == "web_search":
+        query, _ = clip_activity_text(str(item.get("query") or "").strip(), 300)
+        step["text"] = f"Searched: {query}" if query else "Searched the web"
+    elif kind == "mcp_tool_call":
+        step["kind"] = "tool_call"
+        name = " · ".join(part for part in (str(item.get("server") or ""), str(item.get("tool") or "")) if part)
+        step["text"], _ = clip_activity_text(name or "Tool call", ACTIVITY_TEXT_MAX)
+        error = item.get("error")
+        if error:
+            step["status"] = "failed"
+            step["output"], step["output_truncated"] = clip_activity_text(
+                error if isinstance(error, str) else json.dumps(error), ACTIVITY_OUTPUT_MAX
+            )
+    elif kind == "error":
+        step["status"] = "failed"
+        step["text"], _ = clip_activity_text(item.get("message") or "Codex reported an error.", ACTIVITY_TEXT_MAX)
+    elif kind == "todo_list":
+        lines = []
+        for entry in item.get("items") or []:
+            if isinstance(entry, dict):
+                mark = "☑" if entry.get("completed") else "☐"
+                lines.append(f"{mark} {entry.get('text') or ''}".rstrip())
+        if not lines:
+            return None
+        step["kind"] = "plan"
+        step["text"], _ = clip_activity_text("\n".join(lines), ACTIVITY_TEXT_MAX)
+    else:
+        step["kind"] = "other"
+        step["text"] = (kind.replace("_", " ").replace(".", " ").strip() or "step").capitalize()
+    return step
+
+
+def append_activity_step(task_id: str, step: dict[str, Any], *, force: bool = False) -> None:
+    """Add a step to the running exchange, or update the step with the same item id."""
+    with lock:
+        record = task_activity.get(task_id)
+        if record is None or not record["running"]:
+            return
+        steps: list[dict[str, Any]] = record["steps"]
+        clock: dict[str, float] = record["clock"]
+        existing = record["by_id"].get(step["id"]) if step["id"] else None
+        if existing is None:
+            if len(steps) >= ACTIVITY_MAX_STEPS and not force:
+                if record["capped"]:
+                    return
+                record["capped"] = True
+                step = {"id": "", "kind": "notice", "status": "done", "text": ACTIVITY_LIMIT_NOTE}
+            record["seq"] += 1
+            existing = {**step, "seq": record["seq"], "index": len(steps), "started_at": utc_now(), "duration_ms": None}
+            steps.append(existing)
+            if step["id"]:
+                record["by_id"][step["id"]] = existing
+                clock[step["id"]] = time.monotonic()
+            return
+        record["seq"] += 1
+        existing.update({key: value for key, value in step.items() if key != "id"})
+        existing["seq"] = record["seq"]
+        if step["status"] != "running" and existing["duration_ms"] is None and step["id"] in clock:
+            existing["duration_ms"] = int((time.monotonic() - clock.pop(step["id"])) * 1000)
+
+
+def append_activity_error(task_id: str, message: Any) -> None:
+    """Record a turn-level error unless the same message was just recorded as an item."""
+    text, _ = clip_activity_text(message or "Codex reported an error.", ACTIVITY_TEXT_MAX)
+    with lock:
+        record = task_activity.get(task_id)
+        if record is None:
+            return
+        last = record["steps"][-1] if record["steps"] else None
+        if last is not None and last.get("kind") == "error" and last.get("text") == text:
+            return
+    append_activity_step(task_id, {"id": "", "kind": "error", "status": "failed", "text": text})
+
+
+def record_activity_event(task_id: str, event: Any) -> None:
+    """Map one line of `codex exec --json` output onto the running exchange's steps."""
+    if not isinstance(event, dict):
+        return
+    kind = str(event.get("type") or "")
+    if kind in {"item.started", "item.updated", "item.completed"}:
+        item = event.get("item")
+        if isinstance(item, dict):
+            step = activity_step_from_item(item)
+            if step is not None:
+                append_activity_step(task_id, step)
+    elif kind == "error":
+        append_activity_error(task_id, event.get("message"))
+    elif kind == "turn.failed":
+        error = event.get("error")
+        message = error.get("message") if isinstance(error, dict) else error
+        append_activity_error(task_id, message or "Codex could not finish this turn.")
+
+
+def public_activity_step(step: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in step.items() if key != "id" or value}
+
+
+def activity_payload_locked(record: dict[str, Any], after: int = 0) -> dict[str, Any]:
+    steps = [public_activity_step(step) for step in record["steps"] if step["seq"] > after]
+    return {
+        "turn_id": record["turn_id"], "seq": record["seq"], "running": record["running"],
+        "total": len(record["steps"]), "steps": steps,
+    }
+
+
+def activity_file(task_id: str, turn_id: str) -> Path:
+    root = get_task_dir(task_id)
+    return (root / "turns" / turn_id / ACTIVITY_FILE) if turn_id else (root / ACTIVITY_FILE)
+
+
+def finish_activity(task_id: str) -> None:
+    """Close the running exchange's steps, note how it ended, and save them once."""
+    with lock:
+        record = task_activity.get(task_id)
+        if record is None:
+            return
+        task = tasks.get(task_id, {})
+        status = str(task.get("status") or "")
+        summary = str(task.get("summary") or "").strip()
+    if status == "cancelled":
+        outcome: dict[str, Any] | None = {"id": "", "kind": "outcome", "status": "failed", "text": "Stopped"}
+    elif status == "failed":
+        outcome = {"id": "", "kind": "outcome", "status": "failed", "text": f"Failed: {summary}" if summary else "Failed"}
+    else:
+        outcome = None
+    if outcome is not None:
+        with lock:
+            for step in record["steps"]:
+                if step.get("status") == "running":
+                    step["status"] = "failed"
+        append_activity_step(task_id, outcome, force=True)
+    with lock:
+        record["running"] = False
+        payload = activity_payload_locked(record)
+        turn_id = record["turn_id"]
+    try:
+        path = activity_file(task_id, turn_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, payload)
+    except OSError as exc:
+        print(f"Could not save task activity for {task_id}: {redact(str(exc))}", flush=True)
+    with lock:
+        if task_activity.get(task_id) is record:
+            task_activity.pop(task_id, None)
+
+
+def load_stored_activity(task_id: str, turn_id: str) -> dict[str, Any] | None:
+    path = activity_file(task_id, turn_id)
+    try:
+        if not path.is_file():
+            return None
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(stored, dict) or not isinstance(stored.get("steps"), list):
+        return None
+    return stored
 
 
 TURN_RESULT_FIELDS = (
@@ -2132,6 +2394,7 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
     if model:
         args.extend(["--model", model])
     args.extend(["--config", f'model_reasoning_effort="{execution["reasoning_effort"]}"'])
+    args.extend(["--config", f'model_reasoning_summary="{reasoning_summary(options)}"'])
     if session_id:
         # `resume` has its own single-value --image option, so the flags go after the subcommand.
         args.extend(["resume", session_id])
@@ -2151,6 +2414,7 @@ def reader_thread(task_id: str, stream_name: str, handle, session_holder: dict[s
         if stream_name == "stdout":
             try:
                 event = json.loads(line)
+                record_activity_event(task_id, event)
                 found = extract_session_id(event)
                 existing = session_holder.get("session_id")
                 if found and not existing:
@@ -2441,6 +2705,9 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     before_manifest_path = task_dir / "manifest-before.json"
 
     update_task(task_id, status="running", started_at=utc_now(), error="")
+    with lock:
+        current_turn_id = str(tasks.get(task_id, {}).get("current_turn_id") or "")
+    start_activity(task_id, current_turn_id)
     if task_cancellation_requested(task_id):
         return
     if not before_manifest_path.exists():
@@ -2706,6 +2973,7 @@ def _run_background_task(
                 with lock:
                     if running_processes.get(task_id) is proc:
                         running_processes.pop(task_id, None)
+        finish_activity(task_id)
         with lock:
             active_task_runners.discard(task_id)
 
@@ -2961,6 +3229,7 @@ def delete_task(task_id: str) -> Response:
             # The chat stays listed so the user can retry instead of losing track of it.
             return jsonify({"ok": False, "error": "Could not delete the conversation files. Try again."}), 500
         tasks.pop(task_id, None)
+        task_activity.pop(task_id, None)
         save_task_index()
         session_id = str(task.get("session_id") or "")
     remove_session_files(session_id)
@@ -3052,6 +3321,34 @@ def get_log(task_id: str) -> Response:
         handle.seek(max(0, size - LOG_TAIL_BYTES), os.SEEK_SET)
         data = handle.read().decode("utf-8", errors="replace")
     return Response(data, mimetype="text/plain")
+
+
+@app.get("/tasks/<task_id>/activity")
+@require_auth
+def get_activity(task_id: str) -> Response:
+    """Return the steps Codex reported for the latest exchange, after a sequence number."""
+    if TASK_ID_RE.fullmatch(task_id) is None:
+        return jsonify({"ok": False, "error": "task not found"}), 404
+    try:
+        after = int(request.args.get("after", "0"))
+    except ValueError:
+        return jsonify({"ok": False, "error": "after must be a number"}), 400
+    with lock:
+        task = tasks.get(task_id)
+        if task is None:
+            return jsonify({"ok": False, "error": "task not found"}), 404
+        record = task_activity.get(task_id)
+        if record is not None:
+            return jsonify({"ok": True, **activity_payload_locked(record, after)})
+        turn_id = str(task.get("current_turn_id") or "")
+    stored = load_stored_activity(task_id, turn_id)
+    if stored is None:
+        return jsonify({"ok": True, "turn_id": turn_id, "seq": 0, "running": False, "total": 0, "steps": []})
+    steps = [step for step in stored["steps"] if isinstance(step, dict) and int(step.get("seq") or 0) > after]
+    return jsonify({
+        "ok": True, "turn_id": str(stored.get("turn_id") or turn_id), "seq": int(stored.get("seq") or 0),
+        "running": False, "total": len(stored["steps"]), "steps": steps,
+    })
 
 
 @app.get("/tasks/<task_id>/attachments/<attachment_id>")

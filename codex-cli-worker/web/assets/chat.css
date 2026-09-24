@@ -645,6 +645,155 @@ h1 {
   background: var(--accent);
   margin-right: 10px;
 }
+.activity {
+  margin-top: 14px;
+}
+.answer .activity {
+  margin-top: 10px;
+}
+.activity-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.activity-toggle:hover {
+  color: var(--text);
+}
+.activity-chevron::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+  margin-bottom: 2px;
+}
+.activity-toggle[aria-expanded="true"] .activity-chevron::before {
+  transform: rotate(45deg);
+  margin-bottom: 4px;
+}
+.activity.running .activity-chevron::before {
+  border: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: none;
+  margin: 0;
+  animation: activity-pulse 1.4s ease-in-out infinite;
+}
+@keyframes activity-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.activity-steps {
+  margin: 6px 0 4px;
+  padding-left: 2px;
+  border-left: 2px solid var(--line);
+}
+.step {
+  display: flex;
+  gap: 10px;
+  padding: 5px 0 5px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.step-icon {
+  flex: 0 0 14px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  user-select: none;
+}
+.step-body {
+  min-width: 0;
+  flex: 1;
+}
+.step-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.step-reasoning .step-text {
+  font-style: italic;
+}
+.step-message .step-text {
+  color: var(--text);
+}
+.step-command .step-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  max-height: 7.5em;
+  overflow: hidden;
+}
+.step-file_change .step-text {
+  color: var(--text);
+}
+.step.is-running .step-text {
+  color: var(--text);
+}
+.step.is-failed .step-icon,
+.step-error .step-text,
+.step-outcome .step-text {
+  color: var(--error);
+}
+.step-outcome .step-text {
+  font-weight: 600;
+}
+.step-notice .step-text {
+  font-style: italic;
+}
+.step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.step-output-toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.step-output-toggle:hover {
+  text-decoration: underline;
+}
+.step-output {
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+}
 .compose-area {
   width: 100%;
   max-width: 846px;

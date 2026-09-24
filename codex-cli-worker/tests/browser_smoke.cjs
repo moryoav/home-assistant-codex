@@ -175,6 +175,25 @@ function pngBuffer(width = 8, height = 6) {
       .locator("#messages")
       .getByText("Your evening routine looks good.", { exact: false })
       .waitFor();
+    // A finished exchange keeps its steps behind a collapsed toggle.
+    const storedToggle = page.locator("#activity .activity-toggle");
+    await storedToggle.waitFor();
+    assert.equal(await storedToggle.textContent(), "Show activity (4 steps)");
+    assert.equal(await page.locator("#activity-steps").isVisible(), false);
+    await storedToggle.click();
+    assert.equal(await page.locator("#activity .step").count(), 4);
+    assert.equal(
+      await page.locator("#activity .step-command .step-text").textContent(),
+      "cat /config/automations.yaml",
+    );
+    await page.getByRole("button", { name: "Show output" }).click();
+    await page.locator("#activity .step-output").waitFor();
+    await page.screenshot({
+      path: path.join(output, "activity-finished.png"),
+      fullPage: true,
+    });
+    await storedToggle.click();
+    assert.equal(await page.locator("#activity-steps").isVisible(), false);
     await page.locator("#model-button").click();
     await page
       .getByRole("button", { name: "GPT-6 Astra", exact: false })
@@ -227,12 +246,29 @@ function pngBuffer(width = 8, height = 6) {
     await page
       .getByRole("button", { name: "Send message", exact: true })
       .click();
+    // Steps appear one by one while the simulated run works, expanded by default.
+    await page
+      .locator("#activity.running .step-command.is-running")
+      .waitFor({ timeout: 15000 });
+    assert.equal(await page.locator("#activity-steps").isVisible(), true);
+    await page.screenshot({
+      path: path.join(output, "activity-running.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
     await page
       .locator("#messages")
       .getByText("Preview response: Apply the first suggestion.", {
         exact: true,
       })
       .waitFor();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#activity .activity-toggle")?.textContent ===
+        "Show activity (4 steps)",
+    );
+    assert.equal(await page.locator("#activity").count(), 1);
+    assert.equal(await page.locator("#activity .step.is-running").count(), 0);
     assert.equal(await page.locator(".message.user").count(), 2);
     assert.equal(await page.locator(".answer").count(), 2);
     const saved = await page.evaluate(

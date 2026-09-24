@@ -542,6 +542,9 @@ function pngBuffer(width = 8, height = 6) {
     const openTitle = await page.locator("#chat-title").textContent();
     assert.notEqual(openTitle, "New chat");
     await page.reload();
+    // The remembered chat is opened by the boot script itself, so the
+    // welcome screen is never shown first.
+    assert.notEqual(await page.locator("#chat-title").textContent(), "New chat");
     await page.locator(".chat-row").first().waitFor();
     assert.equal(
       await page.locator("#divider").getAttribute("aria-valuenow"),
@@ -551,6 +554,7 @@ function pngBuffer(width = 8, height = 6) {
     await page.locator('[data-task-id="preview-03"]').click();
     await page.locator("#chat-title").getByText("Earlier chat 3").waitFor();
     await page.reload();
+    assert.notEqual(await page.locator("#chat-title").textContent(), "New chat");
     await page.locator("#chat-title").getByText("Earlier chat 3").waitFor();
     assert.equal(
       await page

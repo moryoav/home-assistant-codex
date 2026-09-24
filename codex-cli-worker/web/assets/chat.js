@@ -905,26 +905,20 @@ function rememberedChat() {
     return null;
   }
 }
-/** Reopen the remembered chat once the list is loaded; forget it if it is gone. */
-async function reopenLastChat() {
+/**
+ * Open the remembered chat at once, before the list loads, so the welcome
+ * screen is not shown first. Resolves when the chat is loaded or given up.
+ */
+function reopenLastChat() {
   const id = rememberedChat();
-  if (!id || state.id) return;
-  if (!chatById(id)) {
-    // Older than the loaded page, or deleted from another tab or device.
-    try {
-      await api(`tasks/${encodeURIComponent(id)}`);
-    } catch (error) {
-      // Forget a chat the worker says is gone; keep it through other failures.
-      if (error.status === 404) rememberChat(null);
-      return;
-    }
-    // The user may have picked a chat or New chat while that request ran.
-    if (rememberedChat() !== id || state.id) return;
-  }
-  await selectChat(id);
+  return id ? selectChat(id, true) : Promise.resolve();
 }
-/** Open a chat, or the welcome screen for null, keeping the draft of the one left. */
-async function selectChat(id) {
+/**
+ * Open a chat, or the welcome screen for null, keeping the draft of the one
+ * left. When restoring a remembered chat, a 404 means it was deleted from
+ * another tab or device: forget it and start fresh without an error.
+ */
+async function selectChat(id, restoring = false) {
   if (state.busy || state.settingsBusy) return;
   closePicker();
   state.drafts.set(state.id, $("message").value);
@@ -959,7 +953,11 @@ async function selectChat(id) {
   try {
     await fetchSelected(true);
   } catch (error) {
-    if (state.id === id) showError(error);
+    if (state.id !== id) return;
+    if (restoring && error.status === 404) {
+      rememberChat(null);
+      await selectChat(null);
+    } else showError(error);
   }
 }
 const menu = {
@@ -1722,20 +1720,16 @@ $("save-agents").onclick = async () => {
     $("save-agents").disabled = false;
   }
 };
-let reopenPending = true;
-/** Poll the list and open chat, reopening the remembered chat on the first pass. */
+let restore = Promise.resolve();
+/** Poll the list and the open chat; the first pass waits for the restored chat. */
 async function refresh() {
   clearTimeout(refreshTimer);
   if (!document.hidden && !state.busy) {
     try {
       if (!state.catalog) await loadChatOptions();
       await loadList();
-      if (reopenPending) {
-        // Only after the first successful list load, so an unreachable
-        // worker does not make the remembered chat look deleted.
-        reopenPending = false;
-        await reopenLastChat();
-      } else await fetchSelected();
+      await restore;
+      await fetchSelected();
     } catch (error) {
       showError(error);
     }
@@ -1744,5 +1738,6 @@ async function refresh() {
 }
 sidebar(false);
 controls();
+restore = reopenLastChat();
 refresh();
 loadUsage();

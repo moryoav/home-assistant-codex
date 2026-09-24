@@ -40,6 +40,14 @@ The token is not your OpenAI or ChatGPT credential. Codex authentication is stil
 
 For GPT-6 Astra, select `low`, `medium`, `high`, or `xhigh`; `minimal` is not supported. See the [OpenAI model documentation](https://developers.openai.com/api/docs/models/gpt-6-astra) for supported reasoning levels and the [Codex models guide](https://learn.chatgpt.com/docs/models) for availability.
 
+`reasoning_summary` controls whether Codex reports its reasoning while it works, which the chat shows in the activity list under your latest message. It is passed to `codex exec` as `--config model_reasoning_summary="<value>"`. Codex reports no reasoning at all unless summaries are requested, so the default is on.
+
+- `concise`: short headlines such as "Checking the automation". This is the default.
+- `detailed`: asks for fuller summaries; current models still mostly return headlines.
+- `none`: no reasoning in the activity list. Commands, file edits, searches, progress notes, and tool calls are still shown.
+
+There is no web UI control for this setting; change it in the add-on configuration.
+
 ## Sandbox
 
 - `read-only`: Codex can inspect files and run read-only commands, but should not edit `/config`.
@@ -101,6 +109,14 @@ From **0.1.48**, the pill below the message box opens a model menu and a reasoni
 The model choices match the add-on model selector. Supported reasoning levels follow the bundled CLI 0.154.0 catalog: Low, Medium, High, Extra High, Max and Ultra for Astra/Sol/Terra; through Max for Luna; through Extra High for GPT-5.5. Ultra enables automatic task delegation. The unspecified default model uses the common Low through Extra High choices. If switching models makes a saved reasoning choice incompatible, the UI resets reasoning to the add-on default. An inherited reasoning level unsupported by an explicit model falls back to Medium. Model availability still depends on the account; unavailable-model errors are reported by the CLI.
 
 The authenticated worker API exposes `GET /chat-options` for choices and defaults, and `POST /tasks/<task_id>/settings` with `{"chat_settings": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"}}` to save selections for an idle chat. Each value can be `null` to inherit the add-on default. `POST /tasks`, `/tasks/<task_id>/continue`, and `/tasks/<task_id>/reply` also accept the optional `chat_settings` object. Omitting the object preserves existing selections. Invalid models, reasoning levels, and combinations return HTTP 400; changes to active chats return HTTP 409. `GET /tasks/<task_id>` includes the saved `chat_settings`. Home Assistant actions continue using their existing parameters and honor settings already saved for the conversation.
+
+### Live activity
+
+From **0.1.53**, the chat shows what Codex is doing while it works on your latest message. Steps appear under the message as Codex reports them: reasoning headlines, progress notes, the commands it runs, the files it edits, web searches, and tool calls. A failed command or an error is highlighted. When a run is stopped or fails, the list ends with a **Stopped** or **Failed** row. The list is expanded while the run lasts and collapses to **Show activity (N steps)** under the answer when it finishes. Only the latest exchange of a chat shows steps; earlier exchanges do not.
+
+Command output is not shown by default because it can contain configuration secrets. Each command offers **Show output**, which reveals the first 2 KB after the same redaction as the task log and marks output that was cut. File edits list paths only. Long reasoning or messages are cut at 4 KB, and at most 500 steps are kept per exchange; the full record remains in the task's `codex.log`.
+
+The worker keeps the steps of the running exchange in memory and writes them to `<task_root>/<task_id>/turns/<turn_id>/activity.json` once when the run ends, so the latest exchange's steps survive a page reload and a worker restart. The authenticated worker API exposes `GET /tasks/<task_id>/activity?after=<seq>`, which returns `turn_id`, `running`, `seq`, `total`, and the `steps` whose sequence number is above `after`. A step that changes, such as a command that finishes, is returned again with a new sequence number and the same `index`. The web UI polls this endpoint once a second while a chat is working and pauses when the tab is hidden. The Home Assistant integration does not use it.
 
 ### Generated images
 

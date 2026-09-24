@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.53
+
+- **See what Codex is doing while it works.** The chat now shows a live activity list under your latest message: reasoning headlines, progress notes, the commands Codex runs, the files it edits, web searches, and tool calls appear as they happen. Failed commands and errors are highlighted, and a stopped or failed run ends with a **Stopped** or **Failed** row.
+- The list stays with the latest exchange after it finishes, collapsed behind **Show activity (N steps)**, and is kept across page reloads. Earlier exchanges do not show steps.
+- Command output is not shown by default. Each command offers **Show output** for the first 2 KB, redacted like the task log, with a marker when it was cut. File edits show paths only.
+- New add-on option `reasoning_summary` (`concise` by default, or `detailed` or `none`). Codex only reports reasoning when summaries are requested, so the default turns them on. `none` keeps commands and progress notes in the list but hides reasoning. The option is passed to `codex exec` as `--config model_reasoning_summary`.
+- Worker API: `GET /tasks/<task_id>/activity?after=<seq>` returns the steps of the latest exchange added since a sequence number, with `running`, `turn_id`, `seq`, and `total`. The web UI polls it once a second while a chat is working. Steps are saved to `turns/<turn_id>/activity.json` when the run ends; at most 500 steps are kept per exchange.
+
+Update the **Codex CLI Worker** app to **0.1.53** to watch Codex work in the chat.
+
 ## 0.1.52
 
 - Fix attaching images from the Home Assistant Android app. The app's file chooser returns nothing when the system Photo Picker is opened in multi-select mode, so the paperclip now asks Android WebViews for a single image; use it again to add more. Paste and drag-and-drop still accept several images at once.

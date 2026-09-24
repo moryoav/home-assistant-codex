@@ -5,6 +5,9 @@ configuration:
   model_reasoning_effort:
     name: Model reasoning effort
     description: Reasoning effort passed to codex exec for supported models. minimal is fastest; low is lighter; medium is balanced; high uses more reasoning; xhigh uses extra reasoning. For GPT-6 Astra, select low, medium, high, or xhigh.
+  reasoning_summary:
+    name: Reasoning summaries
+    description: How much of its thinking Codex reports while it works. concise shows short headlines in the chat activity list, detailed asks for fuller summaries, and none hides reasoning from the list. Commands, file edits, searches, and progress notes are shown regardless.
   codex_sandbox:
     name: Codex sandbox
     description: read-only allows inspection only; workspace-write allows Codex to edit the /config workspace but keeps generated shell commands sandboxed; danger-full-access removes Codex sandboxing inside the add-on container and should only be used if workspace-write blocks required commands.

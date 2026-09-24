@@ -30,6 +30,7 @@ const state = {
   catalog: null,
   chatSettings: new Map(),
   settingsBusy: false,
+  activity: null,
 };
 const effortLabels = {
   low: "Low",
@@ -246,6 +247,7 @@ async function loadChatOptions() {
 }
 const welcome = $("messages").innerHTML;
 let refreshTimer;
+let activityTimer = null;
 let usageTimer;
 let usageLoading = false;
 function renderUsage(usage = {}) {
@@ -595,6 +597,7 @@ function renderTask(force = false) {
   ]);
   if (!force && signature === state.signature) {
     controls();
+    ensureActivity();
     return;
   }
   state.signature = signature;
@@ -611,7 +614,9 @@ function renderTask(force = false) {
         "history-note",
       ),
     );
-  for (const turn of task.turns || []) {
+  const turns = task.turns || [];
+  for (const turn of turns) {
+    const latest = turn === turns[turns.length - 1];
     const exchange = textNode("section", "", "exchange");
     const sent = imageAttachments(turn.prompt_attachments);
     if (sent.length)
@@ -655,22 +660,208 @@ function renderTask(force = false) {
           "turn-meta",
         ),
       );
+      if (latest) answer.append(activityBlock());
       exchange.append(answer);
     } else if (["queued", "running"].includes(turn.status)) {
-      exchange.append(
-        textNode(
-          "p",
-          turn.status === "queued"
-            ? "Getting started…"
-            : "Working on your request…",
-          "pending",
-        ),
+      const pending = textNode(
+        "p",
+        turn.status === "queued"
+          ? "Getting started…"
+          : "Working on your request…",
+        "pending",
       );
+      if (latest) pending.id = "pending";
+      exchange.append(pending);
+      if (latest) exchange.append(activityBlock());
     }
     area.append(exchange);
   }
+  renderActivity();
   area.scrollTop = force || nearBottom ? area.scrollHeight : oldScroll;
   controls();
+  ensureActivity();
+}
+// Steps Codex reports while it works on the latest message: reasoning
+// headlines, progress notes, commands, file edits, searches, and tool calls.
+const stepIcons = {
+  reasoning: "✦",
+  message: "❝",
+  command: "›",
+  file_change: "✎",
+  web_search: "⌕",
+  tool_call: "⚙",
+  plan: "☰",
+  error: "!",
+  outcome: "■",
+  notice: "…",
+  other: "•",
+};
+function taskActive() {
+  return Boolean(
+    state.task && ["queued", "running"].includes(state.task.status),
+  );
+}
+/** Forget the steps of the previous chat and stop polling for them. */
+function resetActivity(id) {
+  clearTimeout(activityTimer);
+  activityTimer = null;
+  state.activity = id
+    ? {
+        id,
+        turnId: null,
+        seq: 0,
+        steps: new Map(),
+        running: false,
+        loaded: false,
+        loading: false,
+        expanded: null,
+        open: new Set(),
+      }
+    : null;
+}
+function activityBlock() {
+  const block = textNode("div", "", "activity");
+  block.id = "activity";
+  block.hidden = true;
+  return block;
+}
+/** Load steps once for an idle chat, and keep loading them while Codex works. */
+function ensureActivity() {
+  const activity = state.activity;
+  if (!activity || activity.id !== state.id || activityTimer || activity.loading)
+    return;
+  if (!activity.loaded || activity.running || taskActive()) pollActivity();
+}
+/** Fetch the steps added since the last poll and merge them by position. */
+async function pollActivity() {
+  clearTimeout(activityTimer);
+  activityTimer = null;
+  const activity = state.activity;
+  const id = state.id;
+  if (!activity || !id || activity.id !== id || activity.loading) return;
+  if (document.hidden) {
+    activityTimer = setTimeout(pollActivity, 1000);
+    return;
+  }
+  activity.loading = true;
+  const generation = state.generation;
+  let restart = false;
+  try {
+    const data = await api(
+      `tasks/${encodeURIComponent(id)}/activity?after=${activity.seq}`,
+    );
+    if (generation !== state.generation || state.activity !== activity) return;
+    if (activity.turnId !== null && data.turn_id !== activity.turnId) {
+      // A new exchange started, so its steps count from the beginning again.
+      activity.steps.clear();
+      activity.open.clear();
+      activity.expanded = null;
+      activity.seq = 0;
+      activity.turnId = data.turn_id;
+      restart = true;
+      return;
+    }
+    const wasRunning = activity.running;
+    activity.turnId = data.turn_id;
+    for (const step of data.steps) activity.steps.set(step.index, step);
+    activity.seq = data.seq;
+    activity.running = data.running;
+    activity.loaded = true;
+    if (data.steps.length || wasRunning !== data.running) renderActivity();
+    if (!data.running && taskActive()) fetchSelected().catch(showError);
+  } catch (error) {
+    // The regular refresh reports worker problems; the steps just pause.
+  } finally {
+    activity.loading = false;
+    if (state.activity === activity) {
+      if (restart) pollActivity();
+      else if (activity.running || taskActive())
+        activityTimer = setTimeout(pollActivity, 1000);
+    }
+  }
+}
+function renderActivity() {
+  const block = $("activity");
+  const activity = state.activity;
+  if (!block || !activity || activity.id !== state.id) return;
+  const steps = [...activity.steps.values()].sort((a, b) => a.index - b.index);
+  const running = activity.running || taskActive();
+  block.hidden = !steps.length;
+  block.classList.toggle("running", running);
+  // The step list takes the place of the waiting line once Codex reports steps.
+  const pending = $("pending");
+  if (pending) pending.hidden = !block.hidden;
+  if (block.hidden) {
+    block.replaceChildren();
+    return;
+  }
+  const expanded = activity.expanded ?? running;
+  const area = $("messages");
+  const nearBottom =
+    area.scrollHeight - area.scrollTop - area.clientHeight < 100;
+  const count = steps.length === 1 ? "1 step" : `${steps.length} steps`;
+  const toggle = textNode("button", "", "activity-toggle");
+  toggle.type = "button";
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.setAttribute("aria-controls", "activity-steps");
+  toggle.append(
+    textNode("span", "", "activity-chevron"),
+    textNode(
+      "span",
+      running
+        ? `Working on your request… · ${count}`
+        : `${expanded ? "Hide" : "Show"} activity (${count})`,
+    ),
+  );
+  toggle.onclick = () => {
+    activity.expanded = !expanded;
+    renderActivity();
+  };
+  const list = textNode("div", "", "activity-steps");
+  list.id = "activity-steps";
+  list.hidden = !expanded;
+  for (const step of steps) list.append(renderStep(step, activity));
+  block.replaceChildren(toggle, list);
+  if (nearBottom) area.scrollTop = area.scrollHeight;
+}
+function renderStep(step, activity) {
+  const row = textNode("div", "", `step step-${step.kind} is-${step.status}`);
+  row.append(textNode("span", stepIcons[step.kind] || "•", "step-icon"));
+  const body = textNode("div", "", "step-body");
+  body.append(textNode("div", step.text, "step-text"));
+  const meta = [];
+  if (step.kind === "command" && step.exit_code)
+    meta.push(`exit ${step.exit_code}`);
+  if (step.duration_ms >= 1000)
+    meta.push(
+      `${(step.duration_ms / 1000).toFixed(step.duration_ms >= 10000 ? 0 : 1)} s`,
+    );
+  if (step.status === "running") meta.push("running");
+  const footer = textNode("div", "", "step-meta");
+  if (meta.length) footer.append(textNode("span", meta.join(" · ")));
+  if (step.output) {
+    const open = activity.open.has(step.index);
+    const button = textNode(
+      "button",
+      open
+        ? "Hide output"
+        : step.output_truncated
+          ? "Show output (first part)"
+          : "Show output",
+      "step-output-toggle",
+    );
+    button.type = "button";
+    button.onclick = () => {
+      if (open) activity.open.delete(step.index);
+      else activity.open.add(step.index);
+      renderActivity();
+    };
+    footer.append(button);
+    if (open) body.append(textNode("pre", step.output, "step-output"));
+  }
+  if (footer.childElementCount) body.insertBefore(footer, body.children[1] || null);
+  row.append(body);
+  return row;
 }
 async function fetchSelected(force = false) {
   const id = state.id;
@@ -698,6 +889,7 @@ async function selectChat(id) {
   state.task = null;
   state.generation++;
   state.signature = "";
+  resetActivity(id);
   state.loading = Boolean(id);
   $("message").value = state.drafts.get(id) || "";
   resizeInput();

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import struct
 import tempfile
+import threading
+import time
 import zlib
 from pathlib import Path
 
@@ -52,11 +55,51 @@ def main():
         sessions.mkdir(parents=True)
         (sessions / f"rollout-preview-{session_id}.jsonl").write_text("{}\n")
 
+        def preview_events(text):
+            """The `codex exec --json` lines a short review of the config would produce."""
+            command = "/bin/sh -lc 'cat /config/automations.yaml'"
+            return [
+                {"type": "item.completed", "item": {"id": "item_0", "type": "reasoning", "text": "**Checking the automation**"}},
+                {"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": "I'll read the automation before changing anything."}},
+                {"type": "item.started", "item": {"id": "item_2", "type": "command_execution", "command": command,
+                                                  "aggregated_output": "", "exit_code": None, "status": "in_progress"}},
+                {"type": "item.completed", "item": {"id": "item_2", "type": "command_execution", "command": command,
+                                                    "aggregated_output": "- alias: Evening lights\n  trigger:\n    - platform: sun\n      event: sunset\n",
+                                                    "exit_code": 0, "status": "completed"}},
+                {"type": "item.completed", "item": {"id": "item_3", "type": "file_change", "status": "completed",
+                                                    "changes": [{"path": "/config/automations.yaml", "kind": "update"}]}},
+                {"type": "item.completed", "item": {"id": "item_4", "type": "agent_message",
+                                                    "text": json.dumps({"status": "completed", "summary": text, "question": "", "details": ""})}},
+            ]
+
         def finish(task_id, prompt, session_id=session_id, reply=None):
-            """Complete a task immediately with a canned response instead of running Codex."""
-            server.update_task(task_id, status="completed", session_id=session_id,
-                               summary="Preview response: " + (reply or prompt), details="", question="")
-            server.active_task_runners.discard(task_id)
+            """Simulate a run with recorded steps instead of launching Codex.
+
+            The first chat plays its steps slowly so the browser can show them
+            live; every other chat completes at once, as the earlier fixture did.
+            """
+            summary = "Preview response: " + (reply or prompt)
+            live = task_id == "preview-00"
+
+            def run():
+                server.update_task(task_id, status="running", started_at=server.utc_now())
+                server.start_activity(task_id, server.tasks[task_id].get("current_turn_id") or "")
+                for event in preview_events(summary):
+                    if live:
+                        time.sleep(0.4)
+                    server.record_activity_event(task_id, event)
+                    if live and event["type"] == "item.started":
+                        # Hold the command open long enough for the browser to show it running.
+                        time.sleep(2)
+                server.update_task(task_id, status="completed", session_id=session_id, summary=summary,
+                                   details="", question="", completed_at=server.utc_now())
+                server.finish_activity(task_id)
+                server.active_task_runners.discard(task_id)
+
+            if live:
+                threading.Thread(target=run, daemon=True).start()
+            else:
+                run()
 
         server.start_background_task = finish
         examples = [
@@ -100,6 +143,12 @@ def main():
                                session_id=task_session, summary=summary, details=details, question="",
                                attachments=attachments)
             server.tasks[f"preview-{index:02}"]["updated_at"] = f"2026-09-{20 - index % 19:02}T10:00:00+00:00"
+            if index == 0:
+                # The first chat keeps the steps of its last exchange, as a finished run would.
+                server.start_activity("preview-00", turn["turn_id"])
+                for event in preview_events(summary):
+                    server.record_activity_event("preview-00", event)
+                server.finish_activity("preview-00")
         # A prefix checks that every browser URL works under Home Assistant Ingress.
         mounted = DispatcherMiddleware(Response("Open /preview/", status=404), {"/preview": server.app})
 

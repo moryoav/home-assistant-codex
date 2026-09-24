@@ -74,6 +74,15 @@ def main():
             task_session = f"{session_id[:-4]}{index:04x}"
             (sessions / f"rollout-preview-{task_session}.jsonl").write_text("{}\n")
             turn = server.new_turn(message)
+            turn["prompt_attachments"] = []
+            if index == 1:
+                # The user attached a screenshot of the card they asked about.
+                upload_id = "7a3b9c1d2e4f5a6b7c8d9e0f1a2b3c4d"
+                target = root / "tasks" / "preview-01" / "turns" / turn["turn_id"] / "attachments" / f"{upload_id}.png"
+                target.parent.mkdir(parents=True)
+                target.write_bytes(preview_png(240, 160))
+                turn["prompt_attachments"] = [server.attachment_record(
+                    "preview-01", upload_id, target, "image/png", name="energy-card.png", origin="user")]
             attachments = []
             if index == 2:
                 attachment_id = "5f1d3c9e8b7a4c2d9e0f1a2b3c4d5e6f"

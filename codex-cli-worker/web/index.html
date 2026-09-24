@@ -121,6 +121,7 @@
           <p id="notice" role="status" hidden></p>
           <p id="error" role="alert" hidden></p>
           <form id="composer">
+            <div id="pending-files" class="pending-files" hidden></div>
             <label class="sr-only" for="message">Message Codex</label
             ><textarea
               id="message"
@@ -129,6 +130,34 @@
               required
             ></textarea>
             <div class="compose-bottom">
+              <div class="compose-tools">
+                <button
+                  id="attach"
+                  type="button"
+                  aria-label="Attach images"
+                  title="Attach images. You can also paste or drop them here."
+                >
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path
+                      d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                    />
+                  </svg>
+                </button>
+                <input
+                  id="file-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  multiple
+                  hidden
+                />
               <div id="chat-picker" class="chat-picker">
                 <div class="picker-pill">
                   <button
@@ -148,7 +177,18 @@
                     aria-controls="effort-popover"
                   >
                     <span id="effort-label">Medium</span
-                    ><span class="picker-chevron" aria-hidden="true">⌄</span>
+                    ><svg
+                      class="picker-chevron"
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
                   </button>
                 </div>
                 <div
@@ -213,6 +253,7 @@
                     Balances speed and reasoning depth.
                   </p>
                 </div>
+              </div>
               </div>
               <button id="send" type="submit" aria-label="Send message">
                 ↑

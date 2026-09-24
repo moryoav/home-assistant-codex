@@ -4,6 +4,41 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
+const zlib = require("node:zlib");
+
+/** Build a tiny valid PNG so the upload checks need no binary fixture. */
+function pngBuffer(width = 8, height = 6) {
+  const table = [...Array(256)].map((_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf) => {
+    let c = 0xffffffff;
+    for (const b of buf) c = table[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (tag, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(tag), data]);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, sum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, 0x80)]);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", zlib.deflateSync(Buffer.concat(Array(height).fill(row)))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 (async () => {
   const output =
@@ -292,6 +327,163 @@ const os = require("node:os");
       await page.locator("#model-button").textContent(),
       "GPT-5.6 Luna",
     );
+    // The reasoning chip uses an icon chevron, not a text glyph.
+    assert.equal(
+      await page.locator("#effort-button svg.picker-chevron").count(),
+      1,
+    );
+    // Attach an image to a new chat: pending strip, remove, re-add, send.
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    const shot = pngBuffer();
+    await page.locator("#file-input").setInputFiles([
+      { name: "dashboard shot.png", mimeType: "image/png", buffer: shot },
+      {
+        name: "notes.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("not an image"),
+      },
+    ]);
+    await page.locator(".pending-file").waitFor();
+    assert.equal(await page.locator(".pending-file").count(), 1);
+    assert.match(
+      await page.locator("#error").textContent(),
+      /notes\.txt is not a PNG/,
+    );
+    await page
+      .getByRole("button", { name: "Remove dashboard shot.png" })
+      .click();
+    assert.equal(await page.locator(".pending-file").count(), 0);
+    assert.equal(await page.locator("#pending-files").isHidden(), true);
+    await page.locator("#file-input").setInputFiles({
+      name: "dashboard shot.png",
+      mimeType: "image/png",
+      buffer: shot,
+    });
+    await page.locator(".pending-file").waitFor();
+    await page.locator("#message").fill("Why does this card look wrong?");
+    await page.locator("#composer").screenshot({
+      path: path.join(output, "attach-pending.png"),
+      animations: "disabled",
+    });
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
+    await page
+      .locator("#messages")
+      .getByText("Preview response: Why does this card look wrong?", {
+        exact: true,
+      })
+      .waitFor();
+    const sentImage = page.locator(
+      "#messages .user-attachments img.attachment-image",
+    );
+    await sentImage.waitFor();
+    assert.equal(await sentImage.count(), 1);
+    assert.equal(await page.locator(".pending-file").count(), 0);
+    assert.match(
+      await page
+        .locator("#messages .user-attachments figcaption")
+        .textContent(),
+      /dashboard shot\.png/,
+    );
+    assert.deepEqual(
+      await page.evaluate(async () => {
+        const src = document.querySelector(
+          "#messages .user-attachments img",
+        ).src;
+        const response = await fetch(src);
+        return [response.status, response.headers.get("content-type")];
+      }),
+      [200, "image/png"],
+    );
+    // Timing regressions, made deterministic by gating image decoding: a
+    // batch stays with the chat it was picked in, and Send waits for images
+    // that are still being prepared.
+    await page.evaluate(() => {
+      const original = window.createImageBitmap.bind(window);
+      window.__bitmapGates = [];
+      window.__restoreBitmap = () => {
+        window.createImageBitmap = original;
+      };
+      window.createImageBitmap = (...args) =>
+        new Promise((resolve) => {
+          window.__bitmapGates.push(() => resolve(original(...args)));
+        });
+    });
+    const releaseDecode = async () => {
+      await page.waitForFunction(() => window.__bitmapGates.length > 0);
+      await page.evaluate(() => window.__bitmapGates.shift()());
+    };
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    await page.locator("#file-input").setInputFiles([
+      { name: "first.png", mimeType: "image/png", buffer: shot },
+      { name: "second.png", mimeType: "image/png", buffer: shot },
+    ]);
+    await page.waitForFunction(() => window.__bitmapGates.length === 1);
+    assert.equal(await page.locator(".pending-file.preparing").count(), 1);
+    // Switch chats while the first image is still decoding.
+    await page.locator('[data-task-id="preview-00"]').click();
+    await page
+      .locator("#messages")
+      .getByText("Your evening routine looks good.", { exact: false })
+      .first()
+      .waitFor();
+    assert.equal(await page.locator(".pending-file").count(), 0);
+    await releaseDecode();
+    await releaseDecode();
+    assert.equal(await page.locator(".pending-file").count(), 0);
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".pending-file:not(.preparing)").length ===
+          2 &&
+        document.querySelectorAll(".pending-file.preparing").length === 0,
+    );
+    // Send stays disabled until the third image is ready, then sends all three.
+    await page.locator("#message").fill("Compare these three.");
+    await page.locator("#file-input").setInputFiles({
+      name: "third.png",
+      mimeType: "image/png",
+      buffer: shot,
+    });
+    await page.waitForFunction(() => window.__bitmapGates.length === 1);
+    assert.equal(await page.locator(".pending-file.preparing").count(), 1);
+    assert.equal(await page.locator("#send").isDisabled(), true);
+    await page.locator("#message").press("Enter");
+    assert.equal(await page.locator(".answer").count(), 0);
+    await releaseDecode();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".pending-file:not(.preparing)").length ===
+        3,
+    );
+    assert.equal(await page.locator("#send").isDisabled(), false);
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
+    await page
+      .locator("#messages")
+      .getByText("Preview response: Compare these three.", { exact: true })
+      .waitFor();
+    assert.equal(
+      await page.locator("#messages .user-attachments img").count(),
+      3,
+    );
+    assert.equal(await page.locator(".pending-file").count(), 0);
+    await page.evaluate(() => window.__restoreBitmap());
+    // An image without a MIME type, as some drop and clipboard sources
+    // deliver, is accepted; the worker checks the bytes.
+    await page.evaluate(async (bytes) => {
+      await addUploads([
+        new File([new Uint8Array(bytes)], "untyped-shot", { type: "" }),
+      ]);
+    }, [...shot]);
+    assert.equal(await page.locator(".pending-file").count(), 1);
+    assert.equal(
+      await page.locator(".pending-name").textContent(),
+      "untyped-shot",
+    );
+    await page.getByRole("button", { name: "Remove untyped-shot" }).click();
     await page.getByRole("button", { name: "Open settings" }).click();
     await page
       .getByText("Signed in (local preview)", { exact: true })
@@ -420,10 +612,15 @@ const os = require("node:os");
       .locator("#messages")
       .getByText("The dashboard configuration is valid.", { exact: true })
       .waitFor();
+    // The screenshot the user attached shows with their message.
+    assert.equal(
+      await phone.locator("#messages .user-attachments img").count(),
+      1,
+    );
     await touch.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

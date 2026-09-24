@@ -627,6 +627,27 @@ function pngBuffer(width = 8, height = 6) {
       1,
     );
     await touch.close();
+    // Android WebViews get a single-select file input; everyone else keeps multiple.
+    assert.equal(await page.locator("#file-input").getAttribute("multiple"), "");
+    const webview = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 14; NE2213 Build/UKQ1.230924.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/128.0.0.0 Mobile Safari/537.36 Home Assistant/2025.9.1 (Android 14; NE2213)",
+    });
+    const app = await webview.newPage();
+    app.on("pageerror", (error) => errors.push(error.message));
+    await app.goto("http://127.0.0.1:9137/preview/");
+    await app.locator(".chat-row").first().waitFor({ state: "attached" });
+    assert.equal(await app.locator("#file-input").getAttribute("multiple"), null);
+    await app.locator("#file-input").setInputFiles({
+      name: "IMG_20260924.jpg",
+      mimeType: "image/jpeg",
+      buffer: shot,
+    });
+    await app.locator(".pending-file").waitFor();
+    await webview.close();
     assert.deepEqual(errors, []);
     console.log(
       "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, safe text, settings, resize, mobile and dark mode. Screenshots: " +

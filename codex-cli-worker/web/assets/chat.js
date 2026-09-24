@@ -1236,6 +1236,15 @@ function renderPending() {
     strip.append(textNode("div", "Preparing image…", "pending-file preparing"));
   strip.hidden = !state.files.length && !preparingCount(state.files);
 }
+// Android WebViews, including the Home Assistant app, ask the system Photo
+// Picker for a multi-select when the input allows several files, but their
+// file-chooser result handling reads only a single URI, so the page receives
+// nothing. Single selection returns a plain URI and works; pick again for more.
+if (
+  /Android/.test(navigator.userAgent) &&
+  /; wv\)|Home Assistant/.test(navigator.userAgent)
+)
+  $("file-input").removeAttribute("multiple");
 $("attach").onclick = () => $("file-input").click();
 /** Feed picked, pasted, or dropped files to addUploads and report any surprise. */
 async function acceptFiles(fileList) {

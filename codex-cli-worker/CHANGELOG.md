@@ -2,6 +2,7 @@
 
 ## 0.1.52
 
+- Fix attaching images from the Home Assistant Android app. The app's file chooser returns nothing when the system Photo Picker is opened in multi-select mode, so the paperclip now asks Android WebViews for a single image; use it again to add more. Paste and drag-and-drop still accept several images at once.
 - Report why an attached image was not added instead of doing nothing. A file the picker hands over empty or unreadable, a pick made while a message is still sending, and any unexpected failure while preparing an image now show a message above the composer.
 - Read images whose size the picker reports as zero before giving up, since some mobile pickers only reveal the content when it is read.
 - Do not rely on `crypto.randomUUID` being available; it is missing over plain HTTP in some mobile browsers.

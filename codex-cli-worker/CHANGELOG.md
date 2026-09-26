@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.57
+
+- **GPT-6 Sol and GPT-6 Luna can be selected.** Both appear in the add-on model option and in the chat's model menu. Sol is the workhorse for coding and everyday work and supports reasoning from Low through Ultra; Luna is the fast and affordable choice for easier tasks and supports Low through Max. GPT-5.6 Sol, Terra, and Luna stay available as older models. Model availability depends on your account.
+- Update the bundled Codex CLI from 0.154.0 to 0.157.1. The new models need CLI 0.155.0 or later; with 0.154.0, Codex ran them on fallback metadata. The `codex exec`, `codex exec resume`, `codex sandbox`, and `codex login` options the worker uses are unchanged.
+- Keep the remaining-quota display working with the new CLI. Codex 0.157 renamed its first-run folder prompt to **Trust this folder?**, which the quota check did not recognize, so its `/status` request was swallowed by the prompt. The check now answers either prompt. It also runs the CLI with `--no-daemon`, so it never starts or attaches to Codex's new shared background server.
+
+Update the **Codex CLI Worker** app to **0.1.57** to use GPT-6 Sol and GPT-6 Luna.
+
 ## 0.1.56
 
 - **Home Assistant checks the configuration after YAML edits.** When a task adds, changes, or deletes YAML files outside `.storage`, the worker now asks Home Assistant to check its configuration, the same check as Developer Tools, in addition to the existing YAML and JSON syntax pass. A failing check marks the task as failed and shows Home Assistant's error in the chat under the answer; a passing check shows a short confirmation. If the check cannot run, the task still completes and the answer says the change is applied but unverified.

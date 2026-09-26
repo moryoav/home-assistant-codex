@@ -127,6 +127,7 @@ class ConversationTests(unittest.TestCase):
                    {"reasoning_effort": {}}, {"reasoning_effort": "minimal"},
                    {"model": "gpt-5.5", "reasoning_effort": "max"},
                    {"model": "gpt-5.6-luna", "reasoning_effort": "ultra"},
+                   {"model": "gpt-6-luna", "reasoning_effort": "ultra"},
                    {"codex_sandbox": "danger-full-access"}]
         for settings in invalid:
             with self.subTest(settings=settings):
@@ -150,7 +151,10 @@ class ConversationTests(unittest.TestCase):
         task_id = self.create()
         self.assertEqual(self.post(f"/tasks/{task_id}/settings", {"chat_settings": {}}).status_code, 409)
         catalog = self.client.get("/chat-options", headers=self.headers).json
-        self.assertEqual(len(catalog["models"]), 5)
+        self.assertEqual(len(catalog["models"]), 7)
+        efforts = {model["id"]: model["efforts"] for model in catalog["models"]}
+        self.assertEqual(efforts["gpt-6-sol"], ["low", "medium", "high", "xhigh", "max", "ultra"])
+        self.assertEqual(efforts["gpt-6-luna"], ["low", "medium", "high", "xhigh", "max"])
         self.assertNotIn("HA_TOKEN", json.dumps(catalog))
         self.assertEqual(catalog["models"][-1]["efforts"], ["low", "medium", "high", "xhigh"])
         with patch.object(server, "read_options", return_value={"codex_model": "gpt-6-astra", "model_reasoning_effort": "minimal"}):

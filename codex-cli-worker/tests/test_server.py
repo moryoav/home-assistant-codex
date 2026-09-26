@@ -389,7 +389,7 @@ class UsageProcessCleanupTests(unittest.TestCase):
             patch.object(server, "codex_login_status", return_value={"status_ok": True}),
             patch.object(server, "codex_env", return_value={}),
             patch.object(server.os, "close"),
-            patch.object(server.subprocess, "Popen", return_value=proc),
+            patch.object(server.subprocess, "Popen", return_value=proc) as popen,
             patch.object(server, "_capture_status_from_tui", side_effect=RuntimeError("stop")),
             patch.object(server, "terminate_and_reap_process") as reap,
         ):
@@ -397,6 +397,26 @@ class UsageProcessCleanupTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         reap.assert_called_once_with(proc, terminate_timeout=3, kill_timeout=2)
+        # The throwaway probe must not start or attach to Codex's shared background server.
+        self.assertIn("--no-daemon", popen.call_args.args[0])
+
+    def test_status_probe_answers_both_folder_trust_prompts(self) -> None:
+        prompts = {
+            "0.154": "Do you trust the contents of this directory?\n1. Yes, continue\n2. No, quit",
+            "0.157": "Folder access\n/config\nTrust this folder?\n\u203a 1. Trust and continue\n2. Quit",
+        }
+        for version, prompt in prompts.items():
+            with self.subTest(version=version):
+                reads = iter([prompt, "", "5h limit: 10% used  weekly limit: 20% used"])
+                with (
+                    patch.object(server, "_read_pty", side_effect=lambda *_args: next(reads, "")),
+                    patch.object(server.os, "write") as write,
+                    patch.object(server.time, "sleep"),
+                ):
+                    server._capture_status_from_tui(10)
+
+                sent = [call.args[1] for call in write.call_args_list]
+                self.assertEqual(sent[:3], [b"1\r", b"/status", b"\r"])
 
 
 class ModelSelectionTests(unittest.TestCase):
@@ -417,7 +437,7 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertEqual(server.DEFAULT_OPTIONS["codex_model"], "default")
         self.assertEqual(
             config["schema"]["codex_model"],
-            "list(default|gpt-6-astra|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
+            "list(default|gpt-6-astra|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
         )
 
     def test_default_model_omits_model_argument(self) -> None:
@@ -431,7 +451,7 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertNotIn("--model", args)
 
     def test_explicit_model_is_passed_to_codex(self) -> None:
-        for model in ("gpt-6-astra", "gpt-5.6-terra"):
+        for model in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra"):
             for session_id in (None, "019fc242-910a-7c92-a17d-54c014e19fc4"):
                 with self.subTest(model=model, session_id=session_id):
                     args = self.build_args_for_model(model, session_id)

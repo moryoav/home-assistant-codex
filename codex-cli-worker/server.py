@@ -61,10 +61,12 @@ DEFAULT_OPTIONS = {
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 # Codex only emits reasoning items when summaries are requested; "auto" produced none.
 REASONING_SUMMARIES = {"concise", "detailed", "none"}
-# Supported choices in the bundled CLI 0.154.0 model catalog. Availability still
+# Supported choices in the bundled CLI 0.157.1 model catalog. Availability still
 # depends on the signed-in account; the CLI reports unavailable models normally.
 CHAT_MODELS = (
     ("gpt-6-astra", "GPT-6 Astra", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-6-sol", "GPT-6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-6-luna", "GPT-6 Luna", ("low", "medium", "high", "xhigh", "max")),
     ("gpt-5.6-sol", "GPT-5.6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-terra", "GPT-5.6 Terra", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-luna", "GPT-5.6 Luna", ("low", "medium", "high", "xhigh", "max")),
@@ -387,7 +389,7 @@ def _codex_sandbox_probe(mode: str) -> dict[str, Any]:
     if not codex:
         return {"ok": False, "error": "Codex CLI executable is unavailable."}
     try:
-        # The pinned CLI (0.154.0) takes the command directly: `codex sandbox
+        # The pinned CLI (0.157.1) takes the command directly: `codex sandbox
         # [options] -- <command>`. It has no platform subcommand, so any word
         # before `--` that is not an option is executed as the program.
         result = subprocess.run(
@@ -789,7 +791,9 @@ def _capture_status_from_tui(master_fd: int) -> str:
     captured = _read_pty(master_fd, USAGE_READY_TIMEOUT_SECONDS)
 
     # First-run Codex can pause on the trust-directory screen before accepting slash commands.
-    if "doyoutrustthecontentsofthisdirectory" in compact_cli_text(captured):
+    # CLI 0.157 renamed it to "Trust this folder?"; option 1 still trusts and continues.
+    compacted = compact_cli_text(captured)
+    if "doyoutrustthecontentsofthisdirectory" in compacted or "trustthisfolder" in compacted:
         os.write(master_fd, b"1\r")
         captured += _read_pty(master_fd, USAGE_POST_TRUST_READY_SECONDS)
 
@@ -890,6 +894,8 @@ def fetch_codex_usage_status() -> dict[str, Any]:
             [
                 codex,
                 "--no-alt-screen",
+                # A throwaway status probe must not start or attach to the shared background server.
+                "--no-daemon",
                 "--config",
                 "check_for_update_on_startup=false",
                 "--config",

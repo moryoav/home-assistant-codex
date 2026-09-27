@@ -11,8 +11,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from test_server import server
-from verification import BROWSER_MEMORY_LIMIT_MIB, MAX_BROWSERS, Verification
-from verification import browser_process_memory, kill_tracked_processes, track_browser_processes
+from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, MAX_BROWSERS, Verification
+from verification import browser_memory_limit, browser_process_memory, kill_tracked_processes, track_browser_processes
 
 
 class VerificationTests(unittest.TestCase):
@@ -135,7 +135,10 @@ class VerificationTests(unittest.TestCase):
             for path in ("https://evil.test/", "//evil", "/lovelace/%2e%2e", "/lovelace/0?token=x"):
                 self.assertEqual(self.engine.run("chat", {"operation": "dashboard", "path": path})["status"], "unavailable")
             self.options["browser_verification"] = False
-            self.assertEqual(self.engine.browser("chat", {"path": "/lovelace/0"})["status"], "disabled")
+            self.engine.begin("chat")
+            with patch("verification.subprocess.Popen") as launch:
+                self.assertEqual(self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/0"})["status"], "disabled")
+                launch.assert_not_called()
             core.assert_not_called()
 
     def test_browser_session_revoked_when_launch_fails(self):
@@ -177,12 +180,39 @@ class VerificationTests(unittest.TestCase):
             processes.append(process)
             return process
         with patch.object(self.engine, "core", return_value={"session_id": "lease", "url": "http://homeassistant:8123", "access_token": "private"}) as core:
-            with patch("verification.subprocess.Popen", side_effect=launch), patch("verification.track_browser_processes", return_value=(BROWSER_MEMORY_LIMIT_MIB + 1) * 1024 * 1024):
+            with patch("verification.subprocess.Popen", side_effect=launch), patch("verification.track_browser_processes", return_value=(DEFAULT_BROWSER_MEMORY_LIMIT_MIB + 1) * 1024 * 1024):
                 result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/0"})
         self.assertEqual(result["status"], "unavailable")
         self.assertIn("memory budget", result["message"])
         self.assertIsNotNone(processes[0].poll())
         core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "lease"})
+
+    def test_browser_memory_option_defaults_and_rejects_unbounded_values(self):
+        self.assertEqual(browser_memory_limit({}), DEFAULT_BROWSER_MEMORY_LIMIT_MIB)
+        for invalid in (None, True, False, 0, -1, 511, 8193, "2048", 2048.5):
+            self.assertEqual(browser_memory_limit({"browser_memory_limit_mib": invalid}), DEFAULT_BROWSER_MEMORY_LIMIT_MIB)
+        for limit in (512, 1536, 2048, 8192):
+            self.assertEqual(browser_memory_limit({"browser_memory_limit_mib": limit}), limit)
+
+    def test_browser_uses_configured_budget_for_each_capture(self):
+        original_popen = subprocess.Popen
+        def launch(_args, **kwargs):
+            return original_popen([sys.executable, "-c",
+                "import sys,time; sys.stdin.read(); time.sleep(.3); print('{\"status\":\"issues\",\"screenshots\":[]}')"], **kwargs)
+        for limit, measured, status in ((512, 600, "unavailable"), (2048, 1600, "issues")):
+            with self.subTest(limit=limit):
+                self.options["browser_memory_limit_mib"] = limit
+                with patch.object(self.engine, "core", return_value={"session_id": "lease", "url": "http://homeassistant:8123", "access_token": "private"}) as core:
+                    with patch("verification.subprocess.Popen", side_effect=launch), patch("verification.track_browser_processes", return_value=measured * 1024 * 1024):
+                        result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/0"})
+                self.assertEqual(result["status"], status)
+                if status == "unavailable":
+                    self.assertIn(f"{limit} MiB memory budget", result["message"])
+                    self.assertIn("Browser memory limit", result["message"])
+                else:
+                    self.assertEqual(result["memory_limit_mib"], limit)
+                    self.assertEqual(result["memory_peak_mib"], measured)
+                core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "lease"})
 
     @unittest.skipIf(os.name == "nt", "Linux container process accounting")
     def test_memory_accounting_includes_swap_and_falls_back_if_pss_unavailable(self):

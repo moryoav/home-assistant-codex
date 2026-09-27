@@ -3,7 +3,8 @@
 ## 0.1.60
 
 - Fix premature dashboard capture termination by accounting for shared Chromium memory proportionally instead of counting it repeatedly across processes.
-- Raise the browser process-tree budget to 1536 MiB for full Home Assistant dashboards. Include proportional swap, retain a conservative RSS fallback, and report measured peak memory in capture results. Keep the timeout, single-browser limit, and process cleanup.
+- Add **Browser memory limit (MiB)** to the app configuration, with a default of 1536 MiB and a range of 512 to 8192 MiB for different dashboard sizes and available memory. Include proportional swap, retain a conservative RSS fallback, and report the selected limit and measured peak in capture results. Keep the timeout, single-browser limit, and process cleanup.
+- Label the existing browser toggle **Enable built-in browser** and explain its RAM use. Turning it off prevents browser launches and screenshots while retaining state and configuration checks.
 - Release fetched page response bodies after delivery to reduce retained memory.
 - Test the complete worker capture path, including memory enforcement, temporary authentication, screenshot storage, and session cleanup, alongside shared-memory and over-budget regressions.
 

@@ -7,6 +7,19 @@ and inspect dashboards in a bundled browser without a user password or manually
 created token. Update both the app and integration. See [verification tools,
 authentication, screenshots, and limits](VERIFICATION.md).
 
+**Enable built-in browser** in the app's **Configuration** tab controls dashboard
+inspection and screenshots. The browser uses RAM while it runs. Turn this off
+to completely disable browser launches if you do not need them or have limited
+RAM; state and configuration checks remain available.
+
+From 0.1.60, **Browser memory limit (MiB)** in the same tab
+controls the memory budget for dashboard captures. The default is **1536 MiB
+(1.5 GiB)**, with a range of **512 to 8192 MiB**. For larger dashboards, increase
+it to values such as 2048 or 3072 if the host has enough free memory alongside
+Home Assistant and other apps. This is a capture limit, not reserved RAM or a
+limit on the whole app. Save the options and restart the app if Home Assistant
+prompts you; the next capture uses the new value.
+
 This app is distributed from:
 
 ```text

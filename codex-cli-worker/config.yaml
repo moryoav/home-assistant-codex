@@ -32,6 +32,7 @@ options:
   auto_save_lovelace: true
   config_check: true
   browser_verification: true
+  browser_memory_limit_mib: 1536
   ha_url: http://supervisor/core
 schema:
   codex_model: list(default|gpt-6-astra|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)
@@ -44,5 +45,6 @@ schema:
   auto_save_lovelace: bool
   config_check: bool
   browser_verification: bool
+  browser_memory_limit_mib: int(512,8192)
   ha_url: str
   HA_TOKEN: password?

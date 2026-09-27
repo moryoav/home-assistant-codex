@@ -21,7 +21,7 @@ import websocket
 
 MAX_CHECKS = 24
 MAX_BROWSERS = 4
-BROWSER_MEMORY_LIMIT_MIB = 1536
+DEFAULT_BROWSER_MEMORY_LIMIT_MIB = 1536
 SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024
 RETENTION_SECONDS = 7 * 24 * 3600
 ENTITY_RE = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
@@ -205,8 +205,10 @@ class Verification:
         if turn_id is None:
             turn_id = self.worker.tasks.get(task_id, {}).get("current_turn_id")
         capability = capability or self.capabilities.get(task_id)
-        if not self.worker.read_options().get("browser_verification", True):
+        options = self.worker.read_options()
+        if not options.get("browser_verification", True):
             return {"status": "disabled", "message": "Dashboard browser verification is disabled"}
+        memory_limit_mib = browser_memory_limit(options)
         path = payload.get("path", "")
         if not isinstance(path, str) or not PATH_RE.fullmatch(path):
             raise ValueError("Use a local dashboard path such as /lovelace/0")
@@ -237,8 +239,8 @@ class Verification:
                             raise ValueError("Dashboard verification cancelled or timed out")
                         memory = track_browser_processes(process.pid, tracked)
                         peak_memory = max(peak_memory, memory)
-                        if memory > BROWSER_MEMORY_LIMIT_MIB * 1024 * 1024:
-                            raise ValueError(f"Dashboard browser exceeded its {BROWSER_MEMORY_LIMIT_MIB} MiB memory budget ({memory / 1024 ** 2:.0f} MiB measured)")
+                        if memory > memory_limit_mib * 1024 * 1024:
+                            raise ValueError(f"Dashboard browser exceeded its {memory_limit_mib} MiB memory budget ({memory / 1024 ** 2:.0f} MiB measured). Adjust Browser memory limit in app configuration.")
                         time.sleep(0.1)
                     output_file.seek(0)
                     output = output_file.read(65537)
@@ -246,7 +248,7 @@ class Verification:
                         raise ValueError("Browser output limit exceeded")
                     result = json.loads(output)
                     result.update(memory_peak_mib=round(peak_memory / 1024 ** 2, 1),
-                                  memory_limit_mib=BROWSER_MEMORY_LIMIT_MIB)
+                                  memory_limit_mib=memory_limit_mib)
                 finally:
                     # Playwright detaches Chromium into a separate process group.
                     # Let its signal handler close first, then reap tracked children
@@ -378,6 +380,12 @@ class Verification:
         os.chmod(path, 0o600)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server
+
+
+def browser_memory_limit(options):
+    """Keep old or malformed options bounded even outside Supervisor validation."""
+    value = options.get("browser_memory_limit_mib", DEFAULT_BROWSER_MEMORY_LIMIT_MIB)
+    return value if type(value) is int and 512 <= value <= 8192 else DEFAULT_BROWSER_MEMORY_LIMIT_MIB
 
 
 def track_browser_processes(root_pid, tracked):

@@ -35,7 +35,7 @@ from flask import Flask, Response, jsonify, request, send_file
 
 # Also support the existing importlib-based test harness.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verification import Verification
+from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification
 
 
 class _VerificationWorker:
@@ -68,6 +68,7 @@ DEFAULT_OPTIONS = {
     "auto_save_lovelace": True,
     "config_check": True,
     "browser_verification": True,
+    "browser_memory_limit_mib": DEFAULT_BROWSER_MEMORY_LIMIT_MIB,
     "ha_url": "http://supervisor/core",
     "HA_TOKEN": "",
 }

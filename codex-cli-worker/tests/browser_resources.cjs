@@ -42,6 +42,19 @@ async function main() {
   policy.cssDependencies(Buffer.from('@import "https://styles.example.test/theme.css"; @font-face {src:url(https://fonts.example.test/a.woff2)} .x {background:url(https://evil.test/api/action)}'), 'https://assets.example.test/cards/main.css');
   assert(remote('https://fonts.example.test/a.woff2', 'GET', 'font'));
   assert(remote('https://styles.example.test/theme.css', 'GET', 'stylesheet'));
+  // Imported CSS grants only the referenced URL, not its directory.
+  for (const [file, type] of [['script.js', 'script'], ['data.json', 'fetch'],
+    ['data.json', 'xhr'], ['other.css', 'stylesheet']])
+    assert(!remote(`https://styles.example.test/${file}`, 'GET', type), file);
+  policy.cssDependencies(Buffer.from('@import "nested/colors.css"; .x {background:url(images/icon.svg)} @font-face {src:url(fonts/main.woff2)}'), 'https://styles.example.test/theme.css');
+  assert(remote('https://styles.example.test/nested/colors.css', 'GET', 'stylesheet'));
+  assert(remote('https://styles.example.test/images/icon.svg', 'GET', 'image'));
+  assert(remote('https://styles.example.test/fonts/main.woff2', 'GET', 'font'));
+  assert(!remote('https://styles.example.test/nested/script.js', 'GET', 'script'));
+  // Explicit Core/Lovelace registrations retain their documented directory access.
+  policy.register('https://registered-styles.example.test/theme.css');
+  assert(remote('https://registered-styles.example.test/related.css', 'GET', 'stylesheet'));
+  assert(remote('https://assets.example.test/cards/chunk.js', 'GET', 'script'));
   assert(!remote('https://evil.test/api/action'));
   for (const ip of ['127.0.0.1', '10.1.2.3', '192.168.1.2', '172.30.33.6', '169.254.169.254',
     '100.64.0.1', '0.0.0.0', '224.0.0.1', '::1', '::ffff:8.8.8.8', 'fc00::1', 'fe80::1', '2001:db8::1', '2002:7f00:1::', '3fff::1']) assert(!publicAddress(ip), ip);

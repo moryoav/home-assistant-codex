@@ -56,7 +56,7 @@ class ResourcePolicy {
     for (const value of (Array.isArray(resources.extra_urls) ? resources.extra_urls : []).slice(0, 256)) this.register(value);
   }
 
-  register(value) {
+  register(value, allowDirectory = true) {
     if (typeof value !== 'string' || value.length > 2048 || this.external.size >= 256) return;
     let url;
     try { url = new URL(value, this.origin); } catch { return; }
@@ -64,7 +64,7 @@ class ResourcePolicy {
     if (url.origin === this.origin || !publicURL(url)) return;
     url.hash = '';
     this.external.add(url.href);
-    if (/\.(?:m?js|css)$/i.test(url.pathname))
+    if (allowDirectory && /\.(?:m?js|css)$/i.test(url.pathname))
       this.externalDirectories.add(new URL('.', url).href);
   }
 
@@ -90,7 +90,8 @@ class ResourcePolicy {
     for (const match of text.matchAll(pattern)) {
       let url;
       try { url = new URL(match[1] || match[2] || match[3] || match[4], source); } catch { continue; }
-      if (CSS_ASSET.test(url.pathname) || cdnAsset(url)) this.register(url.href);
+      // CSS references permit only that asset, never sibling scripts or data.
+      if (CSS_ASSET.test(url.pathname) || cdnAsset(url)) this.register(url.href, false);
     }
   }
 }

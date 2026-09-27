@@ -1838,6 +1838,7 @@ def create_snapshot(task_id: str) -> dict[str, Any]:
     task_dir = get_run_dir(task_id)
     snapshot_path = task_dir / "snapshot-before.tar.gz"
     manifest = build_manifest()
+    file_count = 0
     with tarfile.open(snapshot_path, "w:gz") as tar:
         for rel in sorted(manifest):
             if snapshot_secret_path(rel):
@@ -1845,9 +1846,10 @@ def create_snapshot(task_id: str) -> dict[str, Any]:
             path = CONFIG_ROOT / rel
             if path.exists():
                 tar.add(path, arcname=rel, recursive=False)
+                file_count += 1
     (task_dir / "manifest-before.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     snapshot_path.chmod(0o600)
-    return {"path": str(snapshot_path), "file_count": len(manifest), "created_at": utc_now()}
+    return {"path": str(snapshot_path), "file_count": file_count, "created_at": utc_now()}
 
 
 def snapshot_secret_path(relative: str) -> bool:
@@ -1957,10 +1959,13 @@ def preserve_recovery_copies(run_dir: Path, changes: dict[str, list[str]], affec
         return []
     recovery_root = (run_dir / RECOVERY_DIR).resolve()
     results: dict[str, dict[str, str]] = {rel: {"path": rel, "copy": ""} for rel in wanted}
+    for rel in wanted:
+        if rel not in added and snapshot_secret_path(rel):
+            results[rel]["reason"] = "excluded_credentials"
     if snapshot_path.is_file() and any(rel not in added for rel in wanted):
         with tarfile.open(snapshot_path, "r:gz") as tar:
             for rel in wanted:
-                if rel in added:
+                if rel in added or snapshot_secret_path(rel):
                     continue
                 try:
                     member = tar.getmember(rel)
@@ -2036,11 +2041,14 @@ def validation_details(validation_errors: list[str], config_check: dict[str, str
     """The details text for a failed validation, with how to recover."""
     lines = ["Validation errors: " + "; ".join(validation_errors[:5])]
     copies = [entry for entry in recovery_files if entry.get("copy")]
-    added = [entry["path"] for entry in recovery_files if not entry.get("copy")]
+    added = [entry["path"] for entry in recovery_files if not entry.get("copy") and not entry.get("reason")]
+    excluded = [entry["path"] for entry in recovery_files if entry.get("reason") == "excluded_credentials"]
     if copies:
         lines.append("Pre-change copies of the affected files are kept at: " + ", ".join(entry["copy"] for entry in copies))
     if added:
         lines.append("New files that did not exist before: " + ", ".join(added))
+    if excluded:
+        lines.append("Credential files excluded from recovery snapshots; use a Home Assistant backup: " + ", ".join(excluded))
     if config_check.get("warnings"):
         lines.append("Home Assistant warnings: " + config_check["warnings"])
     return "\n".join(lines)

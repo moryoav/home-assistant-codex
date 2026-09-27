@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from test_server import server
 from verification import Verification
@@ -68,6 +68,18 @@ class VerificationTests(unittest.TestCase):
             result = self.engine.run("chat", {"operation": "dashboard_readback", "path": "/lovelace/0",
                                               "expected_config": {"views": [{"title": "Missing"}]}})
         self.assertEqual(result["status"], "failed")
+
+    def test_websocket_read_authenticates_and_closes_the_actual_client_interface(self):
+        # websocket-client has close(), but no context manager methods.
+        ws = Mock(spec=["recv", "send", "close"])
+        ws.recv.side_effect = [
+            '{"type":"auth_required"}', '{"type":"auth_ok"}',
+            '{"id":1,"type":"result","success":true,"result":{"views":[]}}',
+        ]
+        with patch("verification.websocket.create_connection", return_value=ws), patch.object(server, "ha_token", return_value="supervisor-secret"):
+            self.assertEqual(self.engine.ws_read({"type": "lovelace/config"}), {"views": []})
+        self.assertEqual(json.loads(ws.send.call_args_list[0].args[0]), {"type": "auth", "access_token": "supervisor-secret"})
+        ws.close.assert_called_once()
 
     def test_paths_and_disabled_browser_fail_before_auth(self):
         with patch.object(self.engine, "core") as core:

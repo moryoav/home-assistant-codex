@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -83,7 +84,7 @@ class Verification:
 
     def ws_read(self, message):
         token = self.worker.ha_token()
-        with websocket.create_connection("ws://supervisor/core/websocket", timeout=15) as ws:
+        with closing(websocket.create_connection("ws://supervisor/core/websocket", timeout=15)) as ws:
             first = json.loads(ws.recv())
             if first.get("type") == "auth_required":
                 ws.send(json.dumps({"type": "auth", "access_token": token}))

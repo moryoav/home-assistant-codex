@@ -2,6 +2,13 @@
 
 Codex for Home Assistant can read and modify a Home Assistant configuration folder. Please treat security and privacy issues with care.
 
+Dashboard verification uses a dedicated local identity, temporary credentials,
+restricted HTTP/WebSocket requests, and private screenshot attachments. The browser
+shares the app's container and filesystem and runs without Chromium's own sandbox;
+this is not complete isolation from the AI process or root access. Known credential
+files are excluded from new recovery snapshots, but inline secrets and old snapshots
+need separate care. See [verification security and retention](codex-cli-worker/VERIFICATION.md).
+
 ## Supported Versions
 
 Security fixes are intended for the latest published release and the current `main` branch.

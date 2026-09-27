@@ -140,6 +140,19 @@ def main():
             extra = {}
             if index == 1:
                 extra["config_check"] = {"result": "valid", "errors": "", "warnings": ""}
+                extra["verification"] = [
+                    {"operation": "entity", "status": "passed", "entity_id": "sensor.energy", "state": "42", "expected_state": "42",
+                     "message": "Fresh entity state readback.", "attributes": {"unit_of_measurement": "kWh"}},
+                    {"operation": "dashboard", "status": "issues", "path": "/lovelace/energy",
+                     "message": "Screenshots captured for visual inspection.", "errors": ["Custom element does not exist: sample-card"],
+                     "blocked": ["WebSocket call_service"]},
+                ]
+                shot_id = "a" * 32
+                shot = root / "tasks" / "preview-01" / "turns" / turn["turn_id"] / "attachments" / f"{shot_id}.png"
+                shot.write_bytes(preview_png(390, 844))
+                extra["verification_attachments"] = [server.attachment_record(
+                    "preview-01", shot_id, shot, "image/png", name="dashboard-mobile.png", origin="verification",
+                    viewport="mobile", expires_at=time.time() + 3600)]
             if index == 3:
                 # A YAML edit that Home Assistant rejected; the worker kept the previous file.
                 extra.update(config_check={"result": "invalid", "warnings": "",

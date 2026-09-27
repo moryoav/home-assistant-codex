@@ -10,9 +10,10 @@ long-lived token is needed. These tools do not need the optional `HA_TOKEN` sett
 - Entity checks fetch fresh state and up to ten explicitly named attributes. An
   expected state can be compared exactly. Run checks after any authorized reload;
   matching state does not prove automation triggers, conditions, or actions work.
-- Core logs and the last 100 lines of a specified app's logs are available, capped
+- The last 100 lines of Core logs are available, capped
   at 32 KiB. Known credential patterns are redacted before persistence/model access.
-  Logs can still contain personal information.
+  Logs can still contain personal information or unrecognized secrets. Other apps'
+  logs are not accessible through this tool.
 - Saved storage dashboards get a fresh WebSocket configuration readback compared
   with the edited configuration, followed by desktop (1440 x 1000) and mobile
   (390 x 844) captures, within the turn limits.
@@ -36,20 +37,23 @@ labeled as captures, not images already inspected by the AI.
 
 ## Task tools
 
-The installed `ha-verify` command sends one JSON request over a private Unix socket
-using a temporary capability supplied only to the active task. There is no generic
-URL, service-call, reload, click, or JavaScript evaluation tool.
+The worker registers a trusted `home_assistant` stdio MCP server for each task.
+Its `verify` tool accepts the following JSON argument objects. The bridge connects
+to the private worker socket outside the shell sandbox, so `workspace-write` and
+`read-only` keep their existing network restrictions. The temporary capability is
+forwarded to this process through an environment variable, never stored in config.
+This bounded tool is approved for non-interactive calls; it does not grant general
+shell network access, service calls, reloads, arbitrary URLs, clicks, or evaluation.
 
-```sh
-ha-verify '{"operation":"entity","entity_id":"light.kitchen","expected_state":"on","attributes":["brightness"]}'
-ha-verify '{"operation":"config_check"}'
-ha-verify '{"operation":"logs","target":"core"}'
-ha-verify '{"operation":"logs","target":"core_mosquitto"}'
-ha-verify '{"operation":"dashboard_readback","path":"/lovelace/lights"}'
-ha-verify '{"operation":"dashboard","path":"/lovelace/lights","save_pending":true}'
+```json
+{"operation":"entity","entity_id":"light.kitchen","expected_state":"on","attributes":["brightness"]}
+{"operation":"config_check"}
+{"operation":"logs"}
+{"operation":"dashboard_readback","path":"/lovelace/lights"}
+{"operation":"dashboard","path":"/lovelace/lights","save_pending":true}
 ```
 
-Use the exact installed app slug for logs. Omit `save_pending` for an existing
+Omit `save_pending` for an existing
 dashboard. Perform reloads/device actions only with the user's authorization,
 then use a fresh readback. Do not equate an accepted command with a verified outcome.
 
@@ -73,7 +77,8 @@ then use a fresh readback. Do not equate an accepted command with a verified out
 
 No additional Supervisor role is granted to the worker. Entity/configuration access
 uses its existing `homeassistant_api` permission. Log reads use a narrow integration
-endpoint allowing only Core logs or a validated app slug, with bounded responses.
+endpoint authorizing only bounded Core log reads. It uses Core's Supervisor token
+for that operation; it does not allow other installed apps' logs.
 
 ## Limits
 
@@ -117,6 +122,11 @@ as complete credential isolation or a hardened browser sandbox.
 ## Validation
 
 Run `pytest`. Tests under `tests/ha` use real Home Assistant authentication.
+`python tests/codex_verification_smoke.py` uses the pinned CLI and a local mock model
+endpoint to check MCP discovery and real entity-tool calls in both sandbox modes,
+while confirming that shell socket connections remain denied. Set `HA_TEST_CODEX`
+to the pinned CLI binary when it is not at `/usr/local/bin/codex`. No model account
+or paid request is involved.
 `node tests/browser_verification.cjs` uses real Chromium and a protocol fixture to
 check viewports, external auth, blocked writes, broken resources/cards, rejected
 authentication, and cleanup. Provide `playwright-core` and `ws` on `NODE_PATH` and

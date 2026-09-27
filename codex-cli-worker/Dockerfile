@@ -56,10 +56,9 @@ WORKDIR /data
 
 COPY run.sh /
 COPY server.py /
-COPY verification.py browser.cjs /
-COPY ha-verify /usr/local/bin/ha-verify
+COPY verification.py verification_mcp.py browser.cjs /
 COPY web /web
 
-RUN chmod a+x /run.sh /server.py /usr/local/bin/ha-verify
+RUN chmod a+x /run.sh /server.py
 
 CMD ["/run.sh"]

@@ -1,6 +1,6 @@
 # Codex for Home Assistant
 
-Tasks can verify Home Assistant configuration and entity states, read Core/app
+Tasks can verify Home Assistant configuration and entity states, read Core
 logs, and inspect dashboards at desktop and mobile sizes. Screenshots and check
 results appear with the conversation. Browser access uses a temporary local
 identity, without asking for your Home Assistant password or a long-lived token.

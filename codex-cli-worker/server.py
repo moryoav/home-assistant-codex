@@ -2572,13 +2572,13 @@ This is a non-interactive run. Do not wait for terminal input. If you need the u
 
 If the user asks for an image, use the built-in image generation tool. Every image it generates is attached to this conversation and shown to the user automatically, so leave it at its default save location and describe it in the summary. Copy it into /config only when the user asks for a file at a specific path. The default save location is not a failure.
 
-Use the installed ha-verify command for authenticated Home Assistant checks. Pass one JSON argument:
-  ha-verify '{{"operation":"entity","entity_id":"light.kitchen","expected_state":"on","attributes":["brightness"]}}'
-  ha-verify '{{"operation":"config_check"}}'
-  ha-verify '{{"operation":"logs","target":"core"}}'
-  ha-verify '{{"operation":"logs","target":"APP_SLUG"}}'
-  ha-verify '{{"operation":"dashboard","path":"/lovelace/0"}}'
-  ha-verify '{{"operation":"dashboard_readback","path":"/lovelace/0"}}'
+Use the home_assistant MCP verify tool for authenticated Home Assistant checks, with these argument examples:
+  {{"operation":"entity","entity_id":"light.kitchen","expected_state":"on","attributes":["brightness"]}}
+  {{"operation":"config_check"}}
+  {{"operation":"logs"}}
+  {{"operation":"dashboard","path":"/lovelace/0"}}
+  {{"operation":"dashboard_readback","path":"/lovelace/0"}}
+The MCP tool runs through the worker outside the shell network sandbox. Do not attempt verification through a shell socket command or enable network access. Logs are limited to Core.
 Use fresh entity readback after any user-authorized reload or change. These tools do not perform reloads or device actions. Only perform those when authorized by the user. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
 After an authorized storage-dashboard edit, add "save_pending":true to the dashboard request to have the worker save that turn's pending dashboard edit and verify API readback before capturing it. This requires auto_save_lovelace to be enabled. Without save_pending, the browser inspects only the dashboard currently loaded in Home Assistant.
 
@@ -2590,6 +2590,24 @@ At the end, return only an object matching the provided JSON schema:
 {attached}Current user message:
 {current_request}
 """
+
+
+def verification_mcp_args() -> list[str]:
+    """Register the trusted stdio bridge without granting shell network access."""
+    settings = {
+        "command": sys.executable,
+        "args": [str(Path(__file__).with_name("verification_mcp.py"))],
+        "env_vars": ["HA_VERIFICATION_CAPABILITY"],
+        "enabled": True,
+        "required": True,
+        "startup_timeout_sec": 10,
+        "tool_timeout_sec": 240,
+        "tools.verify.approval_mode": "approve",
+    }
+    args = []
+    for name, value in settings.items():
+        args.extend(["--config", f"mcp_servers.home_assistant.{name}={json.dumps(value)}"])
+    return args
 
 
 def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_id: str | None) -> list[str]:
@@ -2627,6 +2645,7 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
         args.extend(["--model", model])
     args.extend(["--config", f'model_reasoning_effort="{execution["reasoning_effort"]}"'])
     args.extend(["--config", f'model_reasoning_summary="{reasoning_summary(options)}"'])
+    args.extend(verification_mcp_args())
     if session_id:
         # `resume` has its own single-value --image option, so the flags go after the subcommand.
         args.extend(["resume", session_id])

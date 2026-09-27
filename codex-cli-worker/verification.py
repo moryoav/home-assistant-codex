@@ -124,6 +124,8 @@ class Verification:
                     entry["status"] = {"valid": "passed", "invalid": "failed"}.get(entry["result"], "unavailable")
                 elif operation == "logs":
                     target = payload.get("target", "core")
+                    if target != "core":
+                        raise ValueError("Only Core logs are available to verification")
                     result = self.core("POST", "codex_cli/diagnostic_logs", json={"target": target})
                     entry.update(status="observed", target=target, message=result["text"], truncated=result.get("truncated", False))
                 elif operation == "dashboard":
@@ -332,7 +334,7 @@ class Verification:
 
         class Handler(socketserver.StreamRequestHandler):
             def handle(self):
-                self.request.settimeout(140)
+                self.request.settimeout(240)
                 try:
                     raw = self.rfile.readline(16385)
                     if len(raw) > 16384:
@@ -340,7 +342,10 @@ class Verification:
                     result = engine.dispatch(json.loads(raw))
                 except (OSError, ValueError):
                     result = {"status": "unavailable", "message": "Invalid or expired verification request"}
-                self.wfile.write(json.dumps(result).encode() + b"\n")
+                try:
+                    self.wfile.write(json.dumps(result).encode() + b"\n")
+                except OSError:
+                    pass  # A cancelled caller may have closed its pipe/socket.
 
         Path(path).unlink(missing_ok=True)
         server = socketserver.ThreadingUnixStreamServer(str(path), Handler)

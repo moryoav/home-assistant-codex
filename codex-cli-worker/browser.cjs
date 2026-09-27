@@ -8,7 +8,8 @@ const READ_MESSAGES = new Set([
   'lovelace/resources/list', 'frontend/get_themes', 'frontend/get_user_data',
   'frontend/get_translations', 'frontend/subscribe_extra_js', 'config/entity_registry/list',
   'frontend/subscribe_user_data', 'frontend/subscribe_system_data', 'recorder/info',
-  'repairs/list_issues', 'brands/access_token',
+  'repairs/list_issues', 'brands/access_token', 'frontend/get_icons',
+  'render_template', 'sensor/numeric_device_classes',
   'labs/subscribe', 'persistent_notification/subscribe', 'frontend/get_system_data', 'lovelace/info',
   'config/entity_registry/get_entries',
   'config/entity_registry/list_for_display', 'config/device_registry/list',
@@ -36,7 +37,7 @@ function allowRequest(url, origin, method, dashboardPath) {
   if (/%|\\/.test(url.pathname)) return false;
   // No arbitrary API GETs: integrations can have state-changing GET handlers.
   if (url.pathname.startsWith('/api/')) {
-    return /^\/api\/(onboarding|config|states(?:\/[a-z0-9_.]+)?|history\/period(?:\/[0-9T:Z.+-]+)?|camera_proxy\/[a-z0-9_.]+)$/.test(url.pathname);
+    return /^\/api\/(onboarding|config|states(?:\/[a-z0-9_.]+)?|history\/period(?:\/[0-9T:Z.+-]+)?|camera_proxy\/[a-z0-9_.]+|image\/serve\/[a-f0-9]{32}\/(?:256x256|512x512|original))$/.test(url.pathname);
   }
   return /^\/(frontend_latest|frontend_es5|static|local|hacsfiles)\//.test(url.pathname)
     || (dashboardPath && url.pathname === dashboardPath)

@@ -2,7 +2,7 @@
 
 ## 0.1.58
 
-- Add authenticated configuration checks, bounded Core/app log reads, entity state expectations, and fresh dashboard configuration readback as task tools.
+- Add authenticated configuration checks, bounded Core log reads, entity state expectations, and fresh dashboard configuration readback as task tools.
 - Bundle Chromium for desktop and mobile dashboard inspection, with screenshots and verification results kept with each conversation turn. Report blocked requests, missing cards, browser errors, and unavailable checks explicitly.
 - Create temporary local browser sessions through the Codex integration, without a Home Assistant password or manually created long-lived token. Restrict browser requests and revoke sessions on completion, expiry, and integration unload.
 - Remove Supervisor credentials from AI subprocess environments and exclude known credential files from new recovery snapshots while retaining change detection.

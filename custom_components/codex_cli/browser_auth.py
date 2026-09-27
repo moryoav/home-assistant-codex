@@ -5,7 +5,6 @@ import asyncio
 import hmac
 import json
 import os
-import re
 from datetime import timedelta
 from typing import Any
 
@@ -145,7 +144,7 @@ class BrowserSessionView(HomeAssistantView):
 
 
 class DiagnosticView(BrowserSessionView):
-    """Expose only bounded log reads, without broadening the app's API role."""
+    """Allow the paired worker to read bounded Core logs, never other apps' logs."""
 
     url = "/api/codex_cli/diagnostic_logs"
     name = "api:codex_cli:diagnostic_logs"
@@ -154,17 +153,13 @@ class DiagnosticView(BrowserSessionView):
         data = await self.payload(request)
         self.broker(request, data)
         target = data.get("target") if isinstance(data, dict) else None
-        if target == "core":
-            path = "/core/logs"
-        elif isinstance(target, str) and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,80}", target):
-            path = f"/addons/{target}/logs"
-        else:
+        if target != "core":
             raise web.HTTPBadRequest()
         token = os.environ.get("SUPERVISOR_TOKEN")
         if not token:
             raise web.HTTPServiceUnavailable()
         async with async_get_clientsession(self.hass).get(
-            f"http://supervisor{path}", params={"lines": 100},
+            "http://supervisor/core/logs", params={"lines": 100},
             headers={"Authorization": f"Bearer {token}"},
             timeout=15, allow_redirects=False,
         ) as response:

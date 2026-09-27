@@ -69,6 +69,23 @@ async def test_auto_expiry_and_unload(hass):
         await broker.issue()
 
 
+async def test_unload_during_credential_creation_revokes_the_new_credential(hass):
+    """Unloading while HA awaits credential persistence must not leave a lease."""
+    broker = auth.BrowserSessions(hass, "paired-worker")
+    await broker.setup()
+    create = hass.auth.async_create_refresh_token
+    async def interrupted(*args, **kwargs):
+        token = await create(*args, **kwargs)
+        broker.close()
+        return token
+    with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"), \
+         patch.object(hass.auth, "async_create_refresh_token", side_effect=interrupted):
+        with pytest.raises(web.HTTPServiceUnavailable):
+            await broker.issue()
+    assert not broker.sessions
+    assert not broker.user.refresh_tokens
+
+
 async def test_broker_rejects_admin_without_pairing_and_read_only_user(hass):
     broker = auth.BrowserSessions(hass, "paired-worker")
     await broker.setup()
@@ -79,6 +96,8 @@ async def test_broker_rejects_admin_without_pairing_and_read_only_user(hass):
     request = Request({KEY_HASS_USER: types.SimpleNamespace(is_admin=True)})
     with pytest.raises(web.HTTPForbidden):
         view.broker(request, {"worker_token": "wrong"})
+    with pytest.raises(web.HTTPForbidden):
+        view.broker(request, {"worker_token": "שלום"})
     request.headers["X-Verification-Worker"] = "paired-worker"
     assert view.broker(request, {"worker_token": "paired-worker"}) is broker
     request[KEY_HASS_USER] = broker.user
@@ -126,7 +145,24 @@ async def test_read_only_session_cannot_save_dashboard(hass, hass_ws_client):
         response = await client.receive_json()
         assert response["success"] is False
         assert response["error"]["code"] == "unauthorized"
-        await client.close()
+        broker.revoke(session["session_id"])
+        from aiohttp import WSMsgType
+        closed = await asyncio.wait_for(client.receive(), timeout=2)
+        assert closed.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+    finally:
+        broker.close()
+
+
+async def test_browser_url_uses_internal_tls_configuration(hass):
+    """Do not substitute the plain Supervisor address when Core requires TLS."""
+    hass.config.api = types.SimpleNamespace(use_ssl=True, port=8123, local_ip="192.0.2.1")
+    hass.config.internal_url = "https://ha.example.test:8123"
+    broker = auth.BrowserSessions(hass, "paired-worker")
+    await broker.setup()
+    try:
+        with patch("homeassistant.helpers.network.is_hassio", return_value=True):
+            session = await broker.issue()
+        assert session["url"] == "https://ha.example.test:8123"
     finally:
         broker.close()
 

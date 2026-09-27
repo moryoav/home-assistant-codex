@@ -50,7 +50,7 @@ class Verification:
         if not isinstance(payload, dict):
             raise ValueError("Expected a verification object")
         supplied = payload.get("capability", "")
-        if not isinstance(supplied, str) or not supplied:
+        if not isinstance(supplied, str) or not supplied or not supplied.isascii():
             raise ValueError("No active verification capability")
         with self.lock:
             task_id = next((key for key, value in self.capabilities.items()
@@ -60,7 +60,17 @@ class Verification:
         with self.worker.lock:
             if self.worker.tasks.get(task_id, {}).get("status") != "running":
                 raise ValueError("Verification capability expired")
-        return self.run(task_id, {k: v for k, v in payload.items() if k != "capability"})
+        return self.run(task_id, {k: v for k, v in payload.items() if k != "capability"}, supplied)
+
+    def active(self, task_id, turn_id, capability):
+        """Reject checks that outlive cancellation, completion, or a replaced turn."""
+        with self.lock:
+            current = self.capabilities.get(task_id)
+        with self.worker.lock:
+            task = self.worker.tasks.get(task_id, {})
+            return bool(capability and current == capability and task.get("status") == "running"
+                        and task.get("current_turn_id") == turn_id
+                        and not self.worker.task_cancellation_requested(task_id))
 
     def core(self, method, path, **kwargs):
         token = self.worker.ha_token()
@@ -103,15 +113,19 @@ class Verification:
                     return result["result"]
         raise ValueError("Home Assistant did not return a result")
 
-    def run(self, task_id, payload):
+    def run(self, task_id, payload, capability=None):
         # One inspection at a time, even if the agent launches parallel commands.
         if not self.execution_lock.acquire(blocking=False):
             return {"status": "unavailable", "message": "Another verification is running"}
         try:
+            with self.lock:
+                capability = capability or self.capabilities.get(task_id)
             with self.worker.lock:
                 task = self.worker.tasks.get(task_id, {})
                 turn_id = task.get("current_turn_id")
                 entries = list(task.get("verification") or [])
+            if not self.active(task_id, turn_id, capability):
+                return {"status": "unavailable", "message": "Verification capability expired"}
             if len(entries) >= MAX_CHECKS:
                 return {"status": "unavailable", "message": "Verification limit reached for this turn"}
             operation = payload.get("operation")
@@ -131,7 +145,7 @@ class Verification:
                 elif operation == "dashboard":
                     if sum(item.get("operation") == "dashboard" for item in entries) >= MAX_BROWSERS:
                         raise ValueError("Dashboard limit reached for this turn")
-                    entry.update(self.browser(task_id, payload, turn_id))
+                    entry.update(self.browser(task_id, payload, turn_id, capability))
                 elif operation == "dashboard_readback":
                     entry.update(self.dashboard_readback(payload))
                 else:
@@ -142,8 +156,10 @@ class Verification:
                 entry.update(status="unavailable", message=f"Verification could not finish: {detail[:200]}")
             entry = json.loads(self.worker.redact(json.dumps(entry)))
             with self.worker.lock:
-                if not self.worker.task_cancellation_requested(task_id) and self.worker.tasks.get(task_id, {}).get("current_turn_id") == turn_id:
+                if self.active(task_id, turn_id, capability):
                     self.worker.update_task(task_id, verification=[*entries, entry])
+                else:
+                    return {"status": "unavailable", "message": "Verification capability expired"}
             return entry
         finally:
             self.execution_lock.release()
@@ -184,9 +200,10 @@ class Verification:
                  " differs from the saved configuration." if expected is not None else "."),
                 "view_count": len(actual.get("views", []))}
 
-    def browser(self, task_id, payload, turn_id=None):
+    def browser(self, task_id, payload, turn_id=None, capability=None):
         if turn_id is None:
             turn_id = self.worker.tasks.get(task_id, {}).get("current_turn_id")
+        capability = capability or self.capabilities.get(task_id)
         if not self.worker.read_options().get("browser_verification", True):
             return {"status": "disabled", "message": "Dashboard browser verification is disabled"}
         path = payload.get("path", "")
@@ -214,7 +231,7 @@ class Verification:
                     deadline = time.monotonic() + 110
                     tracked = {}
                     while process.poll() is None:
-                        if self.worker.task_cancellation_requested(task_id) or time.monotonic() >= deadline:
+                        if not self.active(task_id, turn_id, capability) or time.monotonic() >= deadline:
                             raise ValueError("Dashboard verification cancelled or timed out")
                         if track_browser_processes(process.pid, tracked) > 768 * 1024 * 1024:
                             raise ValueError("Dashboard browser exceeded its 768 MB memory budget")
@@ -236,7 +253,7 @@ class Verification:
                             process.kill()
                     kill_tracked_processes(locals().get("tracked", {}))
                     process.wait(timeout=10)
-                if self.worker.task_cancellation_requested(task_id) or self.worker.tasks.get(task_id, {}).get("current_turn_id") != turn_id:
+                if not self.active(task_id, turn_id, capability):
                     raise ValueError("Dashboard verification cancelled")
                 images = []
                 for shot in result.pop("screenshots", [])[:2]:
@@ -255,7 +272,7 @@ class Verification:
                         images.append(record)
                 with self.worker.lock:
                     current = list(self.worker.tasks.get(task_id, {}).get("verification_attachments") or [])
-                    if self.worker.task_cancellation_requested(task_id) or self.worker.tasks.get(task_id, {}).get("current_turn_id") != turn_id:
+                    if not self.active(task_id, turn_id, capability):
                         for item in images:
                             (self.worker.get_task_dir(task_id) / item["path"]).unlink(missing_ok=True)
                         raise ValueError("Dashboard verification cancelled")
@@ -292,6 +309,8 @@ class Verification:
 
     def save_pending_dashboard(self, task_id, path):
         """Save only a dashboard edited in this turn, before the AI views it."""
+        if self.worker.read_options().get("codex_sandbox") == "read-only":
+            raise ValueError("Dashboard saves are disabled in read-only mode")
         if not self.worker.read_options().get("auto_save_lovelace", True):
             raise ValueError("Dashboard auto-save is disabled; inspect the loaded dashboard without save_pending")
         manifest = self.worker.get_run_dir(task_id) / "manifest-before.json"

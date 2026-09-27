@@ -16,11 +16,12 @@ long-lived token is needed. These tools do not need the optional `HA_TOKEN` sett
   logs are not accessible through this tool.
 - Saved storage dashboards get a fresh WebSocket configuration readback compared
   with the edited configuration, followed by desktop (1440 x 1000) and mobile
-  (390 x 844) captures, within the turn limits.
+  (390 x 844) captures of the first views that fit the remaining turn budget.
+  Request later affected views explicitly; automatic captures do not cover every view.
 - The AI can request particular dashboard views during a task, inspect the returned
   images, and revise its work. `save_pending: true` saves only a matching storage
   dashboard edited since this turn's baseline, with API readback before capture.
-  This requires `auto_save_lovelace`. Without it, the browser inspects loaded state.
+  This requires `auto_save_lovelace` and a writable task mode. Without it, the browser inspects loaded state.
 - YAML dashboards and additional views require an explicit path. Arbitrary YAML
   includes cannot reliably be mapped to dashboard URLs automatically.
 
@@ -70,7 +71,7 @@ then use a fresh readback. Do not equate an accepted command with a verified out
    network address and respecting a configured TLS connection.
 4. The external-authentication bridge supplies a placeholder to page scripts. The
    controller substitutes the real token only on approved Core WebSocket/REST
-   requests. Authenticated REST redirects are blocked.
+   requests. HTTP redirects are blocked, including dashboard assets.
 5. Completion revokes the session. Core independently revokes it after 180 seconds,
    including authenticated sockets. Reload removes orphaned credentials; removing
    the integration removes its identity.

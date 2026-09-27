@@ -68,6 +68,9 @@ class BrowserSessions:
             refresh = await self.hass.auth.async_create_refresh_token(
                 self.user, access_token_expiration=timedelta(seconds=SESSION_SECONDS)
             )
+            if self.closed:
+                self.hass.auth.async_remove_refresh_token(refresh)
+                raise web.HTTPServiceUnavailable()
             try:
                 access = self.hass.auth.async_create_access_token(refresh)
             except Exception:
@@ -106,7 +109,7 @@ class BrowserSessionView(HomeAssistantView):
             raise web.HTTPServiceUnavailable()
         supplied = data.get("worker_token", "")
         if not isinstance(supplied, str) or not request[KEY_HASS_USER].is_admin or not hmac.compare_digest(
-            supplied, broker.worker_token
+            supplied.encode(), broker.worker_token.encode()
         ):
             raise web.HTTPForbidden()
         return broker

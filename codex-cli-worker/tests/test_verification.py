@@ -63,6 +63,32 @@ class VerificationTests(unittest.TestCase):
         self.engine.begin("chat")
         self.assertEqual(server.tasks["chat"]["verification"], [])
 
+    def test_expired_check_cannot_record_results_in_a_finished_or_replaced_turn(self):
+        for outcome in ("ended", "completed", "replaced"):
+            with self.subTest(outcome=outcome):
+                server.tasks["chat"]["status"] = "running"
+                self.engine.begin("chat")
+                def read(*_args, **_kwargs):
+                    if outcome == "ended":
+                        self.engine.end("chat")
+                    elif outcome == "completed":
+                        server.tasks["chat"]["status"] = "completed"
+                    else:
+                        self.engine.begin("chat")
+                    return {"state": "on", "attributes": {}}
+                with patch.object(self.engine, "core", side_effect=read):
+                    result = self.engine.run("chat", {"operation": "entity", "entity_id": "light.kitchen"})
+                self.assertEqual(result["status"], "unavailable")
+                self.assertEqual(server.tasks["chat"]["verification"], [])
+
+    def test_non_ascii_capability_and_other_app_logs_fail_closed(self):
+        with self.assertRaises(ValueError):
+            self.engine.dispatch({"capability": "שלום", "operation": "entity"})
+        with patch.object(self.engine, "core") as core:
+            result = self.engine.run("chat", {"operation": "logs", "target": "core_mosquitto"})
+        self.assertEqual(result["status"], "unavailable")
+        core.assert_not_called()
+
     def test_dashboard_readback_compares_configuration_not_save_ack(self):
         with patch.object(self.engine, "ws_read", return_value={"views": []}):
             result = self.engine.run("chat", {"operation": "dashboard_readback", "path": "/lovelace/0",
@@ -178,6 +204,10 @@ class VerificationTests(unittest.TestCase):
             process.wait(timeout=5)
 
     def test_pending_dashboard_cannot_save_unrelated_or_unvalidated_files(self):
+        self.options["codex_sandbox"] = "read-only"
+        with self.assertRaisesRegex(ValueError, "read-only"):
+            self.engine.save_pending_dashboard("chat", "/lovelace/0")
+        self.options["codex_sandbox"] = "workspace-write"
         self.options["auto_save_lovelace"] = False
         with self.assertRaisesRegex(ValueError, "disabled"):
             self.engine.save_pending_dashboard("chat", "/lovelace/0")

@@ -21,6 +21,9 @@ async function main() {
   assert(!allowRequest(new URL('http://ha.test/api/image/upload'), 'http://ha.test', 'POST'));
 
   const upstream = [], requests = [], tokens = [];
+  let redirectedRequests = 0;
+  const redirectTarget = http.createServer((_request, response) => { redirectedRequests++; response.end('external'); });
+  await new Promise(resolve => redirectTarget.listen(0, '127.0.0.1', resolve));
   let bad = false, reject = false;
   const server = http.createServer((request, response) => {
     requests.push(request.url);
@@ -30,6 +33,10 @@ async function main() {
       response.end('{"state":"on"}'); return;
     }
     if (request.url === '/local/missing.js') { response.writeHead(404); response.end(); return; }
+    if (request.url === '/local/redirect.js') {
+      response.writeHead(302, {Location: `http://127.0.0.1:${redirectTarget.address().port}/external.js`});
+      response.end(); return;
+    }
     response.setHeader('Content-Type', 'text/html');
     response.end(`<!doctype html><html><body><home-assistant></home-assistant><script>
       const ha = document.querySelector('home-assistant');
@@ -47,6 +54,7 @@ async function main() {
             ${bad ? `ws.send(JSON.stringify({id:2,type:'call_service',domain:'light',service:'turn_on'}));
             fetch('/api/services/light/turn_on',{method:'POST'}).catch(()=>{});
             const script=document.createElement('script');script.src='/local/missing.js';document.body.append(script);
+            const redirect=document.createElement('script');redirect.src='/local/redirect.js';document.body.append(redirect);
             ha.shadowRoot.querySelector('hui-view').innerHTML+='<hui-error-card>Custom element does not exist: missing-card</hui-error-card>';
             console.error('Fixture custom card error');` : ''}
           }
@@ -82,6 +90,8 @@ async function main() {
     assert(second.errors.some(error => error.includes('Custom element')));
     assert(second.errors.some(error => error.includes('HTTP 404')));
     assert(second.blocked.includes('WebSocket call_service'));
+    assert(second.blocked.includes('Redirect /local/redirect.js'));
+    assert.equal(redirectedRequests, 0);
     assert(!upstream.includes('call_service'));
     assert(!requests.some(url => url.startsWith('/api/services')));
     reject = true;
@@ -91,6 +101,7 @@ async function main() {
     for (const client of wss.clients) client.terminate();
     await new Promise(resolve => wss.close(resolve));
     await new Promise(resolve => server.close(resolve));
+    await new Promise(resolve => redirectTarget.close(resolve));
     fs.rmSync(directory, { recursive: true, force: true });
   }
 }

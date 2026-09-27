@@ -60,11 +60,30 @@ async function inspect(input) {
   });
   try {
     const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false });
+    // Intercepted documents need explicit local access on recent Chromium.
+    // Both HTTP and WebSocket routing still restrict traffic to this Core origin.
+    await context.grantPermissions(['local-network-access'], { origin });
     await context.route('**/*', async route => {
       const req = route.request(), url = new URL(req.url());
-      if (allowRequest(url, origin, req.method(), input.path)) return route.continue();
-      add(blocked, `${req.method()} ${url.pathname}`);
-      await route.abort('blockedbyclient');
+      if (!allowRequest(url, origin, req.method(), input.path)) {
+        add(blocked, `${req.method()} ${url.pathname}`);
+        return route.abort('blockedbyclient');
+      }
+      // Fetch without redirects: Playwright does not re-route redirect hops.
+      const headers = { ...req.headers() };
+      if (url.pathname.startsWith('/api/') && headers.authorization === 'Bearer verification-session')
+        headers.authorization = `Bearer ${input.access_token}`;
+      try {
+        const response = await route.fetch({ headers, maxRedirects: 0, timeout: 15000 });
+        if (response.status() >= 300 && response.status() < 400) {
+          add(blocked, `Redirect ${url.pathname}`);
+          return route.abort('blockedbyclient');
+        }
+        return route.fulfill({ response });
+      } catch (_) {
+        add(errors, `Request failed ${url.pathname}`);
+        await route.abort('failed').catch(() => {});
+      }
     });
     await context.routeWebSocket('**/*', route => {
       const url = new URL(route.url());
@@ -88,6 +107,7 @@ async function inspect(input) {
       route.onMessage(raw => {
         let message;
         try { message = JSON.parse(String(raw)); } catch { route.close(); return; }
+        if (!message || typeof message !== 'object' || Array.isArray(message)) { route.close(); return; }
         if (message.type === 'auth' && !authenticated) {
           authenticated = true;
           upstream.send(JSON.stringify({ type: 'auth', access_token: input.access_token }));
@@ -114,19 +134,6 @@ async function inspect(input) {
         },
         revokeExternalAuth: () => window.externalAuthRevokeToken?.(true),
       };
-    });
-    // Substitute only this exact placeholder on approved same-origin REST reads.
-    await context.route('**/api/**', async route => {
-      const req = route.request(), url = new URL(req.url());
-      if (!allowRequest(url, origin, req.method(), input.path)) return route.fallback();
-      const headers = { ...req.headers() };
-      if (headers.authorization === 'Bearer verification-session') headers.authorization = `Bearer ${input.access_token}`;
-      const response = await route.fetch({ headers, maxRedirects: 0, timeout: 15000 });
-      if (response.status() >= 300 && response.status() < 400) {
-        add(blocked, `Redirect ${url.pathname}`);
-        return route.abort('blockedbyclient');
-      }
-      await route.fulfill({ response });
     });
     for (const [name, width, height] of [['desktop', 1440, 1000], ['mobile', 390, 844]]) {
       const page = await context.newPage();

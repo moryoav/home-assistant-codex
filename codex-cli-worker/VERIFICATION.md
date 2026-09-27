@@ -87,8 +87,9 @@ for that operation; it does not allow other installed apps' logs.
 
 ## Limits
 
-- `browser_verification` defaults to true. Disable it to retain API diagnostics
-  without browser work. Chromium is packaged for amd64 and aarch64. Missing or old
+- **Enable built-in browser** (`browser_verification`) defaults to true. Browser
+  captures use RAM while running. Turn it off to prevent browser launches and
+  screenshots while retaining API diagnostics. Chromium is packaged for amd64 and aarch64. Missing or old
   integrations cause browser/log checks to report unavailable.
 - Browser HTTP requests stay on the Core origin and known read paths. WebSocket
   messages use an explicit read allowlist. Service calls, saves, arbitrary event
@@ -98,9 +99,20 @@ for that operation; it does not allow other installed apps' logs.
   member. Administrator-only dashboards, external resources, and cards requiring
   writes during initialization may not be available.
 - At most 24 checks and four browser runs per turn, one at a time. Each browser run
-  has a 110-second deadline, a sampled 768 MiB combined process RSS budget, and two
-  fixed-size images capped at 5 MiB each. The memory budget is not a kernel-enforced
-  instantaneous ceiling. Cancellation/timeout terminate tracked browser descendants.
+  has a 110-second deadline, a sampled process-tree memory budget, and two
+  fixed-size images capped at 5 MiB each. **Browser memory limit (MiB)** in the app's
+  Configuration tab (`browser_memory_limit_mib`) defaults to 1536 MiB (1.5 GiB)
+  and accepts 512 to 8192 MiB. Raise it for larger dashboards when the host has
+  enough available memory; lower it for smaller systems. It applies to each new
+  capture and does not reserve RAM or limit the whole app. Linux proportional set size (PSS) counts
+  shared Chromium pages proportionally instead of charging them once per process;
+  proportional swap is also charged. RSS is a conservative fallback if PSS cannot
+  be read. The budget includes Node and tracked Chromium descendants, and captured
+  results record the measured peak. Fetched response bodies are released after
+  delivery instead of retained until context close. The memory budget is not a
+  kernel-enforced instantaneous ceiling. Cancellation/timeout terminate tracked
+  browser descendants. Disable browser verification on systems without enough
+  memory for this budget alongside Home Assistant and other apps.
 - Temporary profiles and captures are discarded after each run. Browser credentials
   are not passed as command-line arguments or saved in profiles.
 - Saved screenshots expire after seven days, with deletion on the next worker

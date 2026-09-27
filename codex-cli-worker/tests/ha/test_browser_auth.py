@@ -239,21 +239,30 @@ views:
     with patch.object(auth, "get_supervisor_network_url", return_value=str(client.make_url("/")).rstrip("/")):
         session = await broker.issue()
     try:
-        script = os.environ.get("HA_BROWSER_SCRIPT", str(ROOT.parents[1] / "codex-cli-worker" / "browser.cjs"))
-        directory = os.environ.get("HA_BROWSER_OUTPUT", str(tmp_path))
-        proc = await asyncio.create_subprocess_exec(os.environ["HA_BROWSER_NODE"], script,
+        # Exercise the Python memory guard and persisted attachments too, not
+        # just browser.cjs. The token is the real broker's temporary identity.
+        script = str(ROOT.parents[1] / "codex-cli-worker" / "tests" / "browser_worker_check.py")
+        proc = await asyncio.create_subprocess_exec(sys.executable, script,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps({
-            **session, "path": "/lovelace/home", "directory": directory,
-        }).encode()), timeout=120)
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps({
+                **session, "path": "/lovelace/home",
+            }).encode()), timeout=130)
+        except asyncio.TimeoutError:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+            raise
         assert stdout.strip(), stderr.decode()
         result = json.loads(stdout)
         print(json.dumps({"frontend_browser_result": result}))
         assert result["status"] == "captured", (result, stderr.decode())
         assert result["errors"] == [], result
         assert result["blocked"] == [], result
-        assert len(result["screenshots"]) == 2, result
+        assert len(result["attachments"]) == 2, result
+        assert [image["viewport"] for image in result["stored_images"]] == ["desktop", "mobile"]
+        assert all(image["size"] > 100 for image in result["stored_images"])
+        assert 0 < result["memory_peak_mib"] <= result["memory_limit_mib"]
         assert not any("lovelace" in error or "redirected" in error for error in result["errors"]), result
-        assert all(not shot.get("error_cards") for shot in result["screenshots"]), result
     finally:
         broker.close()

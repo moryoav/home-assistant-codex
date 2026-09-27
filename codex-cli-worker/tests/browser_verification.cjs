@@ -4,6 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
 const { WebSocketServer } = require('ws');
 const { inspect, allowMessage, allowRequest } = require('../browser.cjs');
 
@@ -96,6 +97,20 @@ async function main() {
     assert.equal(localHttp.screenshots.length, 2);
     assert(upstream.includes('weather/subscribe_forecast'));
     assert(requests.some(url => url.startsWith('/api/calendars/calendar.fixture')));
+    const worker = await new Promise((resolve, reject) => {
+      const child = execFile(process.platform === 'win32' ? 'python' : 'python3',
+        [path.join(__dirname, 'browser_worker_check.py')], {timeout: 130000}, (error, stdout, stderr) => {
+          if (error) return reject(new Error(`${error.message}: ${stderr}`));
+          try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+        });
+      child.stdin.on('error', reject);
+      child.stdin.end(JSON.stringify({...input, session_id: 'fixture-session'}));
+    });
+    assert.equal(worker.status, 'captured', JSON.stringify(worker));
+    assert.deepEqual(worker.stored_images.map(image => image.viewport), ['desktop', 'mobile']);
+    assert(worker.stored_images.every(image => image.size > 100));
+    if (process.platform !== 'win32') assert(worker.memory_peak_mib > 0);
+    assert(worker.memory_peak_mib <= worker.memory_limit_mib);
     bad = true;
     const second = await inspect(input);
     assert.equal(second.status, 'issues');
@@ -118,7 +133,7 @@ async function main() {
       if (executable === undefined) delete process.env.HA_BROWSER_EXECUTABLE;
       else process.env.HA_BROWSER_EXECUTABLE = executable;
     }
-    console.log('Dashboard browser checks passed: loopback and LAN HTTP, two viewports, external auth, calendar/weather reads, blocked writes and redirects, error cards, auth/launch failure, cleanup.');
+    console.log('Dashboard browser checks passed: loopback and LAN HTTP, worker memory guard and stored images, two viewports, external auth, calendar/weather reads, blocked writes and redirects, error cards, auth/launch failure, cleanup.');
   } finally {
     for (const client of wss.clients) client.terminate();
     await new Promise(resolve => wss.close(resolve));

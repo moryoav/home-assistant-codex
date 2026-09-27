@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.60
+
+- Fix premature dashboard capture termination by accounting for shared Chromium memory proportionally instead of counting it repeatedly across processes.
+- Add **Browser memory limit (MiB)** to the app configuration, with a default of 1536 MiB and a range of 512 to 8192 MiB for different dashboard sizes and available memory. Include proportional swap, retain a conservative RSS fallback, and report the selected limit and measured peak in capture results. Keep the timeout, single-browser limit, and process cleanup.
+- Label the existing browser toggle **Enable built-in browser** and explain its RAM use. Turning it off prevents browser launches and screenshots while retaining state and configuration checks.
+- Release fetched page response bodies after delivery to reduce retained memory.
+- Test the complete worker capture path, including memory enforcement, temporary authentication, screenshot storage, and session cleanup, alongside shared-memory and over-budget regressions.
+
+Update the **Codex CLI Worker** app to **0.1.60**. The **Codex** integration remains at **0.1.58** and does not need another update for this fix. Browser verification can be disabled on systems with limited memory.
+
 ## 0.1.59
 
 - Fix dashboard browser setup for Home Assistant's internal HTTP address by limiting Chromium's secure-context exception to the selected Core origin.

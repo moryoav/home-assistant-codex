@@ -30,8 +30,11 @@ configuration:
     name: Home Assistant API URL
     description: API base URL used by the app for Home Assistant calls. The default Supervisor Core proxy is recommended.
   browser_verification:
-    name: Dashboard browser verification
-    description: Inspect dashboards in a bundled browser and attach desktop and mobile screenshots. Uses a temporary local identity provided by the Codex integration, without a user password or manually created token. Turn off on systems with limited memory.
+    name: Enable built-in browser
+    description: Allow dashboard inspection and desktop/mobile screenshots. The browser uses RAM while it runs; set its budget with Browser memory limit below. Turn this off to completely disable browser launches and screenshots if you do not need them or your system has limited RAM. State and configuration checks remain available. No Home Assistant password or manually created token is needed.
+  browser_memory_limit_mib:
+    name: Browser memory limit (MiB)
+    description: Memory budget for dashboard screenshots, from 512 to 8192 MiB. Default is 1536 MiB (1.5 GiB). Increase it for larger dashboards if your system has enough free memory for Home Assistant and other apps. This sets a limit for browser captures; it does not reserve RAM or limit the whole app.
   HA_TOKEN:
     name: HA_TOKEN
     description: Optional Home Assistant token exposed to Codex subprocesses as the HA_TOKEN environment variable.

@@ -11,7 +11,7 @@ async function main() {
   assert(!allowMessage({ type: 'call_service' }));
   assert(!allowMessage({ type: 'lovelace/config/save' }));
   assert(!allowMessage({ type: 'subscribe_events' }));
-  for (const type of ['frontend/get_icons', 'render_template', 'sensor/numeric_device_classes']) assert(allowMessage({type}));
+  for (const type of ['frontend/get_icons', 'render_template', 'sensor/numeric_device_classes', 'weather/subscribe_forecast']) assert(allowMessage({type}));
   assert(allowMessage({ type: 'subscribe_events', event_type: 'state_changed' }));
   assert(!allowRequest(new URL('http://evil.test/local/card.js'), 'http://ha.test', 'GET'));
   assert(!allowRequest(new URL('http://ha.test/api/webhook/action'), 'http://ha.test', 'GET'));
@@ -19,6 +19,8 @@ async function main() {
   assert(!allowRequest(new URL('http://ha.test/api/services/light/turn_on'), 'http://ha.test', 'POST'));
   assert(allowRequest(new URL('http://ha.test/api/image/serve/' + 'a'.repeat(32) + '/512x512'), 'http://ha.test', 'GET'));
   assert(!allowRequest(new URL('http://ha.test/api/image/upload'), 'http://ha.test', 'POST'));
+  assert(allowRequest(new URL('http://ha.test/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02'), 'http://ha.test', 'GET'));
+  assert(!allowRequest(new URL('http://ha.test/api/calendars/calendar.fixture'), 'http://ha.test', 'POST'));
 
   const upstream = [], requests = [], tokens = [];
   let redirectedRequests = 0;
@@ -27,7 +29,7 @@ async function main() {
   let bad = false, reject = false;
   const server = http.createServer((request, response) => {
     requests.push(request.url);
-    if (request.url.startsWith('/api/states')) {
+    if (request.url.startsWith('/api/states') || request.url.startsWith('/api/calendars/')) {
       assert.equal(request.headers.authorization, 'Bearer temporary-browser-token');
       response.setHeader('Content-Type', 'application/json');
       response.end('{"state":"on"}'); return;
@@ -50,7 +52,9 @@ async function main() {
           if (msg.type === 'auth_ok') {
             ha.hass = {connection:ws,user:{name:'Verification'}};
             ws.send(JSON.stringify({id:1,type:'get_states'}));
+            ws.send(JSON.stringify({id:3,type:'weather/subscribe_forecast',entity_id:'weather.fixture',forecast_type:'daily'}));
             await fetch('/api/states/light.kitchen', {headers:{Authorization:'Bearer '+token.access_token}});
+            await fetch('/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02', {headers:{Authorization:'Bearer '+token.access_token}});
             ${bad ? `ws.send(JSON.stringify({id:2,type:'call_service',domain:'light',service:'turn_on'}));
             fetch('/api/services/light/turn_on',{method:'POST'}).catch(()=>{});
             const script=document.createElement('script');script.src='/local/missing.js';document.body.append(script);
@@ -75,7 +79,7 @@ async function main() {
       } else ws.send(JSON.stringify({id:message.id,type:'result',success:true,result:[]}));
     });
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise(resolve => server.listen(0, '0.0.0.0', resolve));
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ha-browser-test-'));
   try {
     const input = { url: `http://127.0.0.1:${server.address().port}`, path:'/lovelace/0', directory, access_token:'temporary-browser-token' };
@@ -84,6 +88,14 @@ async function main() {
     assert.deepEqual(first.screenshots.map(s => [s.width,s.height]), [[1440,1000],[390,844]]);
     for (const shot of first.screenshots) assert(fs.statSync(shot.file).size > 100);
     assert(tokens.every(token => token === input.access_token));
+    const lan = Object.values(os.networkInterfaces()).flat().find(address => address.family === 'IPv4' && !address.internal);
+    assert(lan, 'A non-loopback IPv4 interface is required for the HTTP-origin regression');
+    input.url = `http://${lan.address}:${server.address().port}`;
+    const localHttp = await inspect(input);
+    assert.equal(localHttp.status, 'captured', JSON.stringify(localHttp));
+    assert.equal(localHttp.screenshots.length, 2);
+    assert(upstream.includes('weather/subscribe_forecast'));
+    assert(requests.some(url => url.startsWith('/api/calendars/calendar.fixture')));
     bad = true;
     const second = await inspect(input);
     assert.equal(second.status, 'issues');
@@ -96,7 +108,17 @@ async function main() {
     assert(!requests.some(url => url.startsWith('/api/services')));
     reject = true;
     assert.equal((await inspect(input)).status, 'unavailable');
-    console.log('Dashboard browser checks passed: two viewports, external auth, readback, blocked writes, missing custom card/resource, auth failure, cleanup.');
+    const executable = process.env.HA_BROWSER_EXECUTABLE;
+    try {
+      process.env.HA_BROWSER_EXECUTABLE = path.join(directory, 'missing-chromium');
+      const missing = await inspect(input);
+      assert.equal(missing.status, 'unavailable');
+      assert.equal(missing.stage, 'launch');
+    } finally {
+      if (executable === undefined) delete process.env.HA_BROWSER_EXECUTABLE;
+      else process.env.HA_BROWSER_EXECUTABLE = executable;
+    }
+    console.log('Dashboard browser checks passed: loopback and LAN HTTP, two viewports, external auth, calendar/weather reads, blocked writes and redirects, error cards, auth/launch failure, cleanup.');
   } finally {
     for (const client of wss.clients) client.terminate();
     await new Promise(resolve => wss.close(resolve));

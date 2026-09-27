@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.59
+
+- Fix dashboard browser setup for Home Assistant's internal HTTP address by limiting Chromium's secure-context exception to the selected Core origin.
+- Allow read-only calendar events and weather forecasts needed by dashboard cards, while continuing to block service calls, writes, external resources, and redirects.
+- Report separate browser launch, context, and permission setup stages. Test the full browser path on loopback and non-loopback HTTP with packaged Chromium on both architectures.
+
+Update the **Codex CLI Worker** app to **0.1.59**. The **Codex** integration remains at **0.1.58** and does not need another update for this fix.
+
 ## 0.1.58
 
 - Add authenticated configuration checks, bounded Core log reads, entity state expectations, and fresh dashboard configuration readback as task tools.

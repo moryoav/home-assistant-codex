@@ -9,7 +9,7 @@ const READ_MESSAGES = new Set([
   'frontend/get_translations', 'frontend/subscribe_extra_js', 'config/entity_registry/list',
   'frontend/subscribe_user_data', 'frontend/subscribe_system_data', 'recorder/info',
   'repairs/list_issues', 'brands/access_token', 'frontend/get_icons',
-  'render_template', 'sensor/numeric_device_classes',
+  'render_template', 'sensor/numeric_device_classes', 'weather/subscribe_forecast',
   'labs/subscribe', 'persistent_notification/subscribe', 'frontend/get_system_data', 'lovelace/info',
   'config/entity_registry/get_entries',
   'config/entity_registry/list_for_display', 'config/device_registry/list',
@@ -37,7 +37,7 @@ function allowRequest(url, origin, method, dashboardPath) {
   if (/%|\\/.test(url.pathname)) return false;
   // No arbitrary API GETs: integrations can have state-changing GET handlers.
   if (url.pathname.startsWith('/api/')) {
-    return /^\/api\/(onboarding|config|states(?:\/[a-z0-9_.]+)?|history\/period(?:\/[0-9T:Z.+-]+)?|camera_proxy\/[a-z0-9_.]+|image\/serve\/[a-f0-9]{32}\/(?:256x256|512x512|original))$/.test(url.pathname);
+    return /^\/api\/(onboarding|config|states(?:\/[a-z0-9_.]+)?|calendars\/calendar\.[a-z0-9_]+|history\/period(?:\/[0-9T:Z.+-]+)?|camera_proxy\/[a-z0-9_.]+|image\/serve\/[a-f0-9]{32}\/(?:256x256|512x512|original))$/.test(url.pathname);
   }
   return /^\/(frontend_latest|frontend_es5|static|local|hacsfiles)\//.test(url.pathname)
     || (dashboardPath && url.pathname === dashboardPath)
@@ -45,24 +45,34 @@ function allowRequest(url, origin, method, dashboardPath) {
 }
 
 async function inspect(input) {
-  const origin = new URL(input.url).origin;
+  const target = new URL(input.url);
+  const origin = target.origin;
+  if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || origin.includes(','))
+    throw Error('Invalid Home Assistant origin');
   if (!/^\/[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?\/?$/.test(input.path)) throw Error('Invalid dashboard path');
   const errors = [], blocked = [], screenshots = [];
   let stage = 'launch';
-  let activePage, activeViewport;
+  let browser, activePage, activeViewport;
   const add = (list, value) => { if (list.length < 30) list.push(String(value).slice(0, 500)); };
-  const browser = await chromium.launch({
-    executablePath: process.env.HA_BROWSER_EXECUTABLE || '/usr/bin/chromium-browser',
-    headless: true,
-    args: ['--disable-dev-shm-usage', '--disable-background-networking', '--renderer-process-limit=2', '--js-flags=--max-old-space-size=192'],
-    // The app already runs as root in a confined container. See VERIFICATION.md.
-    chromiumSandbox: false,
-  });
   try {
+    browser = await chromium.launch({
+      executablePath: process.env.HA_BROWSER_EXECUTABLE || '/usr/bin/chromium-browser',
+      headless: true,
+      args: ['--disable-dev-shm-usage', '--disable-background-networking', '--renderer-process-limit=2', '--js-flags=--max-old-space-size=192',
+        // Intercepted pages need local-network permission for their WebSocket.
+        // Chromium only grants it to secure contexts. Scope the HTTP exception
+        // to the broker-selected Core origin, never all sites or network checks.
+        ...(target.protocol === 'http:' ? [`--unsafely-treat-insecure-origin-as-secure=${origin}`] : [])],
+      // The app already runs as root in a confined container. See VERIFICATION.md.
+      chromiumSandbox: false,
+    });
+    stage = 'context';
     const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false });
     // Intercepted documents need explicit local access on recent Chromium.
     // Both HTTP and WebSocket routing still restrict traffic to this Core origin.
+    stage = 'permissions';
     await context.grantPermissions(['local-network-access'], { origin });
+    stage = 'routing';
     await context.route('**/*', async route => {
       const req = route.request(), url = new URL(req.url());
       if (!allowRequest(url, origin, req.method(), input.path)) {
@@ -191,7 +201,7 @@ async function inspect(input) {
     return { status: 'unavailable', stage, errors, blocked, screenshots,
       message: `Dashboard verification could not finish during ${stage}.` };
   } finally {
-    await browser.close();
+    await browser?.close();
   }
 }
 

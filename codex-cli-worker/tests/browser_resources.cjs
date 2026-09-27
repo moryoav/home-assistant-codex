@@ -44,7 +44,7 @@ async function main() {
   assert(remote('https://styles.example.test/theme.css', 'GET', 'stylesheet'));
   assert(!remote('https://evil.test/api/action'));
   for (const ip of ['127.0.0.1', '10.1.2.3', '192.168.1.2', '172.30.33.6', '169.254.169.254',
-    '100.64.0.1', '0.0.0.0', '224.0.0.1', '::1', '::ffff:8.8.8.8', 'fc00::1', 'fe80::1', '2001:db8::1', '2002:7f00:1::']) assert(!publicAddress(ip), ip);
+    '100.64.0.1', '0.0.0.0', '224.0.0.1', '::1', '::ffff:8.8.8.8', 'fc00::1', 'fe80::1', '2001:db8::1', '2002:7f00:1::', '3fff::1']) assert(!publicAddress(ip), ip);
   assert(publicAddress('8.8.8.8')); assert(publicAddress('2606:4700:4700::1111'));
 
   const calls = [];
@@ -108,6 +108,17 @@ async function main() {
   responses = [{status: 302, headers: {location: 'https://fonts.googleapis.com/css2'}}, {}];
   await assert.rejects(fetch('https://fonts.googleapis.com/css', 'GET', 'stylesheet'), /non-public/);
   assert.equal(responses.length, 1, 'A DNS rebinding redirect must never connect');
+  fetch = createExternalFetcher(policy, dependencies);
+  responses = Array.from({length: 128}, () => ({}));
+  for (let i = 0; i < 128; i++) await fetch('https://fonts.googleapis.com/css', 'GET', 'stylesheet');
+  await assert.rejects(fetch('https://fonts.googleapis.com/css', 'GET', 'stylesheet'), /request limit/);
+  fetch = createExternalFetcher(policy, dependencies);
+  responses = Array.from({length: 5}, () => ({headers: {'content-type':'image/png'}, body: Buffer.alloc(8 * 1024 * 1024)}));
+  for (let i = 0; i < 4; i++) await fetch('https://fonts.googleapis.com/css', 'GET', 'stylesheet');
+  await assert.rejects(fetch('https://fonts.googleapis.com/css', 'GET', 'stylesheet'), /size limit/);
+  fetch = createExternalFetcher(policy, dependencies);
+  responses = [{headers: {'content-type':'text/css','content-encoding':'gzip'}, body: require('node:zlib').gzipSync(Buffer.alloc(8 * 1024 * 1024 + 1))}];
+  await assert.rejects(fetch('https://fonts.googleapis.com/css', 'GET', 'stylesheet'), /oversized compressed/);
   console.log('Resource policy and credential-free HTTPS transport checks passed.');
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});

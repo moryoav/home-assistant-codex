@@ -16,7 +16,7 @@ for (const [ip, bits] of [['0.0.0.0',8], ['10.0.0.0',8], ['100.64.0.0',10], ['12
 const GLOBAL_V6 = new net.BlockList();
 GLOBAL_V6.addSubnet('2000::', 3, 'ipv6');
 const PRIVATE_V6 = new net.BlockList();
-for (const [ip,bits] of [['2001::',23], ['2001:db8::',32], ['2002::',16]]) PRIVATE_V6.addSubnet(ip,bits,'ipv6');
+for (const [ip,bits] of [['2001::',23], ['2001:db8::',32], ['2002::',16], ['3fff::',20]]) PRIVATE_V6.addSubnet(ip,bits,'ipv6');
 
 function publicAddress(address) {
   const family = net.isIP(address);

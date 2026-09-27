@@ -250,14 +250,15 @@ views:
         entities: [binary_sensor.door, switch.fan]
       - type: custom:verification-static-card
 """)
-    configuration = {"lovelace": {"mode": "yaml"}}
+    configuration = {"lovelace": {"mode": "yaml", "resources": [
+        {"url": "/verification-static-card.js", "type": "module"}
+    ]}}
     # The frontend reads recorder/info during startup. Missing it produces an
     # unhandled rejection and a delayed system_log.write service call.
     await async_setup_recorder_instance(hass)
     assert await async_setup_component(hass, "frontend", configuration)
     assert await async_setup_component(hass, "lovelace", configuration)
     from homeassistant.components.http import StaticPathConfig
-    from homeassistant.components.frontend import add_extra_js_url
     script_file = Path(hass.config.path("verification-static-card.js"))
     script_file.write_text("""
 customElements.define('verification-static-card', class extends HTMLElement {
@@ -268,7 +269,6 @@ customElements.define('verification-static-card', class extends HTMLElement {
     await hass.http.async_register_static_paths([
         StaticPathConfig("/verification-static-card.js", str(script_file), True)
     ])
-    add_extra_js_url(hass, "/verification-static-card.js", es5=False)
     for component in ("labs", "persistent_notification", "brands", "sensor", "light", "binary_sensor", "switch", "person", "image_upload"):
         assert await async_setup_component(hass, component, configuration)
     client = await hass_client()

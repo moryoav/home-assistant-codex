@@ -38,7 +38,9 @@ jobs:
       - name: Test verification through the pinned CLI with shell networking disabled
         run: python codex-cli-worker/tests/codex_verification_smoke.py
       - name: Exercise browser protocol and restrictions
-        run: node codex-cli-worker/tests/browser_verification.cjs
+        run: |
+          node codex-cli-worker/tests/browser_resources.cjs
+          node codex-cli-worker/tests/browser_verification.cjs
       - name: Exercise chat evidence on desktop and mobile
         run: |
           python codex-cli-worker/tests/web_fixture.py > "$RUNNER_TEMP/web-fixture.log" 2>&1 &

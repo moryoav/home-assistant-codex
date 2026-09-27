@@ -716,6 +716,9 @@ function pngBuffer(width = 8, height = 6) {
     assert.equal(await phone.locator(".verification-result").count(), 2);
     await phone.locator(".verification-result").nth(1).locator("summary").click();
     assert.equal(await phone.locator(".verification").getByText("Custom element does not exist: sample-card", {exact:true}).isVisible(), true);
+    assert.equal(await phone.locator(".verification").getByText("Custom element does not exist: sample-card", {exact:true}).count(), 1);
+    assert.equal(await phone.locator(".verification").getByText("Blocked diagnostic logging and notifications", {exact:true}).isVisible(), true);
+    assert.equal(await phone.locator(".verification").getByText("4 occurrences · desktop, mobile", {exact:true}).isVisible(), true);
     assert.equal(await phone.locator(".verification img").count(), 1);
     assert.equal(await phone.locator(".verification img").evaluate(img => img.complete && img.naturalWidth > 0), true);
     await phone.screenshot({path: path.join(output, "verification-mobile.png"), fullPage: true});

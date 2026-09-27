@@ -26,7 +26,11 @@ long-lived token is needed. These tools do not need the optional `HA_TOKEN` sett
   includes cannot reliably be mapped to dashboard URLs automatically.
 
 Browser results include console errors, failed HTTP responses, blocked requests,
-and visible error cards. Capturing screenshots is evidence for visual review, not
+and visible error cards. Repeated findings include counts and affected viewports,
+grouped as resource failures, Home Assistant errors, dashboard errors, blocked
+actions, or blocked diagnostic logging/notifications. Diagnostic write attempts
+remain blocked but do not alone mark a capture as having rendering issues.
+Capturing screenshots is evidence for visual review, not
 a guarantee of correct layout. API results distinguish `observed`, `passed`, and
 `failed`; browser results distinguish `captured`, `issues`, `unavailable`, and
 `disabled`. Problems stay visible even when the edit itself completes.
@@ -71,7 +75,7 @@ then use a fresh readback. Do not equate an accepted command with a verified out
    network address and respecting a configured TLS connection.
 4. The external-authentication bridge supplies a placeholder to page scripts. The
    controller substitutes the real token only on approved Core WebSocket/REST
-   requests. HTTP redirects are blocked, including dashboard assets.
+   requests. Core HTTP redirects are blocked, including dashboard assets.
    For an HTTP Core address, the temporary browser treats only that exact origin
    as a secure context so Chromium can grant its local-network permission. This
    does not encrypt HTTP or disable certificate checks, and request restrictions
@@ -85,18 +89,64 @@ uses its existing `homeassistant_api` permission. Log reads use a narrow integra
 endpoint authorizing only bounded Core log reads. It uses Core's Supervisor token
 for that operation; it does not allow other installed apps' logs.
 
+## Dashboard resources
+
+Version 0.1.61 requires both worker and integration updates, followed by a Home
+Assistant restart, to discover custom integrations' static routes. Older brokers
+still support the original built-in paths but cannot supply the new route list.
+
+Core supplies registered static file and directory URLs, never filesystem paths.
+This allows assets such as Browser Mod, custom icons, navigation modules, and
+WebRTC card scripts without granting access to arbitrary integration GET endpoints.
+Loading a script does not permit its service calls, writes, or unsupported APIs.
+Custom Icons' active-set, list, cache, and single-icon reads are supported with
+bounded set/icon names; icon selection and download operations remain blocked.
+Browser Mod connection/registration and navigation-controller APIs remain
+unsupported, so features depending on them may still report blocked requests.
+
+Public HTTPS assets are fetched through a separate client that sends no Home
+Assistant token, browser cookies, authorization, origin, or referrer headers.
+Supported sources are:
+
+- External frontend modules registered by Core and Lovelace resources returned by
+  Core, plus static assets within each registered script or stylesheet directory.
+- Google Fonts CSS and fonts, jsDelivr (`cdn` and `fastly`, npm/GitHub paths),
+  cdnjs library assets, and unpkg assets with supported static file extensions.
+- Font, image, and stylesheet URLs referenced by loaded CSS.
+
+External navigation, non-HTTPS requests, URL credentials, custom ports, IP-literal
+hosts, local names, and private/reserved DNS addresses are rejected. Each request
+pins a validated public address while retaining TLS certificate checks; redirects
+recheck both the URL policy and DNS. External responses cannot install cookies.
+Requests are limited to 128 per capture, 8 MiB per response, 32 MiB total, three
+redirects, and 15 seconds per resource including redirects. These limits operate
+alongside the browser's overall time and memory budgets.
+
+External servers can see the host's public IP address and resource URLs, including
+their configured query strings. Dashboard code remains trusted content: custom
+scripts run in the page and can see dashboard data. The restricted asset transport
+is not a guarantee against data disclosure by a malicious installed card. Disable
+the built-in browser to prevent browser captures and their resource requests.
+
+Before capture, the browser waits up to six seconds for network idle and three
+seconds for fonts, within the overall deadline. Dynamic cards can continue loading
+afterward. Blocked logging/notification requests are reported as diagnostic notes;
+other blocked service calls remain review findings. Unavailable entities, backend
+HTTP errors, and invalid dashboard templates still require separate fixes.
+
 ## Limits
 
 - **Enable built-in browser** (`browser_verification`) defaults to true. Browser
   captures use RAM while running. Turn it off to prevent browser launches and
   screenshots while retaining API diagnostics. Chromium is packaged for amd64 and aarch64. Missing or old
   integrations cause browser/log checks to report unavailable.
-- Browser HTTP requests stay on the Core origin and known read paths. WebSocket
+- Authenticated browser HTTP requests stay on the Core origin and known read paths. WebSocket
   messages use an explicit read allowlist. Service calls, saves, arbitrary event
-  subscriptions, external sites, and service workers are blocked. Unsupported
+  subscriptions, external navigation, and service workers are blocked. External
+  assets use the separate restricted transport described above. Unsupported
   custom-card requests are reported instead of silently expanding access.
 - The dedicated identity may see different cards, themes, or views from a household
-  member. Administrator-only dashboards, external resources, and cards requiring
+  member. Administrator-only dashboards, unsupported external resources, and cards requiring
   writes during initialization may not be available.
 - At most 24 checks and four browser runs per turn, one at a time. Each browser run
   has a 110-second deadline, a sampled process-tree memory budget, and two
@@ -145,9 +195,12 @@ while confirming that shell socket connections remain denied. Set `HA_TEST_CODEX
 to the pinned CLI binary when it is not at `/usr/local/bin/codex`. No model account
 or paid request is involved.
 `node tests/browser_verification.cjs` uses real Chromium and a protocol fixture to
-check viewports, external auth, blocked writes, broken resources/cards, rejected
+check viewports, external auth, registered local resources, blocked writes, broken resources/cards, rejected
 authentication, and cleanup. Provide `playwright-core` and `ws` on `NODE_PATH` and
 set `HA_BROWSER_EXECUTABLE` when Chromium is not at `/usr/bin/chromium-browser`.
+`node tests/browser_resources.cjs` tests static-resource permissions and the
+external HTTPS transport, including header stripping, DNS pinning, private
+addresses, redirect revalidation, and response limits, without external requests.
 
 Set `HA_BROWSER_NODE=node` to include the real Home Assistant frontend test under
 `tests/ha`. CI also builds both container architectures. Fixture tests are not a

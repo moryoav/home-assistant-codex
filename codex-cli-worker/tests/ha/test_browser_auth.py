@@ -24,6 +24,44 @@ auth = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(auth)
 
 
+async def test_resource_manifest_only_contains_registered_static_routes(hass, tmp_path):
+    from homeassistant.components.http import StaticPathConfig
+    assert await async_setup_component(hass, "http", {})
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    script = assets / "card.js"
+    script.write_text("export const card = true;")
+    await hass.http.async_register_static_paths([
+        StaticPathConfig("/browser_mod.js", str(script), True),
+        StaticPathConfig("/uncached.js", str(script), False),
+        StaticPathConfig("/custom_icons", str(assets), True),
+    ])
+    async def action(request):
+        return web.Response(text="not a static route")
+    hass.http.app.router.add_get("/unsafe-action.js", action)
+    hass.data["frontend_extra_module_url"] = types.SimpleNamespace(
+        urls={"/browser_mod.js", "https://assets.example.test/card.js"})
+    resources = auth.browser_resources(hass)
+    assert "/browser_mod.js" in resources["files"]
+    assert "/uncached.js" in resources["files"]
+    assert "/custom_icons" in resources["directories"]
+    assert "/unsafe-action.js" not in resources["files"]
+    assert "https://assets.example.test/card.js" in resources["extra_urls"]
+    assert str(tmp_path) not in json.dumps(resources)
+
+
+async def test_resource_discovery_failure_does_not_leave_credentials(hass):
+    broker = auth.BrowserSessions(hass, "paired-worker")
+    await broker.setup()
+    with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"), \
+         patch.object(auth, "browser_resources", side_effect=RuntimeError("fixture")):
+        with pytest.raises(RuntimeError):
+            await broker.issue()
+    assert not broker.sessions
+    assert not broker.user.refresh_tokens
+    broker.close()
+
+
 async def test_real_read_only_identity_lease_and_revocation(hass):
     broker = auth.BrowserSessions(hass, "paired-worker")
     await broker.setup()
@@ -210,6 +248,7 @@ views:
         content: "Fixture value: {{ states('sensor.verification_fixture') }}"
       - type: glance
         entities: [binary_sensor.door, switch.fan]
+      - type: custom:verification-static-card
 """)
     configuration = {"lovelace": {"mode": "yaml"}}
     # The frontend reads recorder/info during startup. Missing it produces an
@@ -217,6 +256,19 @@ views:
     await async_setup_recorder_instance(hass)
     assert await async_setup_component(hass, "frontend", configuration)
     assert await async_setup_component(hass, "lovelace", configuration)
+    from homeassistant.components.http import StaticPathConfig
+    from homeassistant.components.frontend import add_extra_js_url
+    script_file = Path(hass.config.path("verification-static-card.js"))
+    script_file.write_text("""
+customElements.define('verification-static-card', class extends HTMLElement {
+  setConfig() { this.textContent = 'Registered custom static card loaded'; }
+  getCardSize() { return 1; }
+});
+""")
+    await hass.http.async_register_static_paths([
+        StaticPathConfig("/verification-static-card.js", str(script_file), True)
+    ])
+    add_extra_js_url(hass, "/verification-static-card.js", es5=False)
     for component in ("labs", "persistent_notification", "brands", "sensor", "light", "binary_sensor", "switch", "person", "image_upload"):
         assert await async_setup_component(hass, component, configuration)
     client = await hass_client()

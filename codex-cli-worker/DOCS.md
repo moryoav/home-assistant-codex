@@ -7,6 +7,12 @@ and inspect dashboards in a bundled browser without a user password or manually
 created token. Update both the app and integration. See [verification tools,
 authentication, screenshots, and limits](VERIFICATION.md).
 
+From 0.1.61, dashboard captures also load integrations' registered static assets
+and supported public HTTPS scripts, styles, and fonts. Update **both** the app and
+integration to 0.1.61 and restart Home Assistant for static-route discovery.
+Repeated findings are grouped by cause and viewport. Service calls and writes
+remain blocked. See [resource compatibility and privacy](VERIFICATION.md#dashboard-resources).
+
 **Enable built-in browser** in the app's **Configuration** tab controls dashboard
 inspection and screenshots. The browser uses RAM while it runs. Turn this off
 to completely disable browser launches if you do not need them or have limited

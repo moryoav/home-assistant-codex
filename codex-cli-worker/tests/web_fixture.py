@@ -145,7 +145,12 @@ def main():
                      "message": "Fresh entity state readback.", "attributes": {"unit_of_measurement": "kWh"}},
                     {"operation": "dashboard", "status": "issues", "path": "/lovelace/energy",
                      "message": "Screenshots captured for visual inspection.", "errors": ["Custom element does not exist: sample-card"],
-                     "blocked": ["WebSocket call_service"]},
+                     "blocked": ["WebSocket call_service"],
+                     "findings": [
+                         {"kind": "dashboard", "message": "Custom element does not exist: sample-card", "count": 2, "viewports": ["desktop", "mobile"]},
+                         {"kind": "policy", "message": "WebSocket call_service (light.turn_on)", "count": 2, "viewports": ["desktop", "mobile"]},
+                         {"kind": "diagnostic", "message": "WebSocket call_service (system_log.write)", "count": 4, "viewports": ["desktop", "mobile"]},
+                     ]},
                 ]
                 shot_id = "a" * 32
                 shot = root / "tasks" / "preview-01" / "turns" / turn["turn_id"] / "attachments" / f"{shot_id}.png"

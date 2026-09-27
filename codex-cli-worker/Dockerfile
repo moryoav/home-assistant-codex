@@ -56,7 +56,7 @@ WORKDIR /data
 
 COPY run.sh /
 COPY server.py /
-COPY verification.py verification_mcp.py browser.cjs /
+COPY verification.py verification_mcp.py browser.cjs browser_resources.cjs /
 COPY web /web
 
 RUN chmod a+x /run.sh /server.py

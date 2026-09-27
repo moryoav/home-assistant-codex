@@ -9,6 +9,13 @@ this is not complete isolation from the AI process or root access. Known credent
 files are excluded from new recovery snapshots, but inline secrets and old snapshots
 need separate care. See [verification security and retention](codex-cli-worker/VERIFICATION.md).
 
+Dashboard rendering can fetch supported public HTTPS scripts, styles, fonts, and
+images through a separate client without Home Assistant credentials or browser
+cookies. The client validates and pins public DNS addresses and rechecks redirects.
+External servers still see the host's public IP and resource URL. Installed custom
+cards remain trusted code with access to dashboard data. Service calls and writes
+stay blocked during verification. See [resource policy and limits](codex-cli-worker/VERIFICATION.md#dashboard-resources).
+
 ## Supported Versions
 
 Security fixes are intended for the latest published release and the current `main` branch.

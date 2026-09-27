@@ -630,7 +630,26 @@ function renderVerification(turn, taskId) {
     if (check.message) row.append(textNode("pre", check.message));
     if (check.state !== undefined) row.append(textNode("p", `State: ${check.state}${check.expected_state !== null ? ` · Expected: ${check.expected_state}` : ""}`));
     if (check.attributes && Object.keys(check.attributes).length) row.append(textNode("pre", JSON.stringify(check.attributes, null, 2)));
-    for (const error of [...(check.errors instanceof Array ? check.errors : []), ...(check.blocked || [])]) row.append(textNode("p", error));
+    if (Array.isArray(check.findings) && check.findings.length) {
+      const groups = {
+        resource: "Resources that could not load", home_assistant: "Home Assistant errors",
+        dashboard: "Dashboard errors", policy: "Blocked actions and requests",
+        diagnostic: "Blocked diagnostic logging and notifications",
+      };
+      for (const [kind, title] of Object.entries(groups)) {
+        const findings = check.findings.filter(finding => finding.kind === kind);
+        if (!findings.length) continue;
+        row.append(textNode("h4", title));
+        for (const finding of findings) {
+          row.append(textNode("p", finding.message));
+          const views = Array.isArray(finding.viewports) ? finding.viewports.join(", ") : "";
+          row.append(textNode("small", `${finding.count > 1 ? `${finding.count} occurrences` : "1 occurrence"}${views ? ` · ${views}` : ""}`));
+        }
+      }
+      if (check.findings_omitted) row.append(textNode("p", "Additional findings were omitted because the evidence limit was reached."));
+    } else {
+      for (const error of [...(Array.isArray(check.errors) ? check.errors : []), ...(Array.isArray(check.blocked) ? check.blocked : [])]) row.append(textNode("p", error));
+    }
     if (check.checked_at) row.append(textNode("small", dateLabel(check.checked_at, true)));
     section.append(row);
   }

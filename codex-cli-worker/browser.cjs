@@ -1,5 +1,6 @@
 // A bounded, observational HA browser. No click, evaluate, or arbitrary URL tool.
 const { chromium } = require('playwright-core');
+const { ResourcePolicy, createExternalFetcher } = require('./browser_resources.cjs');
 
 const READ_MESSAGES = new Set([
   'get_config', 'get_states', 'get_services', 'auth/current_user', 'supported_features',
@@ -22,6 +23,17 @@ const READ_MESSAGES = new Set([
 
 function allowMessage(message) {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  // These custom_icons handlers only return active sets, icon lists, cached
+  // icons, or one icon. Selection/download handlers remain blocked. Bound names
+  // before forwarding because local icon handlers construct filesystem paths.
+  if (message.type === 'custom_icons/activesets')
+    return Object.keys(message).every(key => ['id', 'type'].includes(key));
+  if (['custom_icons/list', 'custom_icons/icon_cache', 'custom_icons/icon'].includes(message.type)) {
+    const icon = message.type === 'custom_icons/icon';
+    return Object.keys(message).every(key => ['id', 'type', 'set', ...(icon ? ['icon'] : [])].includes(key)) &&
+      typeof message.set === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(message.set) &&
+      (!icon || (typeof message.icon === 'string' && message.icon.length <= 256 && /^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(message.icon)));
+  }
   if (message.type === 'subscribe_events') return new Set([
     'state_changed', 'themes_updated', 'panels_updated', 'lovelace_updated',
     'entity_registry_updated', 'device_registry_updated', 'area_registry_updated',
@@ -51,9 +63,27 @@ async function inspect(input) {
     throw Error('Invalid Home Assistant origin');
   if (!/^\/[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?\/?$/.test(input.path)) throw Error('Invalid dashboard path');
   const errors = [], blocked = [], screenshots = [];
+  const findings = new Map();
+  let omitted = 0;
+  const policy = new ResourcePolicy(origin, input.resources);
+  const fetchExternal = createExternalFetcher(policy);
+  const blockedURLs = new Set();
+  const resourceLabel = url => `${url.origin === origin ? '' : url.host}${url.pathname}`;
+  const scriptError = text => text.length <= 3 || text === 'Object' ? `Unspecified dashboard script error (${text})` : text;
   let stage = 'launch';
   let browser, activePage, activeViewport;
-  const add = (list, value) => { if (list.length < 30) list.push(String(value).slice(0, 500)); };
+  const add = (list, value, kind = list === errors ? 'dashboard' : 'policy') => {
+    const message = String(value).slice(0, 300), key = `${kind}:${message}`;
+    let finding = findings.get(key);
+    if (!finding) {
+      if (findings.size >= 40) { omitted++; return; }
+      finding = {kind, message, count: 0, viewports: []}; findings.set(key, finding);
+      if (list && !list.includes(message)) list.push(message);
+    }
+    finding.count++;
+    if (activeViewport && !finding.viewports.includes(activeViewport.name)) finding.viewports.push(activeViewport.name);
+  };
+  const evidence = () => ({errors, blocked, findings: [...findings.values()], findings_omitted: omitted});
   try {
     browser = await chromium.launch({
       executablePath: process.env.HA_BROWSER_EXECUTABLE || '/usr/bin/chromium-browser',
@@ -69,15 +99,26 @@ async function inspect(input) {
     stage = 'context';
     const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false });
     // Intercepted documents need explicit local access on recent Chromium.
-    // Both HTTP and WebSocket routing still restrict traffic to this Core origin.
+    // Authenticated HTTP and WebSocket traffic remains restricted to Core.
     stage = 'permissions';
     await context.grantPermissions(['local-network-access'], { origin });
     stage = 'routing';
     await context.route('**/*', async route => {
       const req = route.request(), url = new URL(req.url());
-      if (!allowRequest(url, origin, req.method(), input.path)) {
-        add(blocked, `${req.method()} ${url.pathname}`);
-        return route.abort('blockedbyclient');
+      if (policy.remote(url, req.method(), req.resourceType())) {
+        try {
+          const response = await fetchExternal(url, req.method(), req.resourceType());
+          return await route.fulfill(response);
+        } catch (error) {
+          add(blocked, `External resource ${resourceLabel(url)}: ${error.message}`, 'resource');
+          if (blockedURLs.size < 256) blockedURLs.add(url.href);
+          return route.abort('blockedbyclient').catch(() => {});
+        }
+      }
+      if (!allowRequest(url, origin, req.method(), input.path) && !policy.local(url, req.method(), req.resourceType())) {
+        add(blocked, `${req.method()} ${resourceLabel(url)}`, 'resource');
+        if (blockedURLs.size < 256) blockedURLs.add(url.href);
+        return route.abort('blockedbyclient').catch(() => {});
       }
       // Fetch without redirects: Playwright does not re-route redirect hops.
       const headers = { ...req.headers() };
@@ -87,12 +128,15 @@ async function inspect(input) {
       try {
         response = await route.fetch({ headers, maxRedirects: 0, timeout: 15000 });
         if (response.status() >= 300 && response.status() < 400) {
-          add(blocked, `Redirect ${url.pathname}`);
+          add(blocked, `Redirect ${url.pathname}`, 'resource');
+          if (blockedURLs.size < 256) blockedURLs.add(url.href);
           return await route.abort('blockedbyclient');
         }
+        if ((response.headers()['content-type'] || '').startsWith('text/css'))
+          policy.cssDependencies(await response.body(), url);
         return await route.fulfill({ response });
       } catch (_) {
-        add(errors, `Request failed ${url.pathname}`);
+        add(errors, `Request failed ${url.pathname}`, 'resource');
         await route.abort('failed').catch(() => {});
       } finally {
         // Playwright retains fetched bodies until context close unless disposed.
@@ -113,8 +157,11 @@ async function inspect(input) {
         try {
           const parsed = JSON.parse(String(raw));
           for (const message of (Array.isArray(parsed) ? parsed : [parsed])) {
+            if (message.type === 'result' && message.success &&
+                ['lovelace/resources', 'lovelace/resources/list'].includes(commands.get(message.id)) && Array.isArray(message.result))
+              for (const resource of message.result.slice(0, 256)) policy.register(resource?.url);
             if (message.type === 'result' && message.success === false)
-              add(errors, `Home Assistant ${commands.get(message.id) || 'request'}: ${message.error?.code || 'error'}`);
+              add(errors, `Home Assistant ${commands.get(message.id) || 'request'}: ${message.error?.code || 'error'}`, 'home_assistant');
           }
         } catch (_) { /* Forward opaque frames without logging their contents. */ }
         route.send(raw);
@@ -130,7 +177,11 @@ async function inspect(input) {
           if (commands.size < 500) commands.set(message.id, message.type);
           upstream.send(raw);
         } else {
-          add(blocked, `WebSocket ${String(message.type)}${message.event_type ? ` (${message.event_type})` : ''}`);
+          const service = message.type === 'call_service' && /^[a-z_]+$/.test(message.domain) && /^[a-z_]+$/.test(message.service)
+            ? `${message.domain}.${message.service}` : '';
+          const diagnostic = ['system_log.write', 'persistent_notification.create'].includes(service);
+          add(diagnostic ? null : blocked, `WebSocket ${String(message.type)}${service ? ` (${service})` : message.event_type ? ` (${message.event_type})` : ''}`,
+            diagnostic ? 'diagnostic' : 'policy');
           if (Number.isInteger(message.id)) route.send(JSON.stringify({
             id: message.id, type: 'result', success: false,
             error: { code: 'unauthorized', message: 'Blocked by dashboard verification' },
@@ -155,10 +206,25 @@ async function inspect(input) {
       activePage = page;
       activeViewport = {name, width, height};
       await page.setViewportSize({ width, height });
-      page.on('console', msg => { if (msg.type() === 'error') add(errors, msg.text()); });
-      page.on('pageerror', error => add(errors, error.message));
+      page.on('console', msg => {
+        if (msg.type() !== 'error') return;
+        const text = msg.text();
+        // HTTP and failed-request events below provide the URL/status instead.
+        if (text.startsWith('Failed to load resource:')) return;
+        if (/Blocked by dashboard verification/.test(text) && /system log|notification/i.test(text))
+          add(null, 'Dashboard diagnostic logging or notification was blocked', 'diagnostic');
+        else add(errors, scriptError(text));
+      });
+      page.on('pageerror', error => add(errors, scriptError(error.message)));
+      page.on('requestfailed', req => {
+        if (!blockedURLs.has(req.url()))
+          add(errors, `Resource failed ${resourceLabel(new URL(req.url()))}: ${req.failure()?.errorText || 'network error'}`, 'resource');
+      });
       page.on('response', response => {
-        if (response.status() >= 400) add(errors, `HTTP ${response.status()} ${new URL(response.url()).pathname}`);
+        if (response.status() >= 400) {
+          const url = new URL(response.url());
+          add(errors, `HTTP ${response.status()} ${resourceLabel(url)}`, url.origin === origin && url.pathname.startsWith('/api/') ? 'home_assistant' : 'resource');
+        }
       });
       stage = 'navigation';
       await page.goto(`${origin}${input.path}?external_auth=1`, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -169,6 +235,8 @@ async function inspect(input) {
       }, { }, { timeout: 20000 });
       stage = 'dashboard';
       await page.locator('hui-view, hui-panel-view, hui-sections-view, hui-masonry-view').first().waitFor({ timeout: 20000 });
+      await page.waitForLoadState('networkidle', {timeout: 6000}).catch(() => {});
+      await page.evaluate(() => Promise.race([document.fonts.ready, new Promise(resolve => setTimeout(resolve, 3000))]));
       await page.waitForTimeout(1500);
       const requestedPath = input.path.replace(/\/$/, '');
       const actualPath = new URL(page.url()).pathname.replace(/\/$/, '');
@@ -193,7 +261,7 @@ async function inspect(input) {
       await page.close();
     }
     await context.close();
-    return { status: errors.length || blocked.length ? 'issues' : 'captured', errors, blocked, screenshots,
+    return { status: errors.length || blocked.length || omitted ? 'issues' : 'captured', ...evidence(), screenshots,
       message: 'Screenshots captured for visual inspection. This is not proof of correct layout or automation behavior.' };
   } catch (_) {
     if (activePage && !activePage.isClosed()) {
@@ -203,7 +271,7 @@ async function inspect(input) {
         screenshots.push({...activeViewport, file});
       } catch (_) { /* The page may already have crashed. */ }
     }
-    return { status: 'unavailable', stage, errors, blocked, screenshots,
+    return { status: 'unavailable', stage, ...evidence(), screenshots,
       message: `Dashboard verification could not finish during ${stage}.` };
   } finally {
     await browser?.close();

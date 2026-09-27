@@ -180,6 +180,21 @@ class SessionIdParsingTests(unittest.TestCase):
 
         return result, events
 
+    def test_only_actionable_verification_results_add_a_review_warning(self) -> None:
+        for check_status in ("disabled", "captured", "passed", "failed", "issues", "unavailable"):
+            with self.subTest(check_status=check_status):
+                def record_check(task_id, _results):
+                    server.update_task(task_id, verification=[{"status": check_status}])
+
+                with patch.object(server.verification, "after_changes", side_effect=record_check):
+                    task, _ = self.run_resumed_task(
+                        "", final_payload={"status": "completed", "summary": "Done", "details": "Original details"},
+                    )
+                self.assertEqual(task["status"], "completed")
+                self.assertIn("Original details", task["details"])
+                self.assertEqual("Verification needs review" in task["details"],
+                                 check_status in {"failed", "issues", "unavailable"})
+
     def test_resume_uses_authoritative_emitted_session_id(self) -> None:
         task, events = self.run_resumed_task(
             json.dumps({"type": "thread.started", "thread_id": self.OTHER_ID}) + "\n",

@@ -279,11 +279,12 @@ class Verification:
                 config = storage["data"]["config"]
                 base = "/" + (ref.get("url_path") or "lovelace")
                 self.run(task_id, {"operation": "dashboard_readback", "path": base, "expected_config": config})
-                for index, view in enumerate(config.get("views", [])[:MAX_BROWSERS]):
+                with self.worker.lock:
+                    checks = self.worker.tasks.get(task_id, {}).get("verification") or []
+                    remaining = max(0, MAX_BROWSERS - sum(check.get("operation") == "dashboard" for check in checks))
+                for index, view in enumerate(config.get("views", [])[:remaining]):
                     path = base + "/" + str(view.get("path", index))
                     self.run(task_id, {"operation": "dashboard", "path": path})
-                if len(config.get("views", [])) > MAX_BROWSERS:
-                    self.run(task_id, {"operation": "dashboard", "path": base + "/0"})
             except (OSError, ValueError, KeyError):
                 self.run(task_id, {"operation": "dashboard", "path": ""})
 
@@ -342,7 +343,8 @@ class Verification:
                 self.wfile.write(json.dumps(result).encode() + b"\n")
 
         Path(path).unlink(missing_ok=True)
-        server = socketserver.UnixStreamServer(str(path), Handler)
+        server = socketserver.ThreadingUnixStreamServer(str(path), Handler)
+        server.daemon_threads = True
         os.chmod(path, 0o600)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server

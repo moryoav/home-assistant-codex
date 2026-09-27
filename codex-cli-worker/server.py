@@ -3140,7 +3140,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
 
     checks = tasks.get(task_id, {}).get("verification") or []
-    incomplete = sum(check.get("status") in {"failed", "issues", "unavailable", "disabled"} for check in checks)
+    incomplete = sum(check.get("status") in {"failed", "issues", "unavailable"} for check in checks)
     if incomplete:
         note = f"Verification needs review: {incomplete} check(s) failed, found issues, or could not run. See the evidence below."
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)

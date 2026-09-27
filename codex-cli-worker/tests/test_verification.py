@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from test_server import server
-from verification import Verification
+from verification import MAX_BROWSERS, Verification
 from verification import kill_tracked_processes, track_browser_processes
 
 
@@ -68,6 +68,29 @@ class VerificationTests(unittest.TestCase):
             result = self.engine.run("chat", {"operation": "dashboard_readback", "path": "/lovelace/0",
                                               "expected_config": {"views": [{"title": "Missing"}]}})
         self.assertEqual(result["status"], "failed")
+
+    def test_automatic_dashboard_checks_respect_the_remaining_turn_budget(self):
+        config = {"views": [{"path": f"view-{index}"} for index in range(MAX_BROWSERS + 1)]}
+        storage = self.config / ".storage"
+        storage.mkdir()
+        refs = []
+        for name in ("first", "second"):
+            (storage / name).write_text(json.dumps({"data": {"config": config}}))
+            refs.append({"success": True, "storage_file": f".storage/{name}", "url_path": name})
+        for previous in (0, 1, MAX_BROWSERS):
+            with self.subTest(previous=previous):
+                self.engine.begin("chat")
+                with patch.object(self.engine, "browser", return_value={"status": "captured"}) as browser, \
+                     patch.object(self.engine, "ws_read", return_value=config):
+                    for index in range(previous):
+                        self.engine.run("chat", {"operation": "dashboard", "path": f"/manual/{index}"})
+                    self.engine.after_changes("chat", refs)
+                self.assertEqual(browser.call_count, MAX_BROWSERS)
+                paths = [call.args[1]["path"] for call in browser.call_args_list[previous:]]
+                self.assertEqual(paths, [f"/first/view-{index}" for index in range(MAX_BROWSERS - previous)])
+                checks = server.tasks["chat"]["verification"]
+                self.assertEqual([check["status"] for check in checks].count("passed"), 2)
+                self.assertNotIn("unavailable", [check["status"] for check in checks])
 
     def test_websocket_read_authenticates_and_closes_the_actual_client_interface(self):
         # websocket-client has close(), but no context manager methods.

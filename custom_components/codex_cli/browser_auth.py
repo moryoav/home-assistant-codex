@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 from datetime import timedelta
+from functools import partial
 from typing import Any
 
 from aiohttp import web
@@ -22,6 +23,39 @@ from .const import DOMAIN
 
 SESSION_SECONDS = 180
 STORAGE_KEY = f"{DOMAIN}.browser_identity"
+
+
+def browser_resources(hass: HomeAssistant) -> dict[str, list[str]]:
+    """Describe static routes, never arbitrary GET views or filesystem paths."""
+    files: set[str] = set()
+    directories: set[str] = set()
+    if hass.http is not None:
+        for resource in hass.http.app.router.resources():
+            if isinstance(resource, web.StaticResource):
+                directories.add(resource.canonical)
+                continue
+            for route in resource:
+                handler = route.handler
+                # HA registers individual static files as partials of these
+                # serving functions. A .js-looking URL alone proves nothing.
+                if (route.method == "GET" and isinstance(handler, partial)
+                    and getattr(handler.func, "__module__", "") == "homeassistant.components.http"
+                    and getattr(handler.func, "__name__", "") in {"_serve_file", "_serve_file_with_cache_headers"}):
+                    files.add(resource.canonical)
+    extra_urls = set()
+    for key in ("frontend_extra_module_url", "frontend_extra_js_url_es5"):
+        extra_urls.update(getattr(hass.data.get(key), "urls", ()))
+    result = {}
+    remaining = 32000
+    for key, values in (("files", files), ("directories", directories), ("extra_urls", extra_urls)):
+        selected = []
+        for value in sorted(value for value in values if isinstance(value, str))[:256]:
+            size = len(json.dumps(value).encode("utf-8"))
+            if value != "/" and 0 < len(value.encode("utf-8")) <= 1024 and size <= remaining:
+                selected.append(value)
+                remaining -= size
+        result[key] = selected
+    return result
 
 
 class BrowserSessions:
@@ -65,6 +99,7 @@ class BrowserSessions:
             url = get_supervisor_network_url(self.hass) or get_url(
                 self.hass, allow_external=False, allow_cloud=False
             )
+            resources = browser_resources(self.hass)
             refresh = await self.hass.auth.async_create_refresh_token(
                 self.user, access_token_expiration=timedelta(seconds=SESSION_SECONDS)
             )
@@ -79,7 +114,8 @@ class BrowserSessions:
             timer = self.hass.loop.call_later(SESSION_SECONDS, self.revoke, refresh.id)
             self.sessions[refresh.id] = (refresh, timer)
             return {"session_id": refresh.id, "access_token": access,
-                    "expires_in": SESSION_SECONDS, "url": url}
+                    "expires_in": SESSION_SECONDS, "url": url,
+                    "resources": resources}
 
     def revoke(self, session_id: str) -> None:
         if session := self.sessions.pop(session_id, None):

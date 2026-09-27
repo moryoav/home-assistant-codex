@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.61
+
+- Load dashboard scripts, icons, and styles from Home Assistant's registered static routes, including integrations that serve assets outside `/local` and `/hacsfiles`.
+- Support registered public HTTPS resources, related static assets, Google Fonts, jsDelivr, cdnjs, and unpkg. Fetch external assets without browser credentials, validate public DNS addresses on every redirect, and limit resource size and request counts. Keep service calls and configuration writes blocked.
+- Group repeated verification findings by cause, with occurrence counts and affected viewports. Show blocked diagnostic logging and notifications separately from rendering errors. Wait briefly for resource and font loading before captures.
+
+### Upgrade notes
+
+Update both the **Codex CLI Worker** app and the **Codex** integration to **0.1.61**, then restart Home Assistant to load the integration's static-resource discovery. With an older integration, custom static routes remain restricted. External asset servers can see the host's public IP address and requested resource URL. See [verification limits](VERIFICATION.md#dashboard-resources).
+
 ## 0.1.60
 
 - Fix premature dashboard capture termination by accounting for shared Chromium memory proportionally instead of counting it repeatedly across processes.

@@ -31,7 +31,7 @@ function allowMessage(message) {
   return READ_MESSAGES.has(message.type);
 }
 
-function allowRequest(url, origin, method) {
+function allowRequest(url, origin, method, dashboardPath) {
   if (url.origin !== origin || !['GET', 'HEAD'].includes(method)) return false;
   if (/%|\\/.test(url.pathname)) return false;
   // No arbitrary API GETs: integrations can have state-changing GET handlers.
@@ -39,7 +39,7 @@ function allowRequest(url, origin, method) {
     return /^\/api\/(onboarding|config|states(?:\/[a-z0-9_.]+)?|history\/period(?:\/[0-9T:Z.+-]+)?|camera_proxy\/[a-z0-9_.]+)$/.test(url.pathname);
   }
   return /^\/(frontend_latest|frontend_es5|static|local|hacsfiles)\//.test(url.pathname)
-    || /^\/[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?\/?$/.test(url.pathname)
+    || (dashboardPath && url.pathname === dashboardPath)
     || url.pathname === '/';
 }
 
@@ -61,7 +61,7 @@ async function inspect(input) {
     const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false });
     await context.route('**/*', async route => {
       const req = route.request(), url = new URL(req.url());
-      if (allowRequest(url, origin, req.method())) return route.continue();
+      if (allowRequest(url, origin, req.method(), input.path)) return route.continue();
       add(blocked, `${req.method()} ${url.pathname}`);
       await route.abort('blockedbyclient');
     });
@@ -117,7 +117,7 @@ async function inspect(input) {
     // Substitute only this exact placeholder on approved same-origin REST reads.
     await context.route('**/api/**', async route => {
       const req = route.request(), url = new URL(req.url());
-      if (!allowRequest(url, origin, req.method())) return route.fallback();
+      if (!allowRequest(url, origin, req.method(), input.path)) return route.fallback();
       const headers = { ...req.headers() };
       if (headers.authorization === 'Bearer verification-session') headers.authorization = `Bearer ${input.access_token}`;
       const response = await route.fetch({ headers, maxRedirects: 0, timeout: 15000 });

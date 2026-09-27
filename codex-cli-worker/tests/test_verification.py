@@ -1,14 +1,18 @@
 """Verification boundaries, evidence ownership, and credential protection."""
 import json
 import os
+import subprocess
+import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from test_server import server
 from verification import Verification
+from verification import kill_tracked_processes, track_browser_processes
 
 
 class VerificationTests(unittest.TestCase):
@@ -97,6 +101,52 @@ class VerificationTests(unittest.TestCase):
             environment = server.codex_env()
         self.assertNotIn("SUPERVISOR_TOKEN", environment)
         self.assertNotIn("HASSIO_TOKEN", environment)
+
+    def test_browser_memory_budget_stops_process_and_revokes_session(self):
+        original_popen = subprocess.Popen
+        processes = []
+        def launch(_args, **kwargs):
+            process = original_popen([sys.executable, "-c", "import sys,time; sys.stdin.read(); time.sleep(60)"], **kwargs)
+            processes.append(process)
+            return process
+        with patch.object(self.engine, "core", return_value={"session_id": "lease", "url": "http://homeassistant:8123", "access_token": "private"}) as core:
+            with patch("verification.subprocess.Popen", side_effect=launch), patch("verification.track_browser_processes", return_value=800 * 1024 * 1024):
+                result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/0"})
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("memory budget", result["message"])
+        self.assertIsNotNone(processes[0].poll())
+        core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "lease"})
+
+    @unittest.skipIf(os.name == "nt", "Linux container process accounting")
+    def test_tracks_and_stops_detached_browser_descendants(self):
+        script = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],start_new_session=True); time.sleep(60)"
+        process = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
+        tracked = {}
+        try:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                memory = track_browser_processes(process.pid, tracked)
+                if len(tracked) >= 2:
+                    break
+                time.sleep(.05)
+            self.assertGreaterEqual(len(tracked), 2)
+            self.assertGreater(memory, 0)
+        finally:
+            kill_tracked_processes(tracked)
+            process.kill() if process.poll() is None else None
+            process.wait(timeout=5)
+
+    def test_pending_dashboard_cannot_save_unrelated_or_unvalidated_files(self):
+        self.options["auto_save_lovelace"] = False
+        with self.assertRaisesRegex(ValueError, "disabled"):
+            self.engine.save_pending_dashboard("chat", "/lovelace/0")
+        self.options["auto_save_lovelace"] = True
+        with self.assertRaisesRegex(ValueError, "baseline"):
+            self.engine.save_pending_dashboard("chat", "/lovelace/0")
+
+    def test_supervisor_websocket_uses_its_websocket_proxy(self):
+        with patch.object(server, "ha_token_source", return_value="supervisor"):
+            self.assertEqual(server.ha_ws_url(), "ws://supervisor/core/websocket")
 
     def test_default_storage_dashboard_is_discovered(self):
         path = self.config / ".storage" / "lovelace"

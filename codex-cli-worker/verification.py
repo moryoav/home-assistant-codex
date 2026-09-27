@@ -196,18 +196,18 @@ class Verification:
             url = urlparse(session["url"])
             if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password:
                 raise ValueError("Home Assistant supplied an invalid browser address")
-            with tempfile.TemporaryDirectory(prefix="ha-verification-") as directory:
+            with tempfile.TemporaryDirectory(prefix="ha-verification-") as directory, tempfile.TemporaryFile(mode="w+t", dir=directory) as output_file:
                 environment = {key: os.environ[key] for key in ("PATH", "NODE_PATH", "HA_BROWSER_EXECUTABLE", "SystemRoot") if key in os.environ}
                 process = subprocess.Popen(
                     ["node", str(Path(__file__).with_name("browser.cjs"))],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    stdin=subprocess.PIPE, stdout=output_file, stderr=subprocess.DEVNULL,
                     text=True, env=environment, start_new_session=os.name != "nt",
                 )
                 try:
                     request = json.dumps({**session, "path": path, "directory": directory})
                     process.stdin.write(request)
                     process.stdin.close()
-                    # Poll for cancellation while the browser's small JSON result fits the pipe.
+                    # A temporary output file avoids a pipe deadlock on verbose diagnostics.
                     deadline = time.monotonic() + 110
                     tracked = {}
                     while process.poll() is None:
@@ -216,7 +216,8 @@ class Verification:
                         if track_browser_processes(process.pid, tracked) > 768 * 1024 * 1024:
                             raise ValueError("Dashboard browser exceeded its 768 MB memory budget")
                         time.sleep(0.1)
-                    output = process.stdout.read(65537)
+                    output_file.seek(0)
+                    output = output_file.read(65537)
                     if len(output) > 65536:
                         raise ValueError("Browser output limit exceeded")
                     result = json.loads(output)
@@ -232,7 +233,6 @@ class Verification:
                             process.kill()
                     kill_tracked_processes(locals().get("tracked", {}))
                     process.wait(timeout=10)
-                    process.stdout.close()
                 if self.worker.task_cancellation_requested(task_id) or self.worker.tasks.get(task_id, {}).get("current_turn_id") != turn_id:
                     raise ValueError("Dashboard verification cancelled")
                 images = []

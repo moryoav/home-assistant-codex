@@ -14,6 +14,7 @@ async function main() {
   assert(allowMessage({ type: 'subscribe_events', event_type: 'state_changed' }));
   assert(!allowRequest(new URL('http://evil.test/local/card.js'), 'http://ha.test', 'GET'));
   assert(!allowRequest(new URL('http://ha.test/api/webhook/action'), 'http://ha.test', 'GET'));
+  assert(!allowRequest(new URL('http://ha.test/custom-action/on'), 'http://ha.test', 'GET', '/lovelace/0'));
   assert(!allowRequest(new URL('http://ha.test/api/services/light/turn_on'), 'http://ha.test', 'POST'));
 
   const upstream = [], requests = [], tokens = [];

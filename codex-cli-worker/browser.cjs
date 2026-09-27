@@ -83,16 +83,21 @@ async function inspect(input) {
       const headers = { ...req.headers() };
       if (url.pathname.startsWith('/api/') && headers.authorization === 'Bearer verification-session')
         headers.authorization = `Bearer ${input.access_token}`;
+      let response;
       try {
-        const response = await route.fetch({ headers, maxRedirects: 0, timeout: 15000 });
+        response = await route.fetch({ headers, maxRedirects: 0, timeout: 15000 });
         if (response.status() >= 300 && response.status() < 400) {
           add(blocked, `Redirect ${url.pathname}`);
-          return route.abort('blockedbyclient');
+          return await route.abort('blockedbyclient');
         }
-        return route.fulfill({ response });
+        return await route.fulfill({ response });
       } catch (_) {
         add(errors, `Request failed ${url.pathname}`);
         await route.abort('failed').catch(() => {});
+      } finally {
+        // Playwright retains fetched bodies until context close unless disposed.
+        // Wait for delivery before releasing them, including failed/redirected requests.
+        await response?.dispose().catch(() => {});
       }
     });
     await context.routeWebSocket('**/*', route => {

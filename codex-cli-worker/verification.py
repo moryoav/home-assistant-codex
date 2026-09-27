@@ -21,6 +21,7 @@ import websocket
 
 MAX_CHECKS = 24
 MAX_BROWSERS = 4
+BROWSER_MEMORY_LIMIT_MIB = 1536
 SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024
 RETENTION_SECONDS = 7 * 24 * 3600
 ENTITY_RE = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
@@ -230,17 +231,22 @@ class Verification:
                     # A temporary output file avoids a pipe deadlock on verbose diagnostics.
                     deadline = time.monotonic() + 110
                     tracked = {}
+                    peak_memory = 0
                     while process.poll() is None:
                         if not self.active(task_id, turn_id, capability) or time.monotonic() >= deadline:
                             raise ValueError("Dashboard verification cancelled or timed out")
-                        if track_browser_processes(process.pid, tracked) > 768 * 1024 * 1024:
-                            raise ValueError("Dashboard browser exceeded its 768 MB memory budget")
+                        memory = track_browser_processes(process.pid, tracked)
+                        peak_memory = max(peak_memory, memory)
+                        if memory > BROWSER_MEMORY_LIMIT_MIB * 1024 * 1024:
+                            raise ValueError(f"Dashboard browser exceeded its {BROWSER_MEMORY_LIMIT_MIB} MiB memory budget ({memory / 1024 ** 2:.0f} MiB measured)")
                         time.sleep(0.1)
                     output_file.seek(0)
                     output = output_file.read(65537)
                     if len(output) > 65536:
                         raise ValueError("Browser output limit exceeded")
                     result = json.loads(output)
+                    result.update(memory_peak_mib=round(peak_memory / 1024 ** 2, 1),
+                                  memory_limit_mib=BROWSER_MEMORY_LIMIT_MIB)
                 finally:
                     # Playwright detaches Chromium into a separate process group.
                     # Let its signal handler close first, then reap tracked children
@@ -375,7 +381,7 @@ class Verification:
 
 
 def track_browser_processes(root_pid, tracked):
-    """Track descendants even when Chromium detaches from Node's process group."""
+    """Track descendants and charge shared pages proportionally, not per process."""
     if os.name == "nt":
         return 0
     processes = {}
@@ -396,7 +402,25 @@ def track_browser_processes(root_pid, tracked):
     for pid in known:
         if pid in processes:
             tracked[pid] = processes[pid][1]
-    return sum(processes[pid][2] for pid in known if pid in processes) * os.sysconf("SC_PAGE_SIZE")
+    return sum(browser_process_memory(pid, processes[pid][2]) for pid in known if pid in processes)
+
+
+def browser_process_memory(pid, rss_pages):
+    """Use Linux PSS plus proportional swap; retain RSS as a conservative fallback."""
+    try:
+        fields = {}
+        for line in Path(f"/proc/{pid}/smaps_rollup").read_text().splitlines():
+            key, _, value = line.partition(":")
+            if key in {"Pss", "SwapPss"}:
+                amount, unit = value.split()
+                if unit != "kB" or int(amount) < 0:
+                    raise ValueError("Invalid memory accounting")
+                fields[key] = int(amount) * 1024
+        if "Pss" in fields:
+            return fields["Pss"] + fields.get("SwapPss", 0)
+    except (OSError, ValueError):
+        pass
+    return rss_pages * os.sysconf("SC_PAGE_SIZE")
 
 
 def kill_tracked_processes(tracked):

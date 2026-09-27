@@ -247,7 +247,8 @@ async function inspect(input) {
         const messages = [];
         function visit(root) {
           for (const el of root.querySelectorAll('*')) {
-            if (el.localName === 'hui-error-card') messages.push(el.textContent.trim().slice(0, 300) || 'Dashboard error card');
+            if (el.localName === 'hui-error-card' && el.checkVisibility({visibilityProperty: true, opacityProperty: true}))
+              messages.push(String(el._config?.message || el._config?.error || el.textContent.trim() || 'Dashboard error card').slice(0, 300));
             if (el.shadowRoot) visit(el.shadowRoot);
           }
         }

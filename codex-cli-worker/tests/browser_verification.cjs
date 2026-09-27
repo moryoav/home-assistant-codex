@@ -58,6 +58,7 @@ async function main() {
       if (window.loadedAssets !== 2) console.error('Registered assets failed to execute');
       const ha = document.querySelector('home-assistant');
       ha.attachShadow({mode:'open'}).innerHTML = '<hui-view><h1>Home dashboard</h1><p>Kitchen light: on</p></hui-view>';
+      ha.shadowRoot.innerHTML += '<hui-error-card style="display:none">Hidden loading placeholder</hui-error-card>';
       window.externalAuthSetToken = async (_, token) => {
         if (token.access_token !== 'verification-session') throw Error('Real token reached the page');
         const ws = new WebSocket('ws://' + location.host + '/api/websocket');

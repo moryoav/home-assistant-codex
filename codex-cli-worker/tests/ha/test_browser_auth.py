@@ -186,7 +186,7 @@ async def test_diagnostic_endpoint_rejects_every_non_core_target(hass, hass_clie
 
 
 @pytest.mark.skipif(not os.environ.get("HA_BROWSER_NODE"), reason="Optional real frontend browser check needs Node and Chromium")
-async def test_real_frontend_with_temporary_identity(hass, hass_client, tmp_path):
+async def test_real_frontend_with_temporary_identity(async_setup_recorder_instance, hass, hass_client, tmp_path):
     """Exercise HA's shipped frontend with the same browser bridge as production."""
     hass.config.config_dir = str(tmp_path)
     from homeassistant.components.onboarding.const import STEPS
@@ -212,6 +212,9 @@ views:
         entities: [binary_sensor.door, switch.fan]
 """)
     configuration = {"lovelace": {"mode": "yaml"}}
+    # The frontend reads recorder/info during startup. Missing it produces an
+    # unhandled rejection and a delayed system_log.write service call.
+    await async_setup_recorder_instance(hass)
     assert await async_setup_component(hass, "frontend", configuration)
     assert await async_setup_component(hass, "lovelace", configuration)
     for component in ("labs", "persistent_notification", "brands", "sensor", "light", "binary_sensor", "switch", "person", "image_upload"):
@@ -246,7 +249,8 @@ views:
         assert stdout.strip(), stderr.decode()
         result = json.loads(stdout)
         print(json.dumps({"frontend_browser_result": result}))
-        assert result["status"] in {"captured", "issues"}, (result, stderr.decode())
+        assert result["status"] == "captured", (result, stderr.decode())
+        assert result["errors"] == [], result
         assert result["blocked"] == [], result
         assert len(result["screenshots"]) == 2, result
         assert not any("lovelace" in error or "redirected" in error for error in result["errors"]), result

@@ -1,4 +1,11 @@
 # Codex for Home Assistant
+
+Tasks can verify Home Assistant configuration and entity states, read Core/app
+logs, and inspect dashboards at desktop and mobile sizes. Screenshots and check
+results appear with the conversation. Browser access uses a temporary local
+identity, without asking for your Home Assistant password or a long-lived token.
+See [verification setup and limits](codex-cli-worker/VERIFICATION.md).
+
 [![HACS][hacs-badge]][hacs-url] [![release][release-badge]][release-url] [![build][build-badge]][build-url] [![license][license-badge]][license-url]
 
 ---

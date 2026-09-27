@@ -712,6 +712,13 @@ function pngBuffer(width = 8, height = 6) {
       .getByText("The dashboard configuration is valid.", { exact: true })
       .waitFor();
     // The screenshot the user attached shows with their message.
+    await phone.locator(".verification h3").waitFor();
+    assert.equal(await phone.locator(".verification-result").count(), 2);
+    await phone.locator(".verification-result").nth(1).locator("summary").click();
+    assert.equal(await phone.locator(".verification").getByText("Custom element does not exist: sample-card", {exact:true}).isVisible(), true);
+    assert.equal(await phone.locator(".verification img").count(), 1);
+    assert.equal(await phone.locator(".verification img").evaluate(img => img.complete && img.naturalWidth > 0), true);
+    await phone.screenshot({path: path.join(output, "verification-mobile.png"), fullPage: true});
     assert.equal(
       await phone.locator("#messages .user-attachments img").count(),
       1,

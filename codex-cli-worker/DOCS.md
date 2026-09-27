@@ -2,6 +2,11 @@
 
 This app runs Codex CLI tasks against the Home Assistant config folder mounted at `/config`.
 
+From 0.1.58, tasks can read Home Assistant states and logs, check configuration,
+and inspect dashboards in a bundled browser without a user password or manually
+created token. Update both the app and integration. See [verification tools,
+authentication, screenshots, and limits](VERIFICATION.md).
+
 This app is distributed from:
 
 ```text

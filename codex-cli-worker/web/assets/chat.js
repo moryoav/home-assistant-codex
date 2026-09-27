@@ -615,6 +615,30 @@ function renderConfigCheck(check) {
     node.append(textNode("pre", `Warnings: ${check.warnings}`, "check-detail"));
   return node;
 }
+function renderVerification(turn, taskId) {
+  const checks = turn.verification || [];
+  if (!checks.length) return null;
+  const section = textNode("section", "", "verification");
+  section.append(textNode("h3", "Verification"));
+  for (const check of checks) {
+    const row = textNode("details", "", `verification-result is-${check.status}`);
+    const label = {
+      passed: "Passed", failed: "Failed", observed: "Readback", captured: "Screenshots captured",
+      issues: "Needs review", disabled: "Disabled", unavailable: "Unverified",
+    }[check.status] || "Unverified";
+    row.append(textNode("summary", `${label} · ${check.entity_id || check.path || check.target || check.operation}`));
+    if (check.message) row.append(textNode("pre", check.message));
+    if (check.state !== undefined) row.append(textNode("p", `State: ${check.state}${check.expected_state !== null ? ` · Expected: ${check.expected_state}` : ""}`));
+    if (check.attributes && Object.keys(check.attributes).length) row.append(textNode("pre", JSON.stringify(check.attributes, null, 2)));
+    for (const error of [...(check.errors instanceof Array ? check.errors : []), ...(check.blocked || [])]) row.append(textNode("p", error));
+    if (check.checked_at) row.append(textNode("small", dateLabel(check.checked_at, true)));
+    section.append(row);
+  }
+  const images = imageAttachments(turn.verification_attachments).filter(image => image.expires_at * 1000 > Date.now());
+  if (images.length) section.append(renderAttachments(taskId, images, "Dashboard verification screenshot"));
+  section.append(textNode("p", "Screenshots are evidence for visual review. State and configuration checks do not prove automation behavior.", "verification-note"));
+  return section;
+}
 function renderTask(force = false) {
   const task = state.task;
   if (!task) return;
@@ -663,7 +687,7 @@ function renderTask(force = false) {
       exchange.append(textNode("div", turn.message, "message user"));
     const attachments = imageAttachments(turn.attachments);
     const hasAnswer =
-      turn.summary || turn.details || turn.question || attachments.length;
+      turn.summary || turn.details || turn.question || attachments.length || turn.verification?.length;
     if (hasAnswer) {
       const answer = textNode("div", "", "answer");
       const heading = textNode("div", "", "answer-heading");
@@ -676,6 +700,8 @@ function renderTask(force = false) {
         answer.append(textNode("div", turn.question, "message question"));
       const check = renderConfigCheck(turn.config_check);
       if (check) answer.append(check);
+      const evidence = renderVerification(turn, task.task_id);
+      if (evidence) answer.append(evidence);
       if (attachments.length)
         answer.append(renderAttachments(task.task_id, attachments));
       answer.append(

@@ -33,6 +33,18 @@ import websocket
 import yaml
 from flask import Flask, Response, jsonify, request, send_file
 
+# Also support the existing importlib-based test harness.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verification import Verification
+
+
+class _VerificationWorker:
+    def __getattr__(self, name):
+        return globals()[name]
+
+
+verification = Verification(_VerificationWorker())
+
 
 CONFIG_ROOT = Path("/config")
 DATA_ROOT = Path("/data")
@@ -55,6 +67,7 @@ DEFAULT_OPTIONS = {
     "task_timeout_seconds": 3600,
     "auto_save_lovelace": True,
     "config_check": True,
+    "browser_verification": True,
     "ha_url": "http://supervisor/core",
     "HA_TOKEN": "",
 }
@@ -636,6 +649,12 @@ def load_task_index() -> None:
 
 def redact(text: str) -> str:
     redacted = text
+    for value in (os.environ.get("SUPERVISOR_TOKEN"), os.environ.get("HASSIO_TOKEN")):
+        if value:
+            redacted = redacted.replace(value, "[redacted]")
+    with verification.lock:
+        for value in verification.capabilities.values():
+            redacted = redacted.replace(value, "[redacted]")
     for pattern, replacement in SENSITIVE_REPLACEMENTS:
         redacted = pattern.sub(replacement, redacted)
     return redacted
@@ -1245,7 +1264,7 @@ def load_stored_activity(task_id: str, turn_id: str) -> dict[str, Any] | None:
 TURN_RESULT_FIELDS = (
     "status", "summary", "details", "question", "started_at", "completed_at",
     "returncode", "changes", "validation_errors", "lovelace_results", "error",
-    "attachments", "config_check", "recovery_files",
+    "attachments", "config_check", "recovery_files", "verification", "verification_attachments",
 )
 # The check result recorded when no check ran: launch failures, cancellations, and new turns.
 EMPTY_CONFIG_CHECK = {"result": "skipped", "errors": "", "warnings": ""}
@@ -1564,7 +1583,7 @@ def collect_generated_images(task_id: str, session_id: str, known_ids: set[str])
 def find_attachment(task: dict[str, Any], attachment_id: str) -> dict[str, Any] | None:
     """Return the recorded metadata for an attachment id, newest exchange first."""
     for turn in reversed(task_turns(task)):
-        for attachment in [*(turn.get("prompt_attachments") or []), *(turn.get("attachments") or [])]:
+        for attachment in [*(turn.get("prompt_attachments") or []), *(turn.get("attachments") or []), *(turn.get("verification_attachments") or [])]:
             if isinstance(attachment, dict) and attachment.get("attachment_id") == attachment_id:
                 return attachment
     return None
@@ -1754,6 +1773,9 @@ def should_include_file(path: Path) -> bool:
         return False
     if not path.is_file():
         return False
+    # Do not follow links out of /config or archive linked private credentials.
+    if path.is_symlink() or not path.resolve().is_relative_to(CONFIG_ROOT.resolve()):
+        return False
     parts = set(rel.parts)
     if parts & EXCLUDED_PARTS:
         return False
@@ -1818,11 +1840,22 @@ def create_snapshot(task_id: str) -> dict[str, Any]:
     manifest = build_manifest()
     with tarfile.open(snapshot_path, "w:gz") as tar:
         for rel in sorted(manifest):
+            if snapshot_secret_path(rel):
+                continue
             path = CONFIG_ROOT / rel
             if path.exists():
                 tar.add(path, arcname=rel, recursive=False)
     (task_dir / "manifest-before.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    snapshot_path.chmod(0o600)
     return {"path": str(snapshot_path), "file_count": len(manifest), "created_at": utc_now()}
+
+
+def snapshot_secret_path(relative: str) -> bool:
+    """Keep credential files in change detection, but out of recovery archives."""
+    path = Path(relative)
+    return path.name in {"secrets.yaml", "secrets.yml"} or relative in {
+        ".storage/auth", ".storage/http.auth", ".storage/core.config_entries",
+    } or relative.startswith(".storage/auth_provider.")
 
 
 def validate_changed_files(changes: dict[str, list[str]]) -> list[str]:
@@ -1980,7 +2013,7 @@ def assess_changes(task_id: str, run_dir: Path, changes: dict[str, list[str]]) -
     lovelace_results: list[dict[str, Any]] = []
     failed_storage = {rel for rel in files_in_validation_errors(validation_errors) if rel.startswith(".storage/")}
     for rel in sorted(failed_storage):
-        if rel.startswith(".storage/lovelace."):
+        if rel == ".storage/lovelace" or rel.startswith(".storage/lovelace."):
             lovelace_results.append({
                 "dashboard_id": Path(rel).name.removeprefix("lovelace."), "url_path": "", "storage_file": rel,
                 "success": False, "message": "Not saved: the file failed validation.",
@@ -2018,7 +2051,7 @@ def find_lovelace_dashboard_refs(changes: dict[str, list[str]]) -> list[dict[str
     changed_paths = sorted(set(changes.get("added", []) + changes.get("changed", [])))
     registry = read_lovelace_registry()
     for rel in changed_paths:
-        if not rel.startswith(".storage/lovelace."):
+        if rel != ".storage/lovelace" and not rel.startswith(".storage/lovelace."):
             continue
         if rel in {".storage/lovelace_resources", ".storage/lovelace_dashboards"}:
             continue
@@ -2087,7 +2120,7 @@ def ha_api_url(path: str) -> str:
 
 def ha_ws_url() -> str:
     if ha_token_source() == "supervisor":
-        return "ws://supervisor/core/api/websocket"
+        return "ws://supervisor/core/websocket"
     parsed = urlparse(ha_api_url("websocket"))
     scheme = "wss" if parsed.scheme == "https" else "ws"
     return urlunparse(parsed._replace(scheme=scheme))
@@ -2476,6 +2509,8 @@ def auto_start_login_if_needed() -> None:
 
 def codex_env() -> dict[str, str]:
     env = dict(os.environ)
+    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_VERIFICATION_CAPABILITY"):
+        env.pop(key, None)
     env["CODEX_HOME"] = str(CODEX_HOME)
     env["HOME"] = str(DATA_ROOT)
     ha_token = str(read_options().get("HA_TOKEN") or "").strip()
@@ -2528,6 +2563,16 @@ Follow /config/AGENTS.md. Treat this as a live Home Assistant config tree. Make 
 This is a non-interactive run. Do not wait for terminal input. If you need the user's decision or verification before continuing, stop cleanly by returning status "needs_input" with one concise question.
 
 If the user asks for an image, use the built-in image generation tool. Every image it generates is attached to this conversation and shown to the user automatically, so leave it at its default save location and describe it in the summary. Copy it into /config only when the user asks for a file at a specific path. The default save location is not a failure.
+
+Use the installed ha-verify command for authenticated Home Assistant checks. Pass one JSON argument:
+  ha-verify '{{"operation":"entity","entity_id":"light.kitchen","expected_state":"on","attributes":["brightness"]}}'
+  ha-verify '{{"operation":"config_check"}}'
+  ha-verify '{{"operation":"logs","target":"core"}}'
+  ha-verify '{{"operation":"logs","target":"APP_SLUG"}}'
+  ha-verify '{{"operation":"dashboard","path":"/lovelace/0"}}'
+  ha-verify '{{"operation":"dashboard_readback","path":"/lovelace/0"}}'
+Use fresh entity readback after any user-authorized reload or change. These tools do not perform reloads or device actions. Only perform those when authorized by the user. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
+After an authorized storage-dashboard edit, add "save_pending":true to the dashboard request to have the worker save that turn's pending dashboard edit and verify API readback before capturing it. This requires auto_save_lovelace to be enabled. Without save_pending, the browser inspects only the dashboard currently loaded in Home Assistant.
 
 At the end, return only an object matching the provided JSON schema:
 - status: "completed", "needs_input", or "failed"
@@ -2894,6 +2939,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     before_manifest_path = task_dir / "manifest-before.json"
 
     update_task(task_id, status="running", started_at=utc_now(), error="")
+    verification_capability = verification.begin(task_id)
     with lock:
         current_turn_id = str(tasks.get(task_id, {}).get("current_turn_id") or "")
     start_activity(task_id, current_turn_id)
@@ -2958,7 +3004,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         proc = subprocess.Popen(
             args,
             cwd="/config",
-            env=codex_env(),
+            env={**codex_env(), "HA_VERIFICATION_CAPABILITY": verification_capability},
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -3062,6 +3108,9 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     config_check = assessment["config_check"]
     recovery_files = assessment["recovery_files"]
     lovelace_results = assessment["lovelace_results"]
+    verification.after_changes(task_id, lovelace_results)
+    if task_cancellation_requested(task_id):
+        return
 
     if timed_out:
         final = {
@@ -3082,6 +3131,11 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         note = "Home Assistant could not check the configuration, so the change is applied but unverified: " + config_check["errors"]
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
 
+    checks = tasks.get(task_id, {}).get("verification") or []
+    incomplete = sum(check.get("status") in {"failed", "issues", "unavailable", "disabled"} for check in checks)
+    if incomplete:
+        note = f"Verification needs review: {incomplete} check(s) failed, found issues, or could not run. See the evidence below."
+        final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
     task_status = "waiting_for_input" if status == "needs_input" else status
     completed_at = utc_now() if status != "needs_input" else ""
     session_id = (
@@ -3128,6 +3182,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         "recovery_files": recovery_files,
         "lovelace_results": lovelace_results,
         "attachments": attachments,
+        "verification": copy.deepcopy(tasks.get(task_id, {}).get("verification") or []),
+        "verification_attachments": copy.deepcopy(tasks.get(task_id, {}).get("verification_attachments") or []),
         "response": {
             "status": status,
             "summary": final.get("summary", ""),
@@ -3159,6 +3215,7 @@ def _run_background_task(
     except Exception as exc:
         fail_task_launch(task_id, exc, session_id=session_id, summary="The Codex task could not finish.")
     finally:
+        verification.end(task_id)
         with lock:
             proc = running_processes.get(task_id)
         if proc is not None:
@@ -3556,6 +3613,9 @@ def get_attachment(task_id: str, attachment_id: str) -> Response:
         attachment = find_attachment(task, attachment_id) if task else None
     if attachment is None:
         return jsonify({"ok": False, "error": "attachment not found"}), 404
+    if attachment.get("origin") == "verification" and attachment.get("expires_at", 0) <= time.time():
+        verification.cleanup()
+        return jsonify({"ok": False, "error": "verification screenshot expired"}), 410
     task_dir = get_task_dir(task_id).resolve()
     relative = str(attachment.get("path") or "")
     path = (task_dir / relative).resolve()
@@ -3586,6 +3646,8 @@ def get_attachment(task_id: str, attachment_id: str) -> Response:
         max_age=0,
     )
     response.headers["Cache-Control"] = "private, max-age=3600"
+    if attachment.get("origin") == "verification":
+        response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
     return response
@@ -3660,6 +3722,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
                 error="", started_at="", completed_at="", returncode=None,
                 changes={}, validation_errors=[], lovelace_results=[], attachments=[],
                 config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[],
+                verification=[], verification_attachments=[],
             )
         except Exception as exc:
             record_background_start_failure(task_id, exc)
@@ -3683,6 +3746,8 @@ def main() -> None:
         print(f"Codex version probe failed: {version['error']}", flush=True)
     print(f"Codex sandbox preflight: {sandbox['message']}", flush=True)
     load_task_index()
+    verification.cleanup()
+    verification.serve(DATA_ROOT / "verification.sock")
     auto_start_login_if_needed()
     threading.Thread(target=stdin_reader, daemon=True).start()
     app.run(host="0.0.0.0", port=9123)

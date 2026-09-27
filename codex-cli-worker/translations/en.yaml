@@ -29,6 +29,9 @@ configuration:
   ha_url:
     name: Home Assistant API URL
     description: API base URL used by the app for Home Assistant calls. The default Supervisor Core proxy is recommended.
+  browser_verification:
+    name: Dashboard browser verification
+    description: Inspect dashboards in a bundled browser and attach desktop and mobile screenshots. Uses a temporary local identity provided by the Codex integration, without a user password or manually created token. Turn off on systems with limited memory.
   HA_TOKEN:
     name: HA_TOKEN
     description: Optional Home Assistant token exposed to Codex subprocesses as the HA_TOKEN environment variable.

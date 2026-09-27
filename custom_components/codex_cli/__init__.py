@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
 
 from .api import CodexCliApiClient, CodexCliApiError
 from .const import (
@@ -33,6 +34,7 @@ from .const import (
 )
 from .coordinator import CodexCliCoordinator
 from .discovery import async_discover_worker
+from .browser_auth import STORAGE_KEY, BrowserSessions, BrowserSessionView, DiagnosticView
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -66,6 +68,8 @@ class CodexCliRuntimeData:
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """Set up the Codex CLI integration."""
     _async_register_services(hass)
+    hass.http.register_view(BrowserSessionView(hass))
+    hass.http.register_view(DiagnosticView(hass))
     return True
 
 
@@ -84,6 +88,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await coordinator.async_config_entry_first_refresh()
 
+    broker = BrowserSessions(hass, worker.api_token)
+    await broker.setup()
+    hass.data.setdefault(DOMAIN, {})["browser_sessions"] = broker
+    entry.async_on_unload(broker.close)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -94,6 +103,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         entry.runtime_data = None
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove the integration-owned identity and its credentials on uninstall."""
+    store = Store(hass, 1, STORAGE_KEY)
+    data = await store.async_load() or {}
+    user = await hass.auth.async_get_user(data.get("user_id", ""))
+    if user and user.system_generated:
+        await hass.auth.async_remove_user(user)
+    await store.async_remove()
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

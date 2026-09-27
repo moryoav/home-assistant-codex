@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.58
+
+- Add authenticated configuration checks, bounded Core/app log reads, entity state expectations, and fresh dashboard configuration readback as task tools.
+- Bundle Chromium for desktop and mobile dashboard inspection, with screenshots and verification results kept with each conversation turn. Report blocked requests, missing cards, browser errors, and unavailable checks explicitly.
+- Create temporary local browser sessions through the Codex integration, without a Home Assistant password or manually created long-lived token. Restrict browser requests and revoke sessions on completion, expiry, and integration unload.
+- Remove Supervisor credentials from AI subprocess environments and exclude known credential files from new recovery snapshots while retaining change detection.
+- Include default storage dashboards in automatic saves and verification. Add an option to disable browser work on systems with limited resources.
+
+Update both the **Codex CLI Worker** app and the **Codex** integration to **0.1.58**, then restart Home Assistant. See [verification behavior and limits](VERIFICATION.md).
+
 ## 0.1.57
 
 - **GPT-6 Sol and GPT-6 Luna can be selected.** Both appear in the add-on model option and in the chat's model menu. Sol is the workhorse for coding and everyday work and supports reasoning from Low through Ultra; Luna is the fast and affordable choice for easier tasks and supports Low through Max. GPT-5.6 Sol, Terra, and Luna stay available as older models. Model availability depends on your account.

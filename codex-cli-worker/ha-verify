@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Call the current turn's bounded verification tools over a private Unix socket."""
+import json
+import os
+import socket
+import sys
+
+
+def main():
+    try:
+        payload = json.loads(sys.argv[1]) if len(sys.argv) == 2 else None
+        if not isinstance(payload, dict):
+            raise ValueError('Usage: ha-verify \'{"operation":"entity","entity_id":"light.kitchen"}\'')
+        payload["capability"] = os.environ.get("HA_VERIFICATION_CAPABILITY", "")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(140)
+            client.connect("/data/verification.sock")
+            client.sendall(json.dumps(payload).encode() + b"\n")
+            with client.makefile("rb") as response:
+                result = response.readline(128 * 1024)
+        if not result:
+            raise ValueError("Verification worker did not respond")
+        print(result.decode().strip())
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"status": "unavailable", "message": str(exc)}))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

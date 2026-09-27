@@ -1,0 +1,66 @@
+name: Verification checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-and-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Install test dependencies
+        run: |
+          pip install pytest-homeassistant-custom-component==0.13.337 flask pyyaml requests websocket-client
+          npm install --prefix "$RUNNER_TEMP/browser-deps" playwright@1.63.0 ws@8.18.3
+          "$RUNNER_TEMP/browser-deps/node_modules/.bin/playwright" install --with-deps chromium
+          echo "NODE_PATH=$RUNNER_TEMP/browser-deps/node_modules" >> "$GITHUB_ENV"
+      - name: Find the test browser
+        run: echo "HA_BROWSER_EXECUTABLE=$(node -e 'console.log(require("playwright").chromium.executablePath())')" >> "$GITHUB_ENV"
+      - name: Test worker and real Home Assistant authentication/frontend
+        env:
+          HA_BROWSER_NODE: node
+        run: pytest
+      - name: Exercise browser protocol and restrictions
+        run: node codex-cli-worker/tests/browser_verification.cjs
+      - name: Exercise chat evidence on desktop and mobile
+        run: |
+          python codex-cli-worker/tests/web_fixture.py > "$RUNNER_TEMP/web-fixture.log" 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:9137/preview/ > /dev/null; then break; fi
+            sleep 1
+          done
+          node codex-cli-worker/tests/browser_smoke.cjs
+
+  container:
+    name: Container (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build without publishing
+        run: docker build --build-arg BUILD_ARCH=${{ matrix.arch }} --build-arg BUILD_VERSION=pr-test -t verification-test codex-cli-worker
+      - name: Smoke test packaged Chromium
+        run: |
+          docker run --rm --entrypoint /usr/bin/chromium-browser verification-test --version
+          docker run --rm --entrypoint node verification-test -e 'const {chromium}=require("playwright-core"); (async()=>{const browser=await chromium.launch({executablePath:"/usr/bin/chromium-browser",headless:true,chromiumSandbox:false,args:["--disable-dev-shm-usage"]}); const page=await browser.newPage(); await page.setContent("<h1>Verification</h1>"); if(await page.locator("h1").innerText()!=="Verification") throw Error("Render failed"); await browser.close();})().catch(e=>{console.error(e);process.exit(1);})'

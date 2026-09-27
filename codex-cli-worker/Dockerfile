@@ -14,6 +14,8 @@ RUN apk add --no-cache \
     bash \
     bubblewrap \
     ca-certificates \
+    chromium \
+    font-noto \
     coreutils \
     git \
     jq \
@@ -38,6 +40,11 @@ RUN npm install -g --prefix /usr/local "@openai/codex@${CODEX_VERSION}" \
     && test "$(command -v codex)" = /usr/local/bin/codex \
     && /usr/local/bin/codex --version
 
+# Alpine packages Chromium for both supported architectures. Use its browser,
+# rather than downloading a glibc-only Playwright build into the image.
+RUN npm install --prefix /opt/verification --omit=dev playwright-core@1.63.0
+ENV NODE_PATH=/opt/verification/node_modules
+
 RUN pip3 install --no-cache-dir --break-system-packages \
     flask \
     pyyaml \
@@ -49,8 +56,10 @@ WORKDIR /data
 
 COPY run.sh /
 COPY server.py /
+COPY verification.py browser.cjs /
+COPY ha-verify /usr/local/bin/ha-verify
 COPY web /web
 
-RUN chmod a+x /run.sh /server.py
+RUN chmod a+x /run.sh /server.py /usr/local/bin/ha-verify
 
 CMD ["/run.sh"]

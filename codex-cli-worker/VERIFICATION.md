@@ -110,7 +110,8 @@ Supported sources are:
 
 - External frontend modules registered by Core and Lovelace resources returned by
   Core, plus static assets within each registered script or stylesheet directory.
-- Google Fonts CSS and fonts, jsDelivr (`cdn` and `fastly`, npm/GitHub paths),
+- Google Fonts CSS and fonts, jsDelivr (`cdn` and `fastly`, npm/GitHub assets
+  and npm `+esm` modules including their nested imports),
   cdnjs library assets, and unpkg assets with supported static file extensions.
 - Font, image, and stylesheet URLs referenced by loaded CSS.
 

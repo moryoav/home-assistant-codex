@@ -142,14 +142,30 @@ async function main() {
     // Exercise real browser fulfillment with deterministic external DNS/HTTPS.
     // The production fetcher still constructs and pins its own connection.
     const originalLookup = dns.lookup, originalRequest = https.request;
+    const modules = new Map([
+      ['https://registered.example.test/card/main.js', `
+        import {value} from 'https://cdn.jsdelivr.net/npm/fixture@1.0.0/+esm';
+        if (value !== 'loaded') throw Error('Nested ESM import failed');
+        fetch('/api/states/sensor.external_asset_loaded', {headers:{Authorization:'Bearer verification-session'}});
+      `],
+      ['https://cdn.jsdelivr.net/npm/fixture@1.0.0/+esm', `
+        export {value} from '/npm/@fixture/dependency@1.0.0/+esm';
+      `],
+      ['https://cdn.jsdelivr.net/npm/@fixture/dependency@1.0.0/+esm', `
+        export {value} from '/npm/fixture-leaf@1.0.0/index.js/+esm';
+      `],
+      ['https://cdn.jsdelivr.net/npm/fixture-leaf@1.0.0/index.js/+esm', "export const value = 'loaded';"],
+    ]);
+    const moduleRequests = [];
     external = true;
     try {
       dns.lookup = async host => {
-        assert.equal(host, 'registered.example.test');
+        assert(['registered.example.test', 'cdn.jsdelivr.net'].includes(host));
         return [{address: '8.8.8.8', family: 4}];
       };
       https.request = (url, options, callback) => {
-        assert.equal(url.href, 'https://registered.example.test/card/main.js');
+        assert(modules.has(url.href), url.href);
+        moduleRequests.push(url.href);
         assert(!options.headers.Authorization); assert(!options.headers.Cookie);
         const req = new EventEmitter();
         req.destroy = error => {req.emit('error', error); req.emit('close');};
@@ -157,7 +173,7 @@ async function main() {
           const response = new EventEmitter(); response.statusCode = 200;
           response.headers = {'content-type': 'text/javascript', 'access-control-allow-origin': '*'};
           callback(response);
-          response.emit('data', Buffer.from("fetch('/api/states/sensor.external_asset_loaded', {headers:{Authorization:'Bearer verification-session'}})"));
+          response.emit('data', Buffer.from(modules.get(url.href)));
           response.emit('end'); req.emit('close');
         });
         return req;
@@ -165,6 +181,7 @@ async function main() {
       const rendered = await inspect(input);
       assert.equal(rendered.status, 'captured', JSON.stringify(rendered));
       assert.equal(requests.filter(url => url === '/api/states/sensor.external_asset_loaded').length, 2);
+      for (const url of modules.keys()) assert.equal(moduleRequests.filter(request => request === url).length, 2, url);
     } finally {
       dns.lookup = originalLookup; https.request = originalRequest; external = false;
     }

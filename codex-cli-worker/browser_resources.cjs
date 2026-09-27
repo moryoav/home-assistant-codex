@@ -34,7 +34,8 @@ function cdnAsset(url) {
   if (url.hostname === 'fonts.googleapis.com') return ['/css', '/css2'].includes(url.pathname);
   if (url.hostname === 'fonts.gstatic.com') return url.pathname.startsWith('/s/') && CSS_ASSET.test(url.pathname);
   if (['cdn.jsdelivr.net', 'fastly.jsdelivr.net'].includes(url.hostname))
-    return /^\/(?:npm|gh)\//.test(url.pathname) && ASSET.test(url.pathname);
+    return (/^\/(?:npm|gh)\//.test(url.pathname) && ASSET.test(url.pathname)) ||
+      /^\/npm\/.+\/\+esm$/.test(url.pathname);
   if (url.hostname === 'cdnjs.cloudflare.com') return url.pathname.startsWith('/ajax/libs/') && ASSET.test(url.pathname);
   if (url.hostname === 'unpkg.com') return ASSET.test(url.pathname);
   return false;

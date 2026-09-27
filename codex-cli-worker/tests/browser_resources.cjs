@@ -28,6 +28,18 @@ async function main() {
     'https://fastly.jsdelivr.net/npm/daisyui@latest/dist/full.css',
     'https://cdnjs.cloudflare.com/ajax/libs/library/1/index.js',
     'https://unpkg.com/package/card.js']) assert(remote(url), url);
+  for (const host of ['cdn.jsdelivr.net', 'fastly.jsdelivr.net']) {
+    for (const file of ['lit@3.2.1/+esm', '@lit/reactive-element@2.0.4/+esm',
+      'lit-element@4.1.0/lit-element.js/+esm'])
+      assert(remote(`https://${host}/npm/${file}`, 'GET', 'script'), file);
+    const esm = `https://${host}/npm/lit@3.2.1/+esm`;
+    assert(!remote(esm, 'POST', 'script'));
+    assert(!remote(esm, 'GET', 'document'));
+    for (const pathname of ['/gh/lit/dist@3/+esm', '/npm/+esm', '/npm/lit@3.2.1/+esm/extra',
+      '/npm/lit@3.2.1/+esm-extra', '/npm/lit@3.2.1/%2besm'])
+      assert(!remote(`https://${host}${pathname}`, 'GET', 'script'), pathname);
+  }
+  assert(!remote('https://other.example.test/npm/lit@3.2.1/+esm', 'GET', 'script'));
   for (const url of ['http://cdn.jsdelivr.net/npm/card.js', 'https://cdn.jsdelivr.net:8443/npm/card.js',
     'https://user:password@cdn.jsdelivr.net/npm/card.js', 'https://cdn.jsdelivr.net.evil.test/npm/card.js',
     'https://cdn.jsdelivr.net/npm/card.js%2faction', 'https://cdn.jsdelivr.net/api/action.js',

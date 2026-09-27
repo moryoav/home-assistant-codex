@@ -72,6 +72,10 @@ then use a fresh readback. Do not equate an accepted command with a verified out
 4. The external-authentication bridge supplies a placeholder to page scripts. The
    controller substitutes the real token only on approved Core WebSocket/REST
    requests. HTTP redirects are blocked, including dashboard assets.
+   For an HTTP Core address, the temporary browser treats only that exact origin
+   as a secure context so Chromium can grant its local-network permission. This
+   does not encrypt HTTP or disable certificate checks, and request restrictions
+   still apply. Other origins receive no exception.
 5. Completion revokes the session. Core independently revokes it after 180 seconds,
    including authenticated sockets. Reload removes orphaned credentials; removing
    the integration removes its identity.

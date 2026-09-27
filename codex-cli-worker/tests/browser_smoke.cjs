@@ -396,6 +396,8 @@ function pngBuffer(width = 8, height = 6) {
     ]);
     await page.locator(".pending-file").waitFor();
     assert.equal(await page.locator(".pending-file").count(), 1);
+    // The accepted image appears before the rest of the batch finishes validation.
+    await page.locator("#error").filter({hasText: /notes\.txt is not a PNG/}).waitFor();
     assert.match(
       await page.locator("#error").textContent(),
       /notes\.txt is not a PNG/,

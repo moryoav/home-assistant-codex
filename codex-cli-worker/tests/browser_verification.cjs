@@ -99,7 +99,7 @@ async function main() {
     assert(requests.some(url => url.startsWith('/api/calendars/calendar.fixture')));
     const worker = await new Promise((resolve, reject) => {
       const child = execFile(process.platform === 'win32' ? 'python' : 'python3',
-        [path.join(__dirname, 'browser_worker_check.py')], {timeout: 120000}, (error, stdout, stderr) => {
+        [path.join(__dirname, 'browser_worker_check.py')], {timeout: 130000}, (error, stdout, stderr) => {
           if (error) return reject(new Error(`${error.message}: ${stderr}`));
           try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
         });

@@ -131,6 +131,7 @@ class VerificationTests(unittest.TestCase):
         ws.close.assert_called_once()
 
     def test_paths_and_disabled_browser_fail_before_auth(self):
+        """Reject unsafe paths and prevent disabled captures from issuing credentials or launching."""
         with patch.object(self.engine, "core") as core:
             for path in ("https://evil.test/", "//evil", "/lovelace/%2e%2e", "/lovelace/0?token=x"):
                 self.assertEqual(self.engine.run("chat", {"operation": "dashboard", "path": path})["status"], "unavailable")
@@ -173,9 +174,11 @@ class VerificationTests(unittest.TestCase):
         self.assertNotIn("HASSIO_TOKEN", environment)
 
     def test_browser_memory_budget_stops_process_and_revokes_session(self):
+        """Stop an over-budget browser and revoke its temporary session."""
         original_popen = subprocess.Popen
         processes = []
         def launch(_args, **kwargs):
+            """Substitute a real waiting process for Chromium to observe cleanup."""
             process = original_popen([sys.executable, "-c", "import sys,time; sys.stdin.read(); time.sleep(60)"], **kwargs)
             processes.append(process)
             return process
@@ -188,6 +191,7 @@ class VerificationTests(unittest.TestCase):
         core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "lease"})
 
     def test_browser_memory_option_defaults_and_rejects_unbounded_values(self):
+        """Keep missing or malformed options bounded while accepting supported budgets."""
         self.assertEqual(browser_memory_limit({}), DEFAULT_BROWSER_MEMORY_LIMIT_MIB)
         for invalid in (None, True, False, 0, -1, 511, 8193, "2048", 2048.5):
             self.assertEqual(browser_memory_limit({"browser_memory_limit_mib": invalid}), DEFAULT_BROWSER_MEMORY_LIMIT_MIB)
@@ -195,8 +199,10 @@ class VerificationTests(unittest.TestCase):
             self.assertEqual(browser_memory_limit({"browser_memory_limit_mib": limit}), limit)
 
     def test_browser_uses_configured_budget_for_each_capture(self):
+        """Apply lowered and raised budgets on successive captures without caching options."""
         original_popen = subprocess.Popen
         def launch(_args, **kwargs):
+            """Return a result after the memory guard has sampled the process."""
             return original_popen([sys.executable, "-c",
                 "import sys,time; sys.stdin.read(); time.sleep(.3); print('{\"status\":\"issues\",\"screenshots\":[]}')"], **kwargs)
         for limit, measured, status in ((512, 600, "unavailable"), (2048, 1600, "issues")):
@@ -216,6 +222,7 @@ class VerificationTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "Linux container process accounting")
     def test_memory_accounting_includes_swap_and_falls_back_if_pss_unavailable(self):
+        """Account for swapped pages and stay conservative without valid proportional data."""
         with patch("verification.Path.read_text", return_value="Rss: 2000 kB\nPss: 600 kB\nSwapPss: 100 kB\n"):
             self.assertEqual(browser_process_memory(123, 500), 700 * 1024)
         for content in ("Rss: 2000 kB\n", "Pss: invalid kB\n", "Pss: -1 kB\n"):
@@ -226,6 +233,7 @@ class VerificationTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "Linux shared-memory accounting")
     def test_shared_browser_pages_are_not_charged_twice(self):
+        """Use real shared pages to distinguish proportional accounting from summed RSS."""
         script = "import os,time; shared=bytearray(64*1024*1024); child=os.fork(); print('ready',flush=True); time.sleep(60)"
         process = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True, start_new_session=True)
         tracked = {}

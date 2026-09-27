@@ -11,6 +11,7 @@ from verification import Verification
 
 
 def capture(payload):
+    """Run one issued session through the worker and check retained image files."""
     with tempfile.TemporaryDirectory(prefix="worker-browser-test-") as directory, ExitStack() as stack:
         root = Path(directory)
         config = root / "config"

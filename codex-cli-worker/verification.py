@@ -202,6 +202,7 @@ class Verification:
                 "view_count": len(actual.get("views", []))}
 
     def browser(self, task_id, payload, turn_id=None, capability=None):
+        """Capture a dashboard within the configured budget and retain turn evidence."""
         if turn_id is None:
             turn_id = self.worker.tasks.get(task_id, {}).get("current_turn_id")
         capability = capability or self.capabilities.get(task_id)

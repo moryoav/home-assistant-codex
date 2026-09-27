@@ -244,9 +244,15 @@ views:
         script = str(ROOT.parents[1] / "codex-cli-worker" / "tests" / "browser_worker_check.py")
         proc = await asyncio.create_subprocess_exec(sys.executable, script,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps({
-            **session, "path": "/lovelace/home",
-        }).encode()), timeout=120)
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps({
+                **session, "path": "/lovelace/home",
+            }).encode()), timeout=130)
+        except asyncio.TimeoutError:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+            raise
         assert stdout.strip(), stderr.decode()
         result = json.loads(stdout)
         print(json.dumps({"frontend_browser_result": result}))

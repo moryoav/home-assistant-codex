@@ -101,8 +101,10 @@ WebRTC card scripts without granting access to arbitrary integration GET endpoin
 Loading a script does not permit its service calls, writes, or unsupported APIs.
 Custom Icons' active-set, list, cache, and single-icon reads are supported with
 bounded set/icon names; icon selection and download operations remain blocked.
-Browser Mod connection/registration and navigation-controller APIs remain
-unsupported, so features depending on them may still report blocked requests.
+Knob Swipe Navigation's configuration read is supported. Its live knob-event
+subscriptions and navigation-result writes remain blocked, as do Browser Mod
+connection/registration requests. Features depending on them may still report
+blocked requests.
 
 Public HTTPS assets are fetched through a separate client that sends no Home
 Assistant token, browser cookies, authorization, origin, or referrer headers.
@@ -204,7 +206,10 @@ external HTTPS transport, including header stripping, DNS pinning, private
 addresses, redirect revalidation, and response limits, without external requests.
 
 Set `HA_BROWSER_NODE=node` to include the real Home Assistant frontend test under
-`tests/ha`. CI also builds both container architectures. Fixture tests are not a
+`tests/ha`. CI runs broker discovery and the real frontend capture on Core
+2026.6.1 and 2026.9.4, covering both HTTP static-file implementations. The browser
+uses the broker's discovered resources rather than a hand-written resource list.
+CI also builds both container architectures. Fixture tests are not a
 deployment test of a user's HAOS kernel, AppArmor policy, or installed custom cards.
 
 References: [app authentication](https://developers.home-assistant.io/docs/apps/communication/),

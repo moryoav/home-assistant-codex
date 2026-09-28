@@ -21,6 +21,9 @@ async function main() {
   assert(!allowMessage({type: 'custom_icons/icon', set: 'local', icon: '../secret'}));
   assert(!allowMessage({type: 'custom_icons/list', set: '../local'}));
   assert(!allowMessage({type: 'custom_icons/activesets', active: true}));
+  assert(allowMessage({id: 6, type: 'knob_swipe_navigation/config'}));
+  assert(!allowMessage({type: 'knob_swipe_navigation/config', navigation_enabled: true}));
+  for (const type of ['knob_swipe_navigation/subscribe_rotations', 'knob_swipe_navigation/navigation_result']) assert(!allowMessage({type}));
   for (const type of ['frontend/get_icons', 'render_template', 'sensor/numeric_device_classes', 'weather/subscribe_forecast']) assert(allowMessage({type}));
   assert(allowMessage({ type: 'subscribe_events', event_type: 'state_changed' }));
   assert(!allowRequest(new URL('http://evil.test/local/card.js'), 'http://ha.test', 'GET'));
@@ -71,6 +74,9 @@ async function main() {
             ws.send(JSON.stringify({id:3,type:'weather/subscribe_forecast',entity_id:'weather.fixture',forecast_type:'daily'}));
             ws.send(JSON.stringify({id:4,type:'call_service',domain:'system_log',service:'write'}));
             ws.send(JSON.stringify({id:5,type:'call_service',domain:'persistent_notification',service:'create'}));
+            ws.send(JSON.stringify({id:20,type:'knob_swipe_navigation/config'}));
+            ${bad ? `ws.send(JSON.stringify({id:21,type:'knob_swipe_navigation/subscribe_rotations'}));
+            ws.send(JSON.stringify({id:22,type:'knob_swipe_navigation/navigation_result',result:'navigated'}));` : ''}
             ${external ? "ws.send(JSON.stringify({id:6,type:'lovelace/resources'}));" : ''}
             await fetch('/api/states/light.kitchen', {headers:{Authorization:'Bearer '+token.access_token}});
             await fetch('/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02', {headers:{Authorization:'Bearer '+token.access_token}});
@@ -124,6 +130,7 @@ async function main() {
     assert.equal(localHttp.status, 'captured', JSON.stringify(localHttp));
     assert.equal(localHttp.screenshots.length, 2);
     assert(upstream.includes('weather/subscribe_forecast'));
+    assert(upstream.includes('knob_swipe_navigation/config'));
     assert(requests.some(url => url.startsWith('/api/calendars/calendar.fixture')));
     const worker = await new Promise((resolve, reject) => {
       const child = execFile(process.platform === 'win32' ? 'python' : 'python3',
@@ -191,12 +198,16 @@ async function main() {
     assert(second.errors.some(error => error.includes('Custom element')));
     assert(second.errors.some(error => error.includes('HTTP 404')));
     assert(second.blocked.includes('WebSocket call_service (light.turn_on)'));
+    assert(second.blocked.includes('WebSocket knob_swipe_navigation/subscribe_rotations'));
+    assert(second.blocked.includes('WebSocket knob_swipe_navigation/navigation_result'));
     assert(second.blocked.includes('GET /unsafe-action.js'));
     assert(!requests.includes('/unsafe-action.js'));
     assert.equal(second.findings.find(item => item.message === 'Fixture custom card error').count, 2);
     assert(second.blocked.includes('Redirect /local/redirect.js'));
     assert.equal(redirectedRequests, 0);
     assert(!upstream.includes('call_service'));
+    assert(!upstream.includes('knob_swipe_navigation/subscribe_rotations'));
+    assert(!upstream.includes('knob_swipe_navigation/navigation_result'));
     assert(!requests.some(url => url.startsWith('/api/services')));
     reject = true;
     assert.equal((await inspect(input)).status, 'unavailable');

@@ -11,7 +11,16 @@ permissions:
 
 jobs:
   browser-and-auth:
+    name: Browser and auth (Core ${{ matrix.core }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - core: '2026.6.1'
+            pytest-ha: '0.13.337'
+          - core: '2026.9.4'
+            pytest-ha: '0.13.367'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -22,7 +31,7 @@ jobs:
           node-version: '22'
       - name: Install test dependencies
         run: |
-          pip install pytest-homeassistant-custom-component==0.13.337 flask pyyaml requests websocket-client
+          pip install pytest-homeassistant-custom-component==${{ matrix.pytest-ha }} homeassistant==${{ matrix.core }} flask pyyaml requests websocket-client
           python codex-cli-worker/tests/install_frontend_test_deps.py
           npm install --prefix "$RUNNER_TEMP/codex-test" @openai/codex@0.157.1
           echo "HA_TEST_CODEX=$RUNNER_TEMP/codex-test/node_modules/.bin/codex" >> "$GITHUB_ENV"

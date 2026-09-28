@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fix discovery of individual static files on Home Assistant Core 2026.9.4 so Browser Mod, Custom Icons, and WebRTC scripts can load during dashboard captures.
+- Allow Knob Swipe Navigation's configuration read while keeping knob-event subscriptions and navigation-result writes blocked.
+- Test resource discovery and real frontend captures against Core 2026.6.1 and 2026.9.4.
+
+Update the integration and restart Home Assistant to load the discovery fix when released. The navigation configuration read also requires the updated worker.
+
 ## 0.1.61
 
 - Load dashboard scripts, icons, and styles from Home Assistant's registered static routes, including integrations that serve assets outside `/local` and `/hacsfiles`.

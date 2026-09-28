@@ -91,8 +91,9 @@ for that operation; it does not allow other installed apps' logs.
 
 ## Dashboard resources
 
-Version 0.1.61 requires both worker and integration updates, followed by a Home
-Assistant restart, to discover custom integrations' static routes. Older brokers
+Update both the worker and integration to **0.1.62**, followed by a Home
+Assistant restart, to discover custom integrations' static routes, including
+individual files on Core 2026.9.4. Older brokers
 still support the original built-in paths but cannot supply the new route list.
 
 Core supplies registered static file and directory URLs, never filesystem paths.

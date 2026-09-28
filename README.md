@@ -15,6 +15,14 @@ If this project is useful to you, you can support its continued development:
 
 Run Codex CLI against your Home Assistant configuration folder from Home Assistant.
 
+## Dashboard browser verification
+
+**Codex can open your Home Assistant dashboards in a real browser, capture desktop and mobile screenshots, and inspect them while working on a change.** It can use those images to review the layout and revise its work. Screenshots and check results appear with the conversation, including missing cards, failed resources, and browser errors.
+
+Try: **"Inspect `/lovelace/home` on desktop and mobile, show me screenshots, and report any layout or card errors."** Replace the path with your dashboard view. Saved storage dashboards also get automatic captures of the first views that fit the task's remaining time.
+
+The bundled browser signs in automatically with a temporary, local, read-only identity. No Home Assistant password or manually created token is needed. Update both the worker app and integration, and leave **Enable built-in browser** on. See [setup, supported resources, and verification limits](codex-cli-worker/VERIFICATION.md).
+
 ## Example Flow
 
 Ask Home Assistant Assist to make a configuration or dashboard change:
@@ -66,7 +74,8 @@ This repository contains two pieces:
 - Supports Codex device-code sign-in through Home Assistant persistent notifications.
 - Reports active task count, latest task status, auth status, and task-running state.
 - Uses Home Assistant Ingress for the app UI; the worker HTTP port is not exposed to the LAN.
-- Tasks can verify Home Assistant configuration and entity states, read Core logs, and inspect dashboards at desktop and mobile sizes. Screenshots and check results appear with the conversation. Browser access uses a temporary local identity, without asking for your Home Assistant password or a long-lived token. See [verification setup and limits](codex-cli-worker/VERIFICATION.md).
+- Inspects dashboards in a real browser at desktop and mobile sizes, with screenshots and check results in the conversation.
+- Fetches fresh entity states, checks saved dashboard configuration, and reads Core logs to help verify changes and diagnose problems.
 
 ## Security Notes
 

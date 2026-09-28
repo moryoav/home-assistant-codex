@@ -1,5 +1,14 @@
 # Home Assistant verification
 
+**Codex can inspect your live dashboards in a real browser at desktop and mobile
+sizes, review screenshots during a task, and revise its work.** The conversation
+shows the screenshots and findings, including missing cards, failed resources,
+and browser errors.
+
+Ask: **"Inspect `/lovelace/home` on desktop and mobile, show me screenshots, and
+report any layout or card errors."** Replace the path with your dashboard view.
+Keep **Enable built-in browser** enabled in the app's **Configuration** tab.
+
 Update both the worker and the Codex integration to use authenticated diagnostics
 and the bundled dashboard browser. No Home Assistant password or manually created
 long-lived token is needed. These tools do not need the optional `HA_TOKEN` setting.
@@ -191,6 +200,10 @@ controls are not isolation against a compromised root process. Do not describe t
 as complete credential isolation or a hardened browser sandbox.
 
 ## Validation
+
+Live browser verification has been confirmed working by the maintainer on their
+Home Assistant installation. Custom-card compatibility remains subject to the
+resource and permission limits above.
 
 Run `pytest`. Tests under `tests/ha` use real Home Assistant authentication.
 `python tests/codex_verification_smoke.py` uses the pinned CLI and a local mock model

@@ -2,9 +2,23 @@
 
 This app runs Codex CLI tasks against the Home Assistant config folder mounted at `/config`.
 
-From 0.1.58, tasks can read Home Assistant states and logs, check configuration,
-and inspect dashboards in a bundled browser without a user password or manually
-created token. Update both the app and integration. See [verification tools,
+## Dashboard browser verification
+
+**Codex can open your dashboards in a real browser and inspect desktop and mobile
+screenshots while working on a change.** It can review the layout and revise its
+work. Screenshots and findings appear with the conversation, including missing
+cards, failed resources, and browser errors.
+
+For example, ask: **"Inspect `/lovelace/home` on desktop and mobile, show me
+screenshots, and report any layout or card errors."** Replace the path with your
+dashboard view. Saved storage dashboards also get automatic captures of the first
+views that fit the task's remaining time. Request other views and YAML dashboards
+explicitly. Automatic captures after the answer are labeled separately from
+screenshots Codex inspected during the task.
+
+Browser sign-in uses a temporary, local, read-only identity, without a Home
+Assistant password or manually created token. Tasks can also fetch fresh entity
+states, read Core logs, and check configuration. See [verification tools,
 authentication, screenshots, and limits](VERIFICATION.md).
 
 From 0.1.61, dashboard captures also load integrations' registered static assets
@@ -26,6 +40,8 @@ it to values such as 2048 or 3072 if the host has enough free memory alongside
 Home Assistant and other apps. This is a capture limit, not reserved RAM or a
 limit on the whole app. Save the options and restart the app if Home Assistant
 prompts you; the next capture uses the new value.
+
+## Distribution
 
 This app is distributed from:
 

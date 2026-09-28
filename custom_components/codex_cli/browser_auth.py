@@ -37,9 +37,12 @@ def browser_resources(hass: HomeAssistant) -> dict[str, list[str]]:
             for route in resource:
                 handler = route.handler
                 # HA registers individual static files as partials of these
-                # serving functions. A .js-looking URL alone proves nothing.
+                # serving functions, moved to http.server in newer Core releases.
+                # A .js-looking URL alone proves nothing.
                 if (route.method == "GET" and isinstance(handler, partial)
-                    and getattr(handler.func, "__module__", "") == "homeassistant.components.http"
+                    and getattr(handler.func, "__module__", "") in {
+                        "homeassistant.components.http", "homeassistant.components.http.server",
+                    }
                     and getattr(handler.func, "__name__", "") in {"_serve_file", "_serve_file_with_cache_headers"}):
                     files.add(resource.canonical)
     extra_urls = set()

@@ -9,7 +9,8 @@ authentication, screenshots, and limits](VERIFICATION.md).
 
 From 0.1.61, dashboard captures also load integrations' registered static assets
 and supported public HTTPS scripts, styles, and fonts. Update **both** the app and
-integration to 0.1.61 and restart Home Assistant for static-route discovery.
+integration to **0.1.62** and restart Home Assistant for static-route discovery,
+including individual static files on Core 2026.9.4.
 Repeated findings are grouped by cause and viewport. Service calls and writes
 remain blocked. See [resource compatibility and privacy](VERIFICATION.md#dashboard-resources).
 

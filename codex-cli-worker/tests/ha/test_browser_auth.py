@@ -25,6 +25,8 @@ spec.loader.exec_module(auth)
 
 
 async def test_resource_manifest_only_contains_registered_static_routes(hass, tmp_path):
+    """Use Core's real registration and broker, including individual file routes."""
+    from functools import partial
     from homeassistant.components.http import StaticPathConfig
     assert await async_setup_component(hass, "http", {})
     assets = tmp_path / "assets"
@@ -33,21 +35,38 @@ async def test_resource_manifest_only_contains_registered_static_routes(hass, tm
     script.write_text("export const card = true;")
     await hass.http.async_register_static_paths([
         StaticPathConfig("/browser_mod.js", str(script), True),
+        StaticPathConfig("/custom_icons/main.js", str(script), True),
+        StaticPathConfig("/webrtc/webrtc-camera.js", str(script), True),
         StaticPathConfig("/uncached.js", str(script), False),
-        StaticPathConfig("/custom_icons", str(assets), True),
+        StaticPathConfig("/knob_swipe_navigation", str(assets), True),
+        StaticPathConfig("/uncached-assets", str(assets), False),
     ])
     async def action(request):
         return web.Response(text="not a static route")
     hass.http.app.router.add_get("/unsafe-action.js", action)
+    # A matching function name alone must not turn an arbitrary view into an asset.
+    async def _serve_file(path, request):
+        return web.Response(text="not a Home Assistant static handler")
+    hass.http.app.router.add_get("/lookalike.js", partial(_serve_file, str(script)))
+    hass.http.app.router.add_post("/post-only.js", action)
     hass.data["frontend_extra_module_url"] = types.SimpleNamespace(
         urls={"/browser_mod.js", "https://assets.example.test/card.js"})
-    resources = auth.browser_resources(hass)
-    assert "/browser_mod.js" in resources["files"]
-    assert "/uncached.js" in resources["files"]
-    assert "/custom_icons" in resources["directories"]
-    assert "/unsafe-action.js" not in resources["files"]
-    assert "https://assets.example.test/card.js" in resources["extra_urls"]
-    assert str(tmp_path) not in json.dumps(resources)
+    broker = auth.BrowserSessions(hass, "paired-worker")
+    await broker.setup()
+    try:
+        with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"):
+            session = await broker.issue()
+        resources = session["resources"]
+        assert set(resources["files"]) == {
+            "/browser_mod.js", "/custom_icons/main.js", "/webrtc/webrtc-camera.js", "/uncached.js",
+            # Core also registers a file handler for each directory's exact URL.
+            "/knob_swipe_navigation", "/uncached-assets",
+        }
+        assert set(resources["directories"]) == {"/knob_swipe_navigation", "/uncached-assets"}
+        assert "https://assets.example.test/card.js" in resources["extra_urls"]
+        assert str(tmp_path) not in json.dumps(resources)
+    finally:
+        broker.close()
 
 
 async def test_resource_discovery_failure_does_not_leave_credentials(hass):
@@ -178,7 +197,13 @@ async def test_read_only_session_cannot_save_dashboard(hass, hass_ws_client):
     try:
         with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"):
             session = await broker.issue()
-        client = await hass_ws_client(hass, access_token=session["access_token"])
+        # This short auth test does not exercise keepalives. aiohttp 3.14.3 can
+        # schedule a deferred heartbeat after a server-initiated close; disable
+        # that unrelated timer while retaining real authentication and revocation.
+        websocket_response = web.WebSocketResponse
+        with patch("homeassistant.components.websocket_api.http.web.WebSocketResponse",
+                   side_effect=lambda **kwargs: websocket_response(**{**kwargs, "heartbeat": None})):
+            client = await hass_ws_client(hass, access_token=session["access_token"])
         await client.send_json({"id": 1, "type": "lovelace/config/save", "config": {"views": []}})
         response = await client.receive_json()
         assert response["success"] is False
@@ -187,6 +212,8 @@ async def test_read_only_session_cannot_save_dashboard(hass, hass_ws_client):
         from aiohttp import WSMsgType
         closed = await asyncio.wait_for(client.receive(), timeout=2)
         assert closed.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}
+        await client.close()
+        await hass.async_block_till_done()
     finally:
         broker.close()
 

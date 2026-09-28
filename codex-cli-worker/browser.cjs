@@ -23,6 +23,10 @@ const READ_MESSAGES = new Set([
 
 function allowMessage(message) {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  // This handler only returns frontend configuration. Do not subscribe this
+  // capture browser to physical knob events or report navigation results.
+  if (message.type === 'knob_swipe_navigation/config')
+    return Object.keys(message).every(key => ['id', 'type'].includes(key));
   // These custom_icons handlers only return active sets, icon lists, cached
   // icons, or one icon. Selection/download handlers remain blocked. Bound names
   // before forwarding because local icon handlers construct filesystem paths.

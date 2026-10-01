@@ -80,9 +80,10 @@ jobs:
         run: |
           docker run --rm --entrypoint /usr/bin/chromium-browser verification-test --version
           docker run --rm --entrypoint node verification-test -e 'const {chromium}=require("playwright-core"); (async()=>{const browser=await chromium.launch({executablePath:"/usr/bin/chromium-browser",headless:true,chromiumSandbox:false,args:["--disable-dev-shm-usage"]}); const page=await browser.newPage(); await page.setContent("<h1>Verification</h1>"); if(await page.locator("h1").innerText()!=="Verification") throw Error("Render failed"); await browser.close();})().catch(e=>{console.error(e);process.exit(1);})'
-      - name: Download the Home Assistant documentation with the packaged Git
+      - name: Download the Home Assistant documentation and read it from the Codex sandbox
+        # Bubblewrap needs namespace privileges that the runner's default container profile withholds.
         run: |
-          docker run --rm --entrypoint python3 verification-test -c 'import sys; sys.path.insert(0, "/"); from pathlib import Path; import server; info = server.download_ha_docs(Path("/tmp/ha-docs")); pages = len(list(Path("/tmp/ha-docs/source/_integrations").glob("*.markdown"))); print(info["commit"], pages, "integration pages"); assert pages > 500'
+          docker run --rm --privileged --entrypoint sh -v "$PWD/codex-cli-worker/tests:/tests:ro" verification-test /tests/local_docs_container.sh
       - name: Test packaged browser with loopback and LAN HTTP origins
         run: |
           docker run --rm --entrypoint sh -v "$PWD/codex-cli-worker/tests:/tests:ro" verification-test -c 'npm install --prefix /tmp/test-deps ws@8.18.3 >/dev/null && NODE_PATH=/tmp/test-deps/node_modules:/opt/verification/node_modules node /tests/browser_verification.cjs'

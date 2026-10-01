@@ -73,10 +73,6 @@ def main():
 
         provider = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
         threading.Thread(target=provider.serve_forever, daemon=True).start()
-        # Like /data/ha-docs, the documentation copy lives outside the workspace and /tmp.
-        docs = tempfile.TemporaryDirectory(prefix="ha-docs-test-", dir=Path.home())
-        page = Path(docs.name) / "light.markdown"
-        page.write_text("Light documentation\n", encoding="utf-8")
         try:
             for mode in ("workspace-write", "read-only"):
                 home = root / mode
@@ -87,10 +83,6 @@ def main():
                     "import socket; s=socket.socket(socket.AF_UNIX); s.connect(" + repr(path) + ")"],
                     cwd=root, env=environment, capture_output=True, text=True, timeout=30)
                 assert probe.returncode != 0 and "Operation not permitted" in probe.stderr, probe
-                read = subprocess.run([binary, "sandbox", "-c", f'sandbox_mode="{mode}"', "--", sys.executable, "-c",
-                    "import sys; sys.stdout.write(open(" + repr(str(page)) + ").read())"],
-                    cwd=root, env=environment, capture_output=True, text=True, timeout=30)
-                assert read.returncode == 0 and read.stdout == "Light documentation\n", read
                 # The test supplies the private socket path to the trusted MCP process.
                 args = [binary, "exec", "--sandbox", mode, "--skip-git-repo-check", "--json", "--model", "gpt-5.1-codex",
                         "-c", 'approval_policy="never"', "-c", 'model_provider="fixture"',
@@ -108,10 +100,8 @@ def main():
                 assert checks and checks[-1]["status"] == "passed", (result.stdout, result.stderr)
                 assert len(received) % 2 == 0, received
             assert len(received) == 4
-            print("Pinned CLI verification passed: shell sockets denied, local documentation readable, "
-                  "MCP checks work in workspace-write and read-only.")
+            print("Pinned CLI verification passed: shell sockets denied, MCP checks work in workspace-write and read-only.")
         finally:
-            docs.cleanup()
             service.shutdown()
             service.server_close()
             provider.shutdown()

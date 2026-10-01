@@ -546,6 +546,201 @@ function pngBuffer(width = 8, height = 6) {
       await page.locator("#error").textContent(),
       /cloud-photo\.jpg is empty or could not be read/,
     );
+    // Queue: while one chat works, messages sent elsewhere wait in line. The
+    // fixture keeps a chat whose message starts with "Take your time" working until
+    // it is released.
+    const queueButton = page.getByRole("button", {
+      name: "Add message to queue",
+      exact: true,
+    });
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    await page
+      .locator("#message")
+      .fill(
+        "Take your time and review every automation that uses the porch motion sensor.",
+      );
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Stop task" }).waitFor();
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    await page
+      .locator("#notice")
+      .filter({ hasText: /Another chat is working\. You can send this message now/ })
+      .waitFor();
+    assert.match(
+      await page.locator("#notice").textContent(),
+      /wait in the queue and start on its own when the running chat finishes\.$/,
+    );
+    const typo = "Add a sunset ofset to the evening lights.";
+    const corrected = "Add a 20-minute sunset offset to the evening lights.";
+    await page.locator("#message").fill(typo);
+    await queueButton.click();
+    const queuedBubble = page.locator("#messages .message.user.queued");
+    await queuedBubble.waitFor();
+    assert.equal(await queuedBubble.textContent(), typo);
+    assert.equal(
+      await page.locator("#chat-status").textContent(),
+      "In queue · not sent yet",
+    );
+    assert.equal(await page.locator("#messages .answer").count(), 0);
+    assert.match(
+      await page.locator("#queued-note").textContent(),
+      /^Next in line\./,
+    );
+    assert.match(
+      await page.locator("#notice").textContent(),
+      /waiting in the queue and has not been sent yet/,
+    );
+    assert.equal(await page.locator("#send").isDisabled(), true);
+    assert.equal(await page.locator("#model-button").isDisabled(), true);
+    await page.locator(".chat-row.queued").waitFor();
+    assert.equal(
+      await page.locator("#chat-list .list-group").first().textContent(),
+      "In queue",
+    );
+    assert.equal(
+      await page.locator(".chat-row.queued .row-meta span").first().textContent(),
+      "Next in queue",
+    );
+    // Edit the waiting message; Escape cancels, Enter saves.
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    await page.locator("#queued-edit").fill("Discarded edit");
+    await page.locator("#queued-edit").press("Escape");
+    assert.equal(await queuedBubble.textContent(), typo);
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    await page.locator("#queued-edit").fill(corrected);
+    await page.locator("#queued-edit").press("Enter");
+    await page.waitForFunction(
+      (text) =>
+        document.querySelector("#messages .message.user.queued")
+          ?.textContent === text &&
+        document.querySelector(".chat-row.queued .row-title")?.textContent ===
+          text,
+      corrected,
+    );
+    assert.equal(await page.locator("#chat-title").textContent(), corrected);
+    // The chat that only exists in the queue survives a reload of the panel.
+    await page.reload();
+    await queuedBubble.waitFor();
+    assert.equal(await queuedBubble.textContent(), corrected);
+    // A follow-up in a saved chat waits too, with its image, below the history.
+    await page.locator('[data-task-id="preview-02"]').click();
+    await page
+      .locator("#messages")
+      .getByText("Here is a cartoon sheep", { exact: false })
+      .waitFor();
+    await page.locator("#file-input").setInputFiles({
+      name: "scarf.png",
+      mimeType: "image/png",
+      buffer: shot,
+    });
+    await page.locator(".pending-file").waitFor();
+    const followUp = "Give the sheep a scarf for the winter dashboard.";
+    await page.locator("#message").fill(followUp);
+    assert.match(
+      await page.locator("#notice").textContent(),
+      /and the message already in the queue finish\.$/,
+    );
+    await queueButton.click();
+    await queuedBubble.waitFor();
+    assert.equal(await page.locator("#messages .answer").count(), 1);
+    assert.match(
+      await page.locator("#chat-status").textContent(),
+      /^Completed · .* · next message in queue$/,
+    );
+    await page.waitForFunction(() => {
+      const img = document.querySelector(
+        "#messages .exchange.queued .user-attachments img",
+      );
+      return img && img.complete && img.naturalWidth > 0;
+    });
+    // The loaded image must not push the edit and remove buttons out of view.
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#queued-remove").getBoundingClientRect()
+          .bottom <=
+        document.querySelector("#messages").getBoundingClientRect().bottom,
+    );
+    await page.waitForFunction(
+      () => document.querySelectorAll(".chat-row.queued").length === 2,
+    );
+    assert.equal(await page.locator('[data-task-id="preview-02"]').count(), 1);
+    assert.equal(
+      await page
+        .locator('.chat-row.queued:has([data-task-id="preview-02"]) .row-meta span')
+        .first()
+        .textContent(),
+      "In queue · 2 of 2",
+    );
+    assert.match(
+      await page.locator("#queued-note").textContent(),
+      /after the running chat and the message ahead of it/,
+    );
+    // A third message is removed again, which also drops its unsent chat.
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    await page.locator("#message").fill("Changed my mind");
+    await queueButton.click();
+    await queuedBubble.waitFor();
+    await page.waitForFunction(
+      () => document.querySelectorAll(".chat-row.queued").length === 3,
+    );
+    await page.getByRole("button", { name: "Remove", exact: true }).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".chat-row.queued").length === 2 &&
+        document.querySelector("#chat-title").textContent === "New chat",
+    );
+    assert.equal(await page.locator("#error").isHidden(), true);
+    const waiting = await page.evaluate(async () => {
+      const listing = await (await fetch("tasks?summary=true&limit=1")).json();
+      return {
+        active: listing.active_task_id,
+        queue: listing.queue.map((entry) => [
+          entry.message,
+          entry.new_chat,
+          entry.position,
+        ]),
+      };
+    });
+    assert.notEqual(waiting.active, null);
+    assert.deepEqual(waiting.queue, [
+      [corrected, true, 1],
+      [followUp, false, 2],
+    ]);
+    // Releasing the working chat starts the queued messages in order.
+    await page.locator(".chat-row.queued .row-main").first().click();
+    await queuedBubble.waitFor();
+    await page.locator("#message").focus();
+    await page.screenshot({
+      path: path.join(output, "queue.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
+    await page.evaluate(() => fetch("fixture/release", { method: "POST" }));
+    await page
+      .locator("#messages")
+      .getByText("Preview response: " + corrected, { exact: true })
+      .waitFor({ timeout: 15000 });
+    assert.equal(await queuedBubble.count(), 0);
+    assert.equal(await page.locator("#messages .message.user").count(), 1);
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".chat-row.queued").length === 0 &&
+        document.querySelector("#send").getAttribute("aria-label") ===
+          "Send message",
+    );
+    await page.locator('[data-task-id="preview-02"]').click();
+    await page
+      .locator("#messages")
+      .getByText("Preview response: " + followUp, { exact: true })
+      .waitFor();
+    assert.equal(await queuedBubble.count(), 0);
+    assert.equal(
+      await page.locator("#messages .user-attachments img").count(),
+      1,
+    );
+    assert.equal(await page.locator("#notice").isHidden(), true);
     await page.getByRole("button", { name: "Open settings" }).click();
     await page
       .getByText("Signed in (local preview)", { exact: true })
@@ -752,7 +947,7 @@ function pngBuffer(width = 8, height = 6) {
     await webview.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: queued messages (wait behind a working chat, edit, remove, start in order), attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

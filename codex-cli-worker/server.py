@@ -56,6 +56,7 @@ CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
 CODEX_BINARY = "/usr/local/bin/codex"
 AGENTS_PATH = CONFIG_ROOT / "AGENTS.md"
 TASK_STATE_FILE = DATA_ROOT / "task_index.json"
+MESSAGE_QUEUE_FILE = DATA_ROOT / "message_queue.json"
 
 DEFAULT_OPTIONS = {
     "codex_model": "default",
@@ -230,6 +231,9 @@ auth_lock = threading.RLock()
 tasks: dict[str, dict[str, Any]] = {}
 running_processes: dict[str, subprocess.Popen] = {}
 active_task_runners: set[str] = set()
+# Messages sent while another task was running, oldest first. Each one starts
+# on its own once the tasks ahead of it have finished.
+message_queue: list[dict[str, Any]] = []
 auth_state: dict[str, Any] = {}
 auth_process: subprocess.Popen | None = None
 event_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
@@ -1273,6 +1277,11 @@ CONTINUABLE_STATUSES = frozenset({"completed", "waiting_for_input", "failed", "c
 TASK_STATUSES = CONTINUABLE_STATUSES | {"queued", "running"}
 TASK_ORDERS = frozenset({"created_asc", "updated_desc", "pinned_first"})
 TITLE_MAX_LENGTH = 200
+QUEUE_MAX_MESSAGES = 50
+# Reported for a chat that exists only as a message waiting in the queue.
+IN_QUEUE_STATUS = "in_queue"
+QUEUED_MESSAGE_GONE = "This message is no longer in the queue. It may have already started."
+SESSION_UNAVAILABLE = "The saved Codex session is unavailable. Start a new chat and include the context you need."
 
 
 def atomic_json_write(path: Path, value: Any) -> None:
@@ -3255,6 +3264,7 @@ def _run_background_task(
         finish_activity(task_id)
         with lock:
             active_task_runners.discard(task_id)
+        start_next_queued()
 
 
 def start_background_task(
@@ -3281,6 +3291,217 @@ def start_background_task(
             active_task_runners.discard(task_id)
         raise
     return thread
+
+
+def open_task(task_id: str, title: str, prompt: str, settings: dict[str, Any], turn: dict[str, Any]) -> None:
+    """Record a new chat whose first exchange is about to run."""
+    update_task(
+        task_id,
+        status="queued",
+        cancellation_requested=False,
+        cancellation_event_emitted=False,
+        title=title,
+        prompt=prompt,
+        chat_settings=settings,
+        turns=[turn],
+        current_turn_id=turn["turn_id"],
+        created_at=utc_now(),
+        summary="",
+        question="",
+        details="",
+        attachments=[],
+    )
+    (get_task_dir(task_id) / "user-prompt.txt").write_text(prompt, encoding="utf-8")
+
+
+def open_turn(task_id: str, task: dict[str, Any], turn: dict[str, Any], settings: dict[str, Any]) -> None:
+    """Add the next exchange to a saved chat and clear the previous task-level result."""
+    turns = task_turns(task)
+    turns.append(turn)
+    incomplete = task.get("history_incomplete", "turns" not in task)
+    reply_history = list(task.get("reply_history") or [])
+    reply_history.append({"at": turn["created_at"], "reply": turn["message"]})
+    update_task(
+        task_id, status="queued", cancellation_requested=False,
+        chat_settings=settings,
+        cancellation_event_emitted=False, turns=turns,
+        current_turn_id=turn["turn_id"], history_incomplete=incomplete,
+        reply_history=reply_history, summary="", question="", details="",
+        error="", started_at="", completed_at="", returncode=None,
+        changes={}, validation_errors=[], lovelace_results=[], attachments=[],
+        config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[],
+        verification=[], verification_attachments=[],
+    )
+
+
+def save_message_queue() -> None:
+    """Write the queue to disk so waiting messages survive a worker restart."""
+    with lock:
+        atomic_json_write(MESSAGE_QUEUE_FILE, message_queue)
+
+
+def load_message_queue() -> None:
+    """Restore the queue after a restart, skipping messages that already started or lost their chat."""
+    if not MESSAGE_QUEUE_FILE.exists():
+        return
+    try:
+        loaded = json.loads(MESSAGE_QUEUE_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Could not load the message queue: {exc}", flush=True)
+        return
+    with lock:
+        for entry in loaded if isinstance(loaded, list) else []:
+            if not isinstance(entry, dict) or not all(
+                isinstance(entry.get(key), str) and entry[key]
+                for key in ("queue_id", "task_id", "turn_id", "message")
+            ):
+                continue
+            # The ids name directories, so accept only the shapes the worker generates.
+            if TASK_ID_RE.fullmatch(entry["task_id"]) is None or ATTACHMENT_ID_RE.fullmatch(entry["turn_id"]) is None:
+                continue
+            task = tasks.get(entry["task_id"])
+            started = task is not None and any(
+                turn.get("turn_id") == entry["turn_id"] for turn in task.get("turns") or []
+            )
+            if started or (task is None) != bool(entry.get("new_chat")):
+                continue
+            message_queue.append(entry)
+
+
+def queue_payload_locked(task_id: str | None = None) -> list[dict[str, Any]]:
+    """Describe the queued messages with their place in line, optionally for one chat only."""
+    return [
+        {**copy.deepcopy(entry), "position": index + 1}
+        for index, entry in enumerate(message_queue)
+        if task_id is None or entry["task_id"] == task_id
+    ]
+
+
+def find_queued_attachment(task_id: str, attachment_id: str) -> dict[str, Any] | None:
+    """Return the metadata of an image attached to a message still waiting in the queue."""
+    for entry in message_queue:
+        if entry["task_id"] != task_id:
+            continue
+        for attachment in entry.get("prompt_attachments") or []:
+            if isinstance(attachment, dict) and attachment.get("attachment_id") == attachment_id:
+                return attachment
+    return None
+
+
+def discard_queued_files(entry: dict[str, Any]) -> None:
+    """Remove the images stored for a queued message that will not run."""
+    task_dir = get_task_dir(entry["task_id"])
+    shutil.rmtree(task_dir / "turns" / entry["turn_id"], ignore_errors=True)
+    if entry.get("new_chat"):
+        # A chat that never started owns nothing else, so drop its empty directories.
+        for path in (task_dir / "turns", task_dir):
+            try:
+                path.rmdir()
+            except OSError:
+                break
+
+
+def enqueue_message(
+    task_id: str, title: str, message: str, settings: dict[str, Any],
+    uploads: list[tuple[Any, bytes]], *, new_chat: bool,
+) -> tuple[Response, int]:
+    """Hold a message until the running task and the messages queued before it finish.
+
+    The caller holds the lock, so the task that is running cannot finish
+    between its check and the message joining the queue.
+    """
+    if len(message_queue) >= QUEUE_MAX_MESSAGES:
+        return jsonify({"ok": False, "error": f"The queue is full ({QUEUE_MAX_MESSAGES} messages). Remove a queued message or wait for one to start."}), 409
+    now = utc_now()
+    entry = {
+        "queue_id": uuid.uuid4().hex, "task_id": task_id, "new_chat": new_chat,
+        "title": title, "message": message, "chat_settings": settings,
+        "turn_id": uuid.uuid4().hex, "prompt_attachments": [],
+        "created_at": now, "updated_at": now,
+    }
+    try:
+        entry["prompt_attachments"] = store_uploads(task_id, entry["turn_id"], uploads)
+        message_queue.append(entry)
+        save_message_queue()
+    except OSError:
+        if entry in message_queue:
+            message_queue.remove(entry)
+        discard_queued_files(entry)
+        return jsonify({"ok": False, "error": "Could not save the queued message. Try again."}), 500
+    response = {
+        "ok": True, "task_id": task_id, "status": IN_QUEUE_STATUS, "queue_id": entry["queue_id"],
+        "position": len(message_queue), "active_task_id": _active_task_id_locked(),
+    }
+    # Nothing may be running after all, for example right after the last task ended.
+    start_next_queued()
+    return jsonify(response), 202
+
+
+def sync_message_queue() -> None:
+    """Rewrite the stored queue after messages left the list in memory.
+
+    A failed write only leaves stale entries behind, which loading skips.
+    """
+    try:
+        save_message_queue()
+    except OSError as exc:
+        print(f"Could not save the message queue: {exc}", flush=True)
+
+
+def start_queued_message(entry: dict[str, Any]) -> Exception | None:
+    """Send a queued message the way a direct request would have, with the lock held.
+
+    The message has left the list in memory but is still in the stored queue.
+    It is dropped from there only after its chat or exchange is saved, so a
+    worker that stops in between finds the message still waiting instead of
+    losing it. Returns the error when the message could not start.
+    """
+    task_id = entry["task_id"]
+    message = entry["message"]
+    settings = entry.get("chat_settings") or dict(DEFAULT_CHAT_SETTINGS)
+    task = tasks.get(task_id)
+    if (task is None) != bool(entry.get("new_chat")):
+        print(f"Skipped a queued message for {task_id}: its chat is no longer in the expected state.", flush=True)
+        sync_message_queue()
+        return None
+    turn = {**new_turn(message), "turn_id": entry["turn_id"], "prompt_attachments": entry.get("prompt_attachments") or []}
+    try:
+        turn["execution_settings"] = resolve_chat_settings(settings, read_options())
+    except ValueError:
+        pass  # The add-on defaults changed while it waited; the run reports the mismatch.
+    session_id = str((task or {}).get("session_id") or "")
+    active_task_runners.add(task_id)
+    try:
+        if task is None:
+            open_task(task_id, str(entry.get("title") or message[:80]), message, settings, turn)
+        else:
+            open_turn(task_id, task, turn, settings)
+        sync_message_queue()
+        if task is None:
+            start_background_task(task_id, message)
+        elif not session_id or not session_available(session_id):
+            raise RuntimeError(SESSION_UNAVAILABLE)
+        else:
+            start_background_task(task_id, str(task.get("prompt") or ""), session_id=session_id, reply=message)
+    except Exception as exc:
+        return exc
+    return None
+
+
+def start_next_queued() -> None:
+    """Start the oldest queued message once no task is active.
+
+    A message that cannot start becomes a failed exchange in its chat, and the
+    next one is tried.
+    """
+    while True:
+        with lock:
+            if not message_queue or _active_task_ids_locked():
+                return
+            entry = message_queue.pop(0)
+            failure = start_queued_message(entry)
+        if failure is not None:
+            record_background_start_failure(entry["task_id"], failure)
 
 
 @app.get("/")
@@ -3315,11 +3536,13 @@ def status() -> Response:
     with lock:
         task_values = sorted(tasks.values(), key=lambda task: task.get("updated_at") or task.get("created_at", ""))
         latest = {key: copy.deepcopy(value) for key, value in task_values[-1].items() if key != "turns"} if task_values else None
+        queued = len(message_queue)
     return jsonify(
         {
             "ok": True,
             "active_task_id": active_task_id(),
             "active_task_count": active_task_count(),
+            "queued_message_count": queued,
             "task_count": active_task_count(),
             "total_task_count": len(task_values),
             "latest_task": latest,
@@ -3411,10 +3634,11 @@ def list_tasks() -> Response:
         summaries = request.args.get("summary") == "true"
         result = [task_payload(task, summary=summaries) for task in page]
         active = _active_task_id_locked()
+        waiting = queue_payload_locked()
     next_offset = offset + len(page)
     return jsonify({"ok": True, "tasks": result, "total": len(ordered),
                     "next_offset": next_offset if next_offset < len(ordered) else None,
-                    "active_task_id": active})
+                    "active_task_id": active, "queue": waiting})
 
 
 @app.get("/chat-options")
@@ -3442,6 +3666,9 @@ def save_chat_settings(task_id: str) -> Response:
             return jsonify({"ok": False, "error": "task not found"}), 404
         if task.get("status") in {"queued", "running"} or task_id in _active_task_ids_locked():
             return jsonify({"ok": False, "error": "Wait for this task to finish before changing its settings."}), 409
+        if queue_payload_locked(task_id):
+            # The waiting message carries the settings it was sent with.
+            return jsonify({"ok": False, "error": "This chat has a message in the queue. Remove it before changing the settings."}), 409
         try:
             settings = parse_chat_settings(payload, task)
         except ValueError as exc:
@@ -3510,6 +3737,10 @@ def delete_task(task_id: str) -> Response:
         tasks.pop(task_id, None)
         task_activity.pop(task_id, None)
         save_task_index()
+        if queue_payload_locked(task_id):
+            # Its waiting message went with the chat's files.
+            message_queue[:] = [entry for entry in message_queue if entry["task_id"] != task_id]
+            sync_message_queue()
         session_id = str(task.get("session_id") or "")
     remove_session_files(session_id)
     return jsonify({"ok": True, "task_id": task_id, "deleted": True})
@@ -3536,6 +3767,8 @@ def create_task() -> Response:
     turn["execution_settings"] = execution
     with lock:
         active = _active_task_id_locked()
+        if payload.get("queue") is True and (active or message_queue):
+            return enqueue_message(task_id, title, prompt, settings, uploads, new_chat=True)
         if active:
             return jsonify(
                 {
@@ -3547,23 +3780,7 @@ def create_task() -> Response:
         active_task_runners.add(task_id)
     try:
         turn["prompt_attachments"] = store_uploads(task_id, turn["turn_id"], uploads)
-        update_task(
-            task_id,
-            status="queued",
-            cancellation_requested=False,
-            cancellation_event_emitted=False,
-            title=title,
-            prompt=prompt,
-            chat_settings=settings,
-            turns=[turn],
-            current_turn_id=turn["turn_id"],
-            created_at=utc_now(),
-            summary="",
-            question="",
-            details="",
-            attachments=[],
-        )
-        (get_task_dir(task_id) / "user-prompt.txt").write_text(prompt, encoding="utf-8")
+        open_task(task_id, title, prompt, settings, turn)
         start_background_task(task_id, prompt)
     except Exception as exc:
         record_background_start_failure(task_id, exc)
@@ -3582,7 +3799,18 @@ def create_task() -> Response:
 def get_task(task_id: str) -> Response:
     with lock:
         task = tasks.get(task_id)
+        queued = next(iter(queue_payload_locked(task_id)), None)
         result = task_payload(task) if task else None
+        if result is not None:
+            result["queued_message"] = queued
+        elif queued and queued.get("new_chat"):
+            # A chat that is still waiting for its first message to start.
+            result = {
+                "task_id": task_id, "title": queued["title"], "status": IN_QUEUE_STATUS,
+                "created_at": queued["created_at"], "updated_at": queued["updated_at"],
+                "chat_settings": queued["chat_settings"], "turns": [],
+                "history_incomplete": False, "can_continue": False, "queued_message": queued,
+            }
     if result is None:
         return jsonify({"ok": False, "error": "task not found"}), 404
     return jsonify({"ok": True, "task": result})
@@ -3639,6 +3867,8 @@ def get_attachment(task_id: str, attachment_id: str) -> Response:
     with lock:
         task = tasks.get(task_id)
         attachment = find_attachment(task, attachment_id) if task else None
+        if attachment is None:
+            attachment = find_queued_attachment(task_id, attachment_id)
     if attachment is None:
         return jsonify({"ok": False, "error": "attachment not found"}), 404
     if attachment.get("origin") == "verification" and attachment.get("expires_at", 0) <= time.time():
@@ -3691,6 +3921,7 @@ def cancel_task(task_id: str) -> Response:
     if proc is not None:
         terminate_and_reap_process(proc)
     publish_cancelled_task_outcome(task_id, proc.returncode if proc is not None else None)
+    start_next_queued()
     return jsonify({"ok": True, "task_id": task_id, "status": "cancelled"})
 
 
@@ -3721,37 +3952,27 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
             return jsonify({"ok": False, "error": "task is still active"}), 409
         session_id = str(task.get("session_id") or "")
         if not session_id or not session_available(session_id):
-            return jsonify({"ok": False, "error": "The saved Codex session is unavailable. Start a new chat and include the context you need."}), 409
+            return jsonify({"ok": False, "error": SESSION_UNAVAILABLE}), 409
         active = _active_task_id_locked()
-        if active:
+        wait = payload.get("queue") is True and bool(active or message_queue)
+        if active and not wait:
             return jsonify({"ok": False, "error": "another task is already running", "active_task_id": active}), 409
+        if wait and queue_payload_locked(task_id):
+            return jsonify({"ok": False, "error": "This chat already has a message in the queue. Edit or remove it first."}), 409
         try:
             settings = parse_chat_settings(payload, task)
             execution = resolve_chat_settings(settings, read_options())
             uploads = parse_uploads(payload)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
-        turns = task_turns(task)
+        if wait:
+            return enqueue_message(task_id, str(task.get("title") or ""), message, settings, uploads, new_chat=False)
         turn = new_turn(message)
         turn["execution_settings"] = execution
-        turns.append(turn)
-        incomplete = task.get("history_incomplete", "turns" not in task)
-        reply_history = list(task.get("reply_history") or [])
-        reply_history.append({"at": turn["created_at"], "reply": message})
         active_task_runners.add(task_id)
         try:
             turn["prompt_attachments"] = store_uploads(task_id, turn["turn_id"], uploads)
-            update_task(
-                task_id, status="queued", cancellation_requested=False,
-                chat_settings=settings,
-                cancellation_event_emitted=False, turns=turns,
-                current_turn_id=turn["turn_id"], history_incomplete=incomplete,
-                reply_history=reply_history, summary="", question="", details="",
-                error="", started_at="", completed_at="", returncode=None,
-                changes={}, validation_errors=[], lovelace_results=[], attachments=[],
-                config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[],
-                verification=[], verification_attachments=[],
-            )
+            open_turn(task_id, task, turn, settings)
         except Exception as exc:
             record_background_start_failure(task_id, exc)
             return jsonify({"ok": False, "task_id": task_id, "error": "Could not save the new message"}), 500
@@ -3761,6 +3982,58 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
         record_background_start_failure(task_id, exc)
         return jsonify({"ok": False, "task_id": task_id, "error": "Could not start the task worker"}), 500
     return jsonify({"ok": True, "task_id": task_id, "turn_id": turn["turn_id"], "status": "queued"})
+
+
+@app.get("/queue")
+@require_auth
+def list_queue() -> Response:
+    """Return the messages waiting for the running task, in the order they will start."""
+    with lock:
+        return jsonify({"ok": True, "queue": queue_payload_locked(), "active_task_id": _active_task_id_locked()})
+
+
+@app.post("/queue/<queue_id>")
+@require_auth
+def edit_queued_message(queue_id: str) -> Response:
+    """Replace the text of a message that is still waiting in the queue."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("message"), str) or not payload["message"].strip():
+        return jsonify({"ok": False, "error": "message must be non-empty text"}), 400
+    message = payload["message"].strip()
+    with lock:
+        entry = next((item for item in message_queue if item["queue_id"] == queue_id), None)
+        if entry is None:
+            return jsonify({"ok": False, "error": QUEUED_MESSAGE_GONE}), 404
+        previous = dict(entry)
+        # A new chat is named after its message unless the request set a title.
+        if entry.get("new_chat") and entry.get("title") == entry["message"][:80]:
+            entry["title"] = message[:80]
+        entry.update(message=message, updated_at=utc_now())
+        try:
+            save_message_queue()
+        except OSError:
+            entry.update(previous)
+            return jsonify({"ok": False, "error": "Could not save the queued message. Try again."}), 500
+        result = queue_payload_locked(entry["task_id"])[0]
+    return jsonify({"ok": True, "queued_message": result})
+
+
+@app.delete("/queue/<queue_id>")
+@require_auth
+def delete_queued_message(queue_id: str) -> Response:
+    """Take a waiting message out of the queue and remove its attached images."""
+    with lock:
+        index = next((index for index, item in enumerate(message_queue) if item["queue_id"] == queue_id), None)
+        if index is None:
+            return jsonify({"ok": False, "error": QUEUED_MESSAGE_GONE}), 404
+        entry = message_queue.pop(index)
+        try:
+            save_message_queue()
+        except OSError:
+            message_queue.insert(index, entry)
+            return jsonify({"ok": False, "error": "Could not update the queue. Try again."}), 500
+        discard_queued_files(entry)
+    return jsonify({"ok": True, "queue_id": queue_id, "task_id": entry["task_id"], "deleted": True})
 
 
 
@@ -3774,10 +4047,13 @@ def main() -> None:
         print(f"Codex version probe failed: {version['error']}", flush=True)
     print(f"Codex sandbox preflight: {sandbox['message']}", flush=True)
     load_task_index()
+    load_message_queue()
     verification.cleanup()
     verification.serve(DATA_ROOT / "verification.sock")
     auto_start_login_if_needed()
     threading.Thread(target=stdin_reader, daemon=True).start()
+    # Messages that were waiting when the worker stopped carry on in order.
+    start_next_queued()
     app.run(host="0.0.0.0", port=9123)
 
 

@@ -16,6 +16,8 @@ For setup, security notes, and action examples, see the [repository README](http
 
 Open an existing chat to continue with its saved Codex context, or choose **New chat** for a separate conversation. Account controls and workspace instructions are under **Settings**.
 
+While one chat is working, messages you send in other chats wait in a queue and start in order when it finishes. You can edit or remove a waiting message until it starts.
+
 Ask for an image and Codex shows the generated picture in the chat, with a full-size link and a download button. Images stay with their conversation across restarts.
 
 Attach screenshots, photos, or design mockups to a message with the paperclip button, by pasting, or by dropping files onto the composer. Codex sees them with your message, and they stay with the conversation.

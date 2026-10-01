@@ -3437,10 +3437,24 @@ def enqueue_message(
     return jsonify(response), 202
 
 
+def sync_message_queue() -> None:
+    """Rewrite the stored queue after messages left the list in memory.
+
+    A failed write only leaves stale entries behind, which loading skips.
+    """
+    try:
+        save_message_queue()
+    except OSError as exc:
+        print(f"Could not save the message queue: {exc}", flush=True)
+
+
 def start_queued_message(entry: dict[str, Any]) -> Exception | None:
     """Send a queued message the way a direct request would have, with the lock held.
 
-    Returns the error when the exchange was recorded but could not start.
+    The message has left the list in memory but is still in the stored queue.
+    It is dropped from there only after its chat or exchange is saved, so a
+    worker that stops in between finds the message still waiting instead of
+    losing it. Returns the error when the message could not start.
     """
     task_id = entry["task_id"]
     message = entry["message"]
@@ -3448,22 +3462,26 @@ def start_queued_message(entry: dict[str, Any]) -> Exception | None:
     task = tasks.get(task_id)
     if (task is None) != bool(entry.get("new_chat")):
         print(f"Skipped a queued message for {task_id}: its chat is no longer in the expected state.", flush=True)
+        sync_message_queue()
         return None
     turn = {**new_turn(message), "turn_id": entry["turn_id"], "prompt_attachments": entry.get("prompt_attachments") or []}
     try:
         turn["execution_settings"] = resolve_chat_settings(settings, read_options())
     except ValueError:
         pass  # The add-on defaults changed while it waited; the run reports the mismatch.
+    session_id = str((task or {}).get("session_id") or "")
     active_task_runners.add(task_id)
     try:
         if task is None:
             open_task(task_id, str(entry.get("title") or message[:80]), message, settings, turn)
-            start_background_task(task_id, message)
         else:
-            session_id = str(task.get("session_id") or "")
             open_turn(task_id, task, turn, settings)
-            if not session_id or not session_available(session_id):
-                raise RuntimeError(SESSION_UNAVAILABLE)
+        sync_message_queue()
+        if task is None:
+            start_background_task(task_id, message)
+        elif not session_id or not session_available(session_id):
+            raise RuntimeError(SESSION_UNAVAILABLE)
+        else:
             start_background_task(task_id, str(task.get("prompt") or ""), session_id=session_id, reply=message)
     except Exception as exc:
         return exc
@@ -3481,10 +3499,6 @@ def start_next_queued() -> None:
             if not message_queue or _active_task_ids_locked():
                 return
             entry = message_queue.pop(0)
-            try:
-                save_message_queue()
-            except OSError as exc:
-                print(f"Could not save the message queue: {exc}", flush=True)
             failure = start_queued_message(entry)
         if failure is not None:
             record_background_start_failure(entry["task_id"], failure)
@@ -3726,10 +3740,7 @@ def delete_task(task_id: str) -> Response:
         if queue_payload_locked(task_id):
             # Its waiting message went with the chat's files.
             message_queue[:] = [entry for entry in message_queue if entry["task_id"] != task_id]
-            try:
-                save_message_queue()
-            except OSError as exc:
-                print(f"Could not save the message queue: {exc}", flush=True)
+            sync_message_queue()
         session_id = str(task.get("session_id") or "")
     remove_session_files(session_id)
     return jsonify({"ok": True, "task_id": task_id, "deleted": True})

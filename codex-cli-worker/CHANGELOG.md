@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.63
+
+- Keep a local copy of the official Home Assistant documentation so Codex can search it directly instead of searching the web for documentation. Local lookups are faster, and web search stays available for custom integrations, custom cards, and anything the documentation does not cover.
+- Download the copy in the background when the app starts, and refresh it when a task starts and the copy is more than a day old. Tasks and startup never wait for a download, and a failed download keeps the existing copy.
+- Add **Local Home Assistant documentation** to the app configuration, on by default. The copy uses about 25 MB of private app storage and is left out of app backups. See [how it works](DOCS.md#local-home-assistant-documentation).
+
+Update the **Codex CLI Worker** app to **0.1.63**. The **Codex** integration remains at **0.1.62** and does not need another update.
+
 ## 0.1.62
 
 - Fix discovery of individual static files on Home Assistant Core 2026.9.4 so Browser Mod, Custom Icons, and WebRTC scripts can load during dashboard captures.

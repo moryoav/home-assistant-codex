@@ -208,7 +208,8 @@ resource and permission limits above.
 Run `pytest`. Tests under `tests/ha` use real Home Assistant authentication.
 `python tests/codex_verification_smoke.py` uses the pinned CLI and a local mock model
 endpoint to check MCP discovery and real entity-tool calls in both sandbox modes,
-while confirming that shell socket connections remain denied. Set `HA_TEST_CODEX`
+while confirming that shell socket connections remain denied and that sandboxed
+commands can read a documentation copy outside the workspace. Set `HA_TEST_CODEX`
 to the pinned CLI binary when it is not at `/usr/local/bin/codex`. No model account
 or paid request is involved.
 `node tests/browser_verification.cjs` uses real Chromium and a protocol fixture to

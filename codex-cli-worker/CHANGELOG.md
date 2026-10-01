@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.63
+
+- **Queue messages while another chat is working.** The worker runs one task at a time, and the web UI used to make you wait for it before sending anything else. You can now send a message in a new chat or in another saved chat right away. It waits in a queue and starts on its own when the running chat finishes, even if the web UI is closed. Several chats can wait in line.
+- Waiting messages are listed under **In queue** at the top of the sidebar with their place in line. In the chat they have a dashed outline and an **In queue · not sent yet** label, so they are not mistaken for sent ones. Until a message starts you can **Edit** its text or **Remove** it.
+- The worker stores the queue, so it continues after a restart. Attached images wait with their message.
+- The worker API accepts `"queue": true` when starting or continuing a task, and has new `/queue` endpoints to list, edit, and remove waiting messages. Requests without it are still refused with HTTP 409 while a task runs, so automations and Home Assistant actions behave as before.
+- A chat that was accepted and is about to run is now labelled **Starting** in the web UI instead of **Queued**.
+
+Update the **Codex CLI Worker** app to **0.1.63** to queue messages. The **Codex** integration remains at **0.1.62** and does not need an update.
+
 ## 0.1.62
 
 - Fix discovery of individual static files on Home Assistant Core 2026.9.4 so Browser Mod, Custom Icons, and WebRTC scripts can load during dashboard captures.

@@ -43,6 +43,7 @@ def main():
         root = Path(temp)
         server.task_root = lambda: root / "tasks"
         server.TASK_STATE_FILE = root / "index.json"
+        server.MESSAGE_QUEUE_FILE = root / "queue.json"
         server.AGENTS_PATH = root / "AGENTS.md"
         server.CODEX_HOME = root / "codex-home"
         server.api_token = lambda: "preview-only"
@@ -72,14 +73,19 @@ def main():
                                                     "text": json.dumps({"status": "completed", "summary": text, "question": "", "details": ""})}},
             ]
 
+        release = threading.Event()
+
         def finish(task_id, prompt, session_id=session_id, reply=None):
             """Simulate a run with recorded steps instead of launching Codex.
 
             The first chat plays its steps slowly so the browser can show them
-            live; every other chat completes at once, as the earlier fixture did.
+            live. A message that starts with "Take your time" keeps its chat
+            working until POST fixture/release, so the browser can queue
+            messages behind it. Every other chat completes at once.
             """
             summary = "Preview response: " + (reply or prompt)
             live = task_id == "preview-00"
+            held = (reply or prompt).startswith("Take your time")
 
             def run():
                 server.update_task(task_id, status="running", started_at=server.utc_now())
@@ -91,17 +97,28 @@ def main():
                     if live and event["type"] == "item.started":
                         # Hold the command open long enough for the browser to show it running.
                         time.sleep(2)
+                if held:
+                    release.wait(120)
+                    release.clear()
                 server.update_task(task_id, status="completed", session_id=session_id, summary=summary,
                                    details="", question="", completed_at=server.utc_now())
                 server.finish_activity(task_id)
                 server.active_task_runners.discard(task_id)
+                # The real runner starts the next queued message when it ends.
+                server.start_next_queued()
 
-            if live:
+            if live or held:
                 threading.Thread(target=run, daemon=True).start()
             else:
                 run()
 
+        def release_held():
+            """Let the chat that is being held finish."""
+            release.set()
+            return {"ok": True}
+
         server.start_background_task = finish
+        server.app.add_url_rule("/fixture/release", "fixture_release", release_held, methods=["POST"])
         examples = [
             ("A quieter evening routine", "Review my evening lighting automation. Suggest improvements before making changes.",
              "Your evening routine looks good. There are two small changes that would make it easier to maintain.",

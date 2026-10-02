@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import re
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -417,7 +418,10 @@ class ConversationTests(unittest.TestCase):
         response = self.client.get("/", headers={"X-Ingress-Path": "/api/hassio_ingress/test"}, environ_overrides={"REMOTE_ADDR": server.INGRESS_PROXY_IP})
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'assets/chat.js', response.data)
-        for name in ("chat.js", "chat.css"):
+        # The Markdown parser is bundled, so the chat never loads a script from another server.
+        scripts = re.findall(rb'<script src="([^"]+)"', response.data)
+        self.assertEqual(scripts, [b"assets/vendor/marked.umd.js", b"assets/markdown.js", b"assets/chat.js"])
+        for name in ("chat.js", "chat.css", "markdown.js", "vendor/marked.umd.js", "vendor/marked.LICENSE.md"):
             with self.client.get("/assets/" + name) as asset:
                 self.assertEqual(asset.status_code, 200)
 

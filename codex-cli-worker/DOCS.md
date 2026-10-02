@@ -156,6 +156,35 @@ The web UI lists recent chats in a resizable sidebar and opens their messages on
 
 From **0.1.54**, the web UI reopens the chat you left open the next time it loads, for example after the Home Assistant app on a phone reloads the panel. Choosing **New chat** is remembered as well. The chat id is kept in the browser's local storage under the Home Assistant origin, so it applies to that browser only. Opening the chat requests it from the worker as usual, but the worker does not record which chat you had open. If the remembered chat was deleted from another tab or device, the UI starts with a new chat instead.
 
+### Formatted messages
+
+From **0.1.63**, the chat formats Markdown in the messages you send and in Codex's answers. Wrap code in triple backticks to get a code block, with an optional language name after the opening backticks:
+
+````text
+Why does this trigger never fire?
+
+```yaml
+trigger:
+  - platform: sun
+    event: sunset
+```
+````
+
+Single backticks mark inline code, such as an entity id. Headings, bold and italic text, strikethrough, bulleted and numbered lists, task lists, quotes, tables, horizontal rules, and links are formatted as well. Code blocks keep their indentation and scroll sideways when a line is too long, and so do wide tables. A single Enter stays a line break, and `<br>` breaks a line inside a table cell. The preview of each chat in the sidebar shows the answer without the symbols.
+
+Your own messages follow the same rules, so a line that starts with `#`, `-`, or `1.` becomes a heading or a list item, and text between asterisks or underscores is emphasized. Put configuration, templates, and logs in a code block to show them exactly as written.
+
+Only the display changes. Codex receives your message exactly as you typed it, the saved conversation keeps the original text, and Home Assistant actions and the `codex_cli_task_result` event return `summary`, `question`, and `details` unchanged. The steps in the activity list are not formatted.
+
+Messages are treated as untrusted text:
+
+- HTML is shown as typed and is never interpreted.
+- Links open in a new tab and are limited to `http`, `https`, and `mailto` addresses. Any other target, such as a file path or a script address, shows its label as plain text.
+- Images are never loaded from a message, because a remote image would tell its server that the message was read. They appear as links. Images that Codex generates or that you attach are shown as before.
+- A message longer than 50,000 characters, or one that takes unusually long to format, is shown as plain text.
+
+The Markdown parser, [marked](https://github.com/markedjs/marked) 18.0.14, is bundled with the app under `web/assets/vendor/` with its MIT license, so the chat does not load scripts from another server. Codex decides how it writes its answers; to ask for Markdown, add an instruction to `/config/AGENTS.md` as described under [Task Output](https://github.com/moryoav/home-assistant-codex/blob/main/README.md#task-output).
+
 ### Per-conversation model and reasoning
 
 From **0.1.48**, the pill below the message box opens a model menu and a reasoning slider. Selecting a value in a saved chat saves it immediately; selections for a new chat are saved with its first message. Both persist across worker restarts. Changes apply to the next message and preserve the saved session. Controls are disabled while that conversation is running.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.63
+
+- **Show Markdown as formatting in the chat.** The web UI used to show Markdown symbols as typed, in your messages and in Codex's answers. It now formats them: code blocks between triple backticks, inline code between single backticks, headings, bold and italic text, lists, task lists, quotes, tables, and links.
+- Code blocks have their own background and a language label, keep their indentation, and scroll sideways when a line is too long. Wide tables scroll the same way, so the chat stays readable on a phone.
+- A single Enter is still a line break. Only the display changes: Codex receives your message exactly as you typed it, and Home Assistant actions and events return the same text as before.
+- HTML in a message is shown as text and is never interpreted. Links are limited to web and mail addresses and open in a new tab. Images are not loaded from a message; they appear as links instead.
+- The preview of each chat in the sidebar shows the answer without Markdown symbols.
+- The Markdown parser, [marked](https://github.com/markedjs/marked) 18.0.14 (MIT), is bundled with the app, so the chat does not load scripts from another server.
+
+Update the **Codex CLI Worker** app to **0.1.63** for formatted messages. The **Codex** integration remains at **0.1.62** and does not need an update.
+
 ## 0.1.62
 
 - Fix discovery of individual static files on Home Assistant Core 2026.9.4 so Browser Mod, Custom Icons, and WebRTC scripts can load during dashboard captures.

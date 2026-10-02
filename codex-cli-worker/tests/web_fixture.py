@@ -111,8 +111,28 @@ def main():
         ]
         image_example = ("A sheep for the garden dashboard", "Generate a small cartoon image of a sheep on grass for my dashboard.",
                          "Here is a cartoon sheep standing on grass. It is attached below.", "")
+        # Markdown in a sent message and in an answer, as the chat formats both.
+        markdown_example = (
+            "Sunset offset for the evening lights",
+            "Make `automation.evening_lights` start **20 minutes before sunset**. This is the trigger I have now:\n\n"
+            "```yaml\ntrigger:\n  - platform: sun\n    event: sunset\n```",
+            "**Done.** `automation.evening_lights` now starts 20 minutes before sunset.",
+            "## What changed\n\n"
+            "- Added an `offset` to the sun trigger in `automations.yaml`.\n"
+            "- Left the *scene* and brightness settings as they were.\n\n"
+            "```yaml\ntrigger:\n  - platform: sun\n    event: sunset\n    offset: \"-00:20:00\"\n"
+            "action:\n  - service: notify.mobile_app\n    data:\n"
+            "      message: \"The evening lights came on 20 minutes before sunset, as the routine now asks.\"\n```\n\n"
+            "| Check | Result |\n|:--|:--|\n| Configuration | Valid |\n| `automation.evening_lights` | `on`<br>since 18:42 |\n\n"
+            "### Next steps\n\n"
+            "1. Reload automations from **Developer tools**.\n"
+            "2. Watch the lights at sunset tonight.\n\n"
+            "> A negative offset runs before the event, a positive one after it.\n\n"
+            "See the [sun trigger documentation](https://www.home-assistant.io/docs/automation/trigger/#sun-trigger).",
+        )
         for index in range(25):
-            title, message, summary, details = image_example if index == 2 else examples[index % 3]
+            title, message, summary, details = (
+                image_example if index == 2 else markdown_example if index == 4 else examples[index % 3])
             # Each saved chat owns its session, as in production, so deleting one leaves the others resumable.
             task_session = f"{session_id[:-4]}{index:04x}"
             (sessions / f"rollout-preview-{task_session}.jsonl").write_text("{}\n")
@@ -164,7 +184,7 @@ def main():
                                            "errors": "Invalid config for 'automation' at automations.yaml, line 12: required key 'trigger' not provided"},
                              validation_errors=["Home Assistant configuration check failed: required key 'trigger' not provided"],
                              recovery_files=[{"path": "automations.yaml", "copy": "/config/codex_tasks/preview-03/turns/x/recovery/automations.yaml"}])
-            server.update_task(f"preview-{index:02}", title=title if index < 3 else f"Earlier chat {index}",
+            server.update_task(f"preview-{index:02}", title=title if index < 3 or index == 4 else f"Earlier chat {index}",
                                prompt=message, created_at=f"2026-09-{20 - index % 19:02}T10:00:00+00:00",
                                turns=[turn], current_turn_id=turn["turn_id"],
                                status="failed" if index == 3 else "completed",

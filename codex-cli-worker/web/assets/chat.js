@@ -730,6 +730,7 @@ function renderVerification(turn, taskId) {
   section.append(textNode("p", "Screenshots are evidence for visual review. State and configuration checks do not prove automation behavior.", "verification-note"));
   return section;
 }
+/** Draw the open chat: every exchange with its answer, checks, saved copies, and steps. */
 function renderTask(force = false) {
   const task = state.task;
   if (!task) return;
@@ -949,6 +950,7 @@ async function pollActivity() {
     }
   }
 }
+/** Draw the step list of the latest exchange, with its heading, count, and timer. */
 function renderActivity() {
   const block = $("activity");
   const activity = state.activity;

@@ -151,6 +151,7 @@ class VerificationTests(unittest.TestCase):
         self.assertNotIn("private", json.dumps(result))
 
     def test_snapshot_excludes_credentials_but_manifest_detects_changes(self):
+        """Credential files stay out of the archive but in change detection."""
         for name in ("secrets.yaml", ".storage/auth", ".storage/auth_provider.homeassistant", ".storage/core.config_entries", ".storage/lovelace"):
             path = self.config / name
             path.parent.mkdir(exist_ok=True)

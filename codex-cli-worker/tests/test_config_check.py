@@ -106,6 +106,7 @@ class AssessChangesTests(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
 
     def test_yaml_change_runs_the_check_and_passes(self):
+        """A valid YAML change runs the check and leaves no recovery copies."""
         self.snapshot({"automations.yaml": "- alias: old\n"})
         self.write("automations.yaml", "- alias: new\n")
         result = server.assess_changes("t", self.run_dir, {"added": [], "changed": ["automations.yaml"], "deleted": []})
@@ -116,6 +117,7 @@ class AssessChangesTests(unittest.TestCase):
         self.assertFalse((self.run_dir / "backups").exists())
 
     def test_failed_check_fails_validation_and_keeps_pre_change_copies(self):
+        """A failed check points to the previous version of each affected file."""
         self.snapshot({"automations.yaml": "- alias: old\n"})
         self.write("automations.yaml", "- alias: new\n")
         self.write("packages/new.yaml", "sensor: []\n")
@@ -135,6 +137,7 @@ class AssessChangesTests(unittest.TestCase):
         self.assertIn("Home Assistant warnings: w", details)
 
     def test_syntax_error_skips_the_check_and_dashboard_save(self):
+        """A syntax error skips the check and the dashboard save, and still offers copies."""
         self.snapshot({".storage/lovelace.home": json.dumps({"data": {"config": {"views": []}}}), "scripts.yaml": "a: 1\n"})
         self.write(".storage/lovelace.home", "{not json")
         self.write("scripts.yaml", "a: [\n")
@@ -185,6 +188,7 @@ class RunTaskWiringTests(unittest.TestCase):
             )
 
     def test_failed_check_marks_the_task_failed_with_recovery_details(self):
+        """The task fails and its details and event carry the recovery copies."""
         task, events = self.run_with({
             "validation_errors": ["Home Assistant configuration check failed: bad"],
             "config_check": {"result": "invalid", "errors": "bad", "warnings": ""},

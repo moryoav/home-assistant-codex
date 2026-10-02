@@ -1051,8 +1051,8 @@ def start_phase(task_id: str, phase: str, text: str) -> None:
     append_activity_step(task_id, {"id": f"worker:{phase}", "kind": "phase", "status": "running", "text": text})
 
 
-def finish_phase(task_id: str, *phases: str) -> None:
-    """Mark the named worker steps as done; steps that never started are left alone."""
+def finish_phase(task_id: str, *phases: str, failed: bool = False) -> None:
+    """Close the named worker steps as done or failed; steps that never started are left alone."""
     for phase in phases:
         with lock:
             record = task_activity.get(task_id)
@@ -1060,7 +1060,8 @@ def finish_phase(task_id: str, *phases: str) -> None:
             if step is None or step["status"] != "running":
                 continue
             text = step["text"]
-        append_activity_step(task_id, {"id": f"worker:{phase}", "kind": "phase", "status": "done", "text": text})
+        status = "failed" if failed else "done"
+        append_activity_step(task_id, {"id": f"worker:{phase}", "kind": "phase", "status": status, "text": text})
 
 
 def edited_paths(task_id: str) -> set[str]:
@@ -1261,6 +1262,7 @@ def public_activity_step(step: dict[str, Any]) -> dict[str, Any]:
 
 
 def activity_payload_locked(record: dict[str, Any], after: int = 0) -> dict[str, Any]:
+    """The steps after a sequence number, with the running time while the exchange lasts."""
     steps = [public_activity_step(step) for step in record["steps"] if step["seq"] > after]
     payload = {
         "turn_id": record["turn_id"], "seq": record["seq"], "running": record["running"],
@@ -2071,6 +2073,7 @@ def codex_backup_dir(run_dir: Path, options: dict[str, Any]) -> Path | None:
 
 
 def safe_relative_path(rel: str) -> bool:
+    """Whether a path from a task result stays inside the folder it is joined to."""
     return bool(rel) and not rel.startswith("/") and ".." not in Path(rel).parts
 
 
@@ -2801,6 +2804,7 @@ def backup_instructions(backup_dir: Path | None) -> str:
 
 
 def build_prompt(user_prompt: str, task_id: str, reply: str | None = None, backup_dir: Path | None = None) -> str:
+    """Write the instructions Codex gets for one message, including where to save its backups."""
     current_request = reply if reply is not None else user_prompt
     attached = attached_image_note(task_id)
     backups = backup_instructions(backup_dir)
@@ -3205,6 +3209,7 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
 
 
 def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: str | None = None) -> None:
+    """Run one exchange: record the configuration, launch Codex, then check and report what it changed."""
     if task_cancellation_requested(task_id):
         return
     task_dir = get_run_dir(task_id)
@@ -3231,6 +3236,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
                 update_task(task_id, snapshot=create_snapshot(task_id, manifest))
                 finish_phase(task_id, "snapshot")
         except Exception as exc:
+            # Otherwise the step would be closed as done when the exchange ends well.
+            finish_phase(task_id, "baseline", "snapshot", failed=True)
             write_task_log(task_id, "worker", f"Could not record the configuration before the run: {exc}")
             update_task(task_id, snapshot_error=str(exc))
     if task_cancellation_requested(task_id):
@@ -3529,10 +3536,17 @@ def remove_run_artifacts(run_dir: Path, names: tuple[str, ...]) -> None:
 
 
 def timestamp_seconds(value: Any) -> float | None:
+    """Read a saved ISO timestamp as seconds since the epoch, or None when it is not one."""
     try:
         return datetime.fromisoformat(str(value)).timestamp()
     except ValueError:
         return None
+
+
+def ended_before(record: dict[str, Any], cutoff: float) -> bool:
+    """Whether an exchange ended before the given time; one without a readable time did not."""
+    ended = timestamp_seconds(record.get("completed_at") or record.get("updated_at") or record.get("created_at"))
+    return ended is not None and ended <= cutoff
 
 
 def cleanup_backups() -> None:
@@ -3553,16 +3567,19 @@ def cleanup_backups() -> None:
                 if TASK_ID_RE.fullmatch(task_id) is None:
                     continue
                 running = task_id in active or task.get("status") in {"queued", "running"}
-                # Chats from before conversation history keep everything in the chat's own folder.
-                records = task["turns"] if "turns" in task else [task]
-                for record in records:
-                    turn_id = str(record.get("turn_id") or "") if record is not task else ""
-                    if record.get("backups_removed") or (turn_id and TURN_ID_RE.fullmatch(turn_id) is None):
+                turns = task["turns"] if "turns" in task else []
+                # A chat from before conversation history keeps the files of its early
+                # exchanges in the chat's own folder, also after it was continued.
+                early = [turn for turn in turns if str(turn.get("turn_id") or "").startswith("legacy")] if "turns" in task else [task]
+                if early and not task.get("backups_removed") and not (running and not task.get("current_turn_id")):
+                    finished.append((task_id, "", ended_before(early[-1], cutoff)))
+                for turn in turns:
+                    turn_id = str(turn.get("turn_id") or "")
+                    if turn.get("backups_removed") or TURN_ID_RE.fullmatch(turn_id) is None:
                         continue
-                    if running and (record is task or turn_id == task.get("current_turn_id")):
+                    if running and turn_id == task.get("current_turn_id"):
                         continue
-                    ended = timestamp_seconds(record.get("completed_at") or record.get("updated_at") or record.get("created_at"))
-                    finished.append((task_id, turn_id, ended is not None and ended <= cutoff))
+                    finished.append((task_id, turn_id, ended_before(turn, cutoff)))
         expired: dict[str, set[str]] = {}
         for task_id, turn_id, old in finished:
             run_dir = root / task_id / "turns" / turn_id if turn_id else root / task_id
@@ -3576,9 +3593,11 @@ def cleanup_backups() -> None:
                 if task is None:
                     continue
                 # Saved in place: this must not move the chat in the recent list.
-                for record in (task["turns"] if "turns" in task else [task]):
-                    if record is task or record.get("turn_id") in turn_ids:
-                        record["backups_removed"] = True
+                if "" in turn_ids:
+                    task["backups_removed"] = True
+                for turn in task.get("turns") or []:
+                    if turn.get("turn_id") in turn_ids:
+                        turn["backups_removed"] = True
                 try:
                     atomic_json_write(get_task_dir(task_id) / "task.json", task)
                 except OSError as exc:
@@ -3603,6 +3622,7 @@ def _run_background_task(
     session_id: str | None,
     reply: str | None,
 ) -> None:
+    """Run an exchange in its thread and always release the worker and clean up afterwards."""
     try:
         run_task(task_id, prompt, session_id, reply)
     except Exception as exc:
@@ -3790,6 +3810,7 @@ def list_tasks() -> Response:
 @app.get("/chat-options")
 @require_auth
 def chat_options() -> Response:
+    """Return the models, defaults, and settings the web UI needs."""
     options = read_options()
     default = resolve_chat_settings(DEFAULT_CHAT_SETTINGS, options)
     return jsonify({
@@ -4078,6 +4099,7 @@ def continue_task(task_id: str) -> Response:
 
 
 def continue_task_request(task_id: str, field: str, *, waiting_only: bool = False) -> Response:
+    """Add a message to a saved chat as a new exchange and start it."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or not isinstance(payload.get(field), str) or not payload[field].strip():
         return jsonify({"ok": False, "error": f"{field} must be non-empty text"}), 400
@@ -4136,6 +4158,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
 
 
 def main() -> None:
+    """Prepare the worker's files, start its background threads, and serve the API."""
     ensure_runtime_files()
     version = codex_version_status()
     sandbox = sandbox_readiness()

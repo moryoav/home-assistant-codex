@@ -28,7 +28,7 @@ configuration:
     description: After a task changes YAML files, ask Home Assistant to check its configuration, as Developer Tools does. A failing check marks the task as failed and points to the saved previous version of the affected files. Turn off to skip the check on slow systems.
   full_snapshot:
     name: Full snapshot before every message
-    description: Archive the whole configuration folder before every message, instead of relying on the copy Codex saves of each file before changing it. Off by default. On a large configuration this adds a wait before every message and uses a lot of disk space.
+    description: Also archive the whole configuration folder before every message. Codex still saves a copy of each file before changing it, and the archive supplies the previous version of any file it did not copy. Off by default. On a large configuration this adds a wait before every message and uses a lot of disk space.
   backup_retention_days:
     name: Keep backups for (days)
     description: How many days after an exchange its backups are kept, from 1 to 365. Applies to the copies Codex saves before changing a file and to full snapshots. Default is 7 days.

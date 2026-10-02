@@ -82,6 +82,7 @@ def main():
             live = task_id == "preview-00"
 
             def run():
+                """Play the worker's and Codex's steps for one exchange, then finish it."""
                 server.update_task(task_id, status="running", started_at=server.utc_now())
                 server.start_activity(task_id, server.tasks[task_id].get("current_turn_id") or "")
                 # The worker's own steps come first, as in a real run.

@@ -2074,13 +2074,24 @@ def safe_relative_path(rel: str) -> bool:
     return bool(rel) and not rel.startswith("/") and ".." not in Path(rel).parts
 
 
+def copied_files(run_dir: Path) -> dict[str, Path]:
+    """The files in an exchange's backup folder by their path under /config.
+
+    Codex can write in this folder, so links to folders are not followed.
+    """
+    root = run_dir / BACKUP_DIR
+    if root.is_symlink() or not root.is_dir():
+        return {}
+    return {
+        Path(folder, name).relative_to(root).as_posix(): Path(folder, name)
+        for folder, _, names in os.walk(root) for name in names
+    }
+
+
 def drop_credential_backups(run_dir: Path) -> None:
     """Delete copies of credential files, which Codex is told not to make."""
-    root = run_dir / BACKUP_DIR
-    if not root.is_dir() or root.is_symlink():
-        return
-    for path in root.rglob("*"):
-        if (path.is_file() or path.is_symlink()) and snapshot_secret_path(path.relative_to(root).as_posix()):
+    for rel, path in copied_files(run_dir).items():
+        if snapshot_secret_path(rel):
             try:
                 path.unlink()
             except OSError:
@@ -2156,10 +2167,7 @@ def review_backups(run_dir: Path, before: dict[str, Any], changes: dict[str, lis
     it copied, and changed YAML and dashboard files.
     """
     drop_credential_backups(run_dir)
-    root = run_dir / BACKUP_DIR
-    copied = set()
-    if root.is_dir() and not root.is_symlink():
-        copied = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
+    copied = {rel for rel, path in copied_files(run_dir).items() if not path.is_symlink()}
     existed = set(changes.get("changed", [])) | set(changes.get("deleted", []))
     reviewed = sorted(
         rel for rel in existed

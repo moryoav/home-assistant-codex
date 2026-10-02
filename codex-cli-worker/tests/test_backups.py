@@ -125,6 +125,13 @@ class SavedCopyTests(unittest.TestCase):
         (self.backups / "automations.yaml").symlink_to(outside / "automations.yaml")
         self.assertEqual(self.version("automations.yaml")["status"], "missing")
         self.backups.joinpath("automations.yaml").unlink()
+        # A linked folder is not searched for copies, so files under it are not taken for Codex's.
+        self.original("notes.txt", "old\n")
+        (self.backups / "linked").symlink_to(self.config, target_is_directory=True)
+        self.assertEqual(server.copied_files(self.run_dir), {})
+        self.assertEqual(server.review_backups(self.run_dir, self.before,
+                                               {"added": [], "changed": ["notes.txt"], "deleted": []}, set()), [])
+        (self.backups / "linked").unlink()
         self.backups.rmdir()
         self.backups.symlink_to(outside, target_is_directory=True)
         self.assertEqual(self.version("automations.yaml")["status"], "missing")

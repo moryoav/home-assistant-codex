@@ -178,7 +178,7 @@ Only the display changes. Codex receives your message exactly as you typed it, t
 
 Messages are treated as untrusted text:
 
-- HTML is shown as typed and is never interpreted.
+- HTML is shown as typed and is never interpreted. The one exception is `<br>` inside a table cell, which breaks the line.
 - Links open in a new tab and are limited to `http`, `https`, and `mailto` addresses. Any other target, such as a file path or a script address, shows its label as plain text.
 - Images are never loaded from a message, because a remote image would tell its server that the message was read. They appear as links. Images that Codex generates or that you attach are shown as before.
 - A message longer than 50,000 characters, or one that takes unusually long to format, is shown as plain text.

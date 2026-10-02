@@ -2546,6 +2546,7 @@ def auto_start_login_if_needed() -> None:
 
 
 def ha_docs_enabled() -> bool:
+    """Return whether the local documentation option is on."""
     return bool(read_options().get("local_docs", True))
 
 
@@ -2564,6 +2565,7 @@ def ha_docs_info(root: Path) -> dict[str, Any] | None:
 
 
 def _ha_docs_git(*args: str) -> str:
+    """Run one Git command without Home Assistant credentials or prompts and return its output."""
     env = codex_env()
     env.pop("HA_TOKEN", None)
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -2583,8 +2585,10 @@ def download_ha_docs(target: Path) -> dict[str, Any]:
     """Fetch the documentation text folders into target, without Git metadata."""
     shutil.rmtree(target, ignore_errors=True)
     # A blobless clone without a checkout transfers only the files selected below.
+    # Symbolic links are written as plain files so the copy cannot point outside itself.
     _ha_docs_git(
         "clone", "--quiet", "--depth", "1", "--filter=blob:none", "--no-checkout",
+        "--config", "core.symlinks=false",
         "--single-branch", "--branch", HA_DOCS_BRANCH, HA_DOCS_REPOSITORY, str(target),
     )
     repo = ("-C", str(target))
@@ -2607,7 +2611,8 @@ def download_ha_docs(target: Path) -> dict[str, Any]:
 
 
 def ha_docs_refresh_due() -> bool:
-    failed = float(ha_docs_state.get("_failed_monotonic") or 0.0)
+    """Return whether the newest copy is missing or a day old, unless a download failed recently."""
+    failed =float(ha_docs_state.get("_failed_monotonic") or 0.0)
     if failed and (time.monotonic() - failed) < HA_DOCS_RETRY_INTERVAL_SECONDS:
         return False
     info = ha_docs_info(ha_docs_sibling("staged")) or ha_docs_info(HA_DOCS_ROOT)
@@ -2621,6 +2626,7 @@ def ha_docs_refresh_due() -> bool:
 
 
 def _refresh_ha_docs_worker() -> None:
+    """Download a new copy when one is due. Only one download runs at a time."""
     with ha_docs_lock:
         if ha_docs_state["_refreshing"] or not ha_docs_refresh_due():
             return
@@ -2676,7 +2682,8 @@ def prepare_ha_docs() -> None:
 
 
 def ha_docs_status() -> dict[str, Any]:
-    info = ha_docs_info(HA_DOCS_ROOT) or {}
+    """Describe the copy in use and the last download error for /health."""
+    info =ha_docs_info(HA_DOCS_ROOT) or {}
     with ha_docs_lock:
         error = str(ha_docs_state["error"])
     return {

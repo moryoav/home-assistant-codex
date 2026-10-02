@@ -41,6 +41,49 @@ Home Assistant and other apps. This is a capture limit, not reserved RAM or a
 limit on the whole app. Save the options and restart the app if Home Assistant
 prompts you; the next capture uses the new value.
 
+## Local Home Assistant documentation
+
+From **0.1.63**, the worker keeps a copy of the official Home Assistant
+documentation in private app storage. Codex searches those files directly
+instead of running a web search for each documentation question, which is
+faster and always uses the official pages. Web search remains available for
+custom integrations, custom cards, and anything the documentation does not cover.
+
+The copy is the Markdown source of www.home-assistant.io, from the `current`
+branch of [home-assistant/home-assistant.io](https://github.com/home-assistant/home-assistant.io).
+It contains the integration pages, the action, trigger, condition, and template
+function references, the dashboard card pages, and the automation, script,
+blueprint, and configuration guides. Images, blog posts, and changelogs are not
+downloaded. The copy has about 3,600 files and uses about 25 MB in
+`/data/ha-docs`. It is left out of app backups because it can be downloaded again.
+
+When the copy is downloaded:
+
+- **At startup**, in the background, if there is no copy yet or it is more than
+  a day old. Startup does not wait for it.
+- **When a task starts** and the copy is more than a day old, again in the
+  background. That task keeps the copy it started with; the next task uses the
+  new one. An idle app makes no documentation requests.
+- **After a failed download**, the worker keeps the existing copy and waits at
+  least an hour before trying again.
+
+Until the first download finishes, tasks use web search as before. The
+documentation follows the latest Home Assistant release, so it can describe
+features that an older installation does not have yet.
+
+**Local Home Assistant documentation** (`local_docs`) in the app's
+**Configuration** tab is on by default. Turn it off to stop the downloads and
+have Codex use web search only. The authenticated `/health` response reports the
+copy under `local_docs`: `enabled`, `available`, `commit`, `fetched_at`, and the
+last download `error`.
+
+The download is an anonymous Git request to GitHub. It sends no Home Assistant
+data and no credentials; GitHub can see the host's public IP address. Symbolic
+links in the repository are stored as plain files, so the copy cannot point at
+other files on your system. The documentation is published by its authors under
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). The worker
+downloads it to your system; it is not part of this app's image.
+
 ## Distribution
 
 This app is distributed from:

@@ -56,6 +56,32 @@ CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
 CODEX_BINARY = "/usr/local/bin/codex"
 AGENTS_PATH = CONFIG_ROOT / "AGENTS.md"
 TASK_STATE_FILE = DATA_ROOT / "task_index.json"
+HA_DOCS_ROOT = DATA_ROOT / "ha-docs"
+HA_DOCS_INFO_FILE = "docs-source.json"
+HA_DOCS_REPOSITORY = "https://github.com/home-assistant/home-assistant.io.git"
+HA_DOCS_BRANCH = "current"
+# Text folders of the website source. Images, blog posts, and changelogs stay out.
+HA_DOCS_FOLDERS = (
+    "source/_integrations",
+    "source/_actions",
+    "source/_triggers",
+    "source/_conditions",
+    "source/_template_functions",
+    "source/_docs",
+    "source/_dashboards",
+    "source/dashboards",
+    "source/_includes",
+    "source/_faq",
+    "source/blueprints",
+    "source/common-tasks",
+    "source/getting-started",
+    "source/installation",
+    "source/more-info",
+    "source/voice_control",
+)
+HA_DOCS_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
+HA_DOCS_RETRY_INTERVAL_SECONDS = 60 * 60
+HA_DOCS_GIT_TIMEOUT_SECONDS = 300
 
 DEFAULT_OPTIONS = {
     "codex_model": "default",
@@ -69,6 +95,7 @@ DEFAULT_OPTIONS = {
     "config_check": True,
     "browser_verification": True,
     "browser_memory_limit_mib": DEFAULT_BROWSER_MEMORY_LIMIT_MIB,
+    "local_docs": True,
     "ha_url": "http://supervisor/core",
     "HA_TOKEN": "",
 }
@@ -252,6 +279,8 @@ usage_state: dict[str, Any] = {
     "_updated_monotonic": 0.0,
     "_refreshing": False,
 }
+ha_docs_lock = threading.RLock()
+ha_docs_state: dict[str, Any] = {"error": "", "_failed_monotonic": 0.0, "_refreshing": False}
 
 
 @app.before_request
@@ -2516,6 +2545,172 @@ def auto_start_login_if_needed() -> None:
     start_codex_login_flow(False)
 
 
+def ha_docs_enabled() -> bool:
+    """Return whether the local documentation option is on."""
+    return bool(read_options().get("local_docs", True))
+
+
+def ha_docs_sibling(suffix: str) -> Path:
+    """Return a working directory next to the documentation copy tasks read."""
+    return HA_DOCS_ROOT.with_name(f"{HA_DOCS_ROOT.name}.{suffix}")
+
+
+def ha_docs_info(root: Path) -> dict[str, Any] | None:
+    """Return the download record that marks a complete documentation copy."""
+    try:
+        info = json.loads((root / HA_DOCS_INFO_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return info if isinstance(info, dict) and isinstance(info.get("fetched_at"), str) else None
+
+
+def _ha_docs_git(*args: str) -> str:
+    """Run one Git command without Home Assistant credentials or prompts and return its output."""
+    env = codex_env()
+    env.pop("HA_TOKEN", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    proc = subprocess.run(
+        ["git", *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=HA_DOCS_GIT_TIMEOUT_SECONDS,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"git exited with code {proc.returncode}")
+    return proc.stdout.strip()
+
+
+def download_ha_docs(target: Path) -> dict[str, Any]:
+    """Fetch the documentation text folders into target, without Git metadata."""
+    shutil.rmtree(target, ignore_errors=True)
+    # A blobless clone without a checkout transfers only the files selected below.
+    # Symbolic links are written as plain files so the copy cannot point outside itself.
+    _ha_docs_git(
+        "clone", "--quiet", "--depth", "1", "--filter=blob:none", "--no-checkout",
+        "--config", "core.symlinks=false",
+        "--single-branch", "--branch", HA_DOCS_BRANCH, HA_DOCS_REPOSITORY, str(target),
+    )
+    repo = ("-C", str(target))
+    _ha_docs_git(*repo, "sparse-checkout", "set", "--no-cone", *(f"/{folder}/" for folder in HA_DOCS_FOLDERS))
+    _ha_docs_git(*repo, "checkout", "--quiet", HA_DOCS_BRANCH)
+    commit = _ha_docs_git(*repo, "rev-parse", "HEAD")
+    shutil.rmtree(target / ".git")
+    # A changed upstream layout must not replace a usable copy with an empty one.
+    if not any((target / "source" / "_integrations").glob("*.markdown")):
+        raise RuntimeError("the documentation repository has no source/_integrations pages")
+    info = {
+        "repository": HA_DOCS_REPOSITORY,
+        "branch": HA_DOCS_BRANCH,
+        "commit": commit,
+        "fetched_at": utc_now(),
+        "license": "CC BY-NC-SA 4.0",
+    }
+    atomic_json_write(target / HA_DOCS_INFO_FILE, info)
+    return info
+
+
+def ha_docs_refresh_due() -> bool:
+    """Return whether the newest copy is missing or a day old, unless a download failed recently."""
+    failed =float(ha_docs_state.get("_failed_monotonic") or 0.0)
+    if failed and (time.monotonic() - failed) < HA_DOCS_RETRY_INTERVAL_SECONDS:
+        return False
+    info = ha_docs_info(ha_docs_sibling("staged")) or ha_docs_info(HA_DOCS_ROOT)
+    if info is None:
+        return True
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(info["fetched_at"])).total_seconds()
+    except (TypeError, ValueError):
+        return True
+    return not 0 <= age < HA_DOCS_REFRESH_INTERVAL_SECONDS
+
+
+def _refresh_ha_docs_worker() -> None:
+    """Download a new copy when one is due. Only one download runs at a time."""
+    with ha_docs_lock:
+        if ha_docs_state["_refreshing"] or not ha_docs_refresh_due():
+            return
+        ha_docs_state["_refreshing"] = True
+
+    download = ha_docs_sibling("download")
+    try:
+        info = download_ha_docs(download)
+        with ha_docs_lock:
+            # A running task may be reading the current copy, so a replacement
+            # waits here until the next task starts.
+            staged = ha_docs_sibling("staged")
+            shutil.rmtree(staged, ignore_errors=True)
+            download.rename(staged)
+            if not HA_DOCS_ROOT.exists():
+                activate_ha_docs()
+            ha_docs_state.update(error="", _failed_monotonic=0.0)
+        print(f"Downloaded the Home Assistant documentation (commit {info['commit'][:12]}).", flush=True)
+    except Exception as exc:
+        shutil.rmtree(download, ignore_errors=True)
+        with ha_docs_lock:
+            ha_docs_state.update(error=_diagnostic_error(exc), _failed_monotonic=time.monotonic())
+        print(f"Could not download the Home Assistant documentation: {_diagnostic_error(exc)}", flush=True)
+    finally:
+        with ha_docs_lock:
+            ha_docs_state["_refreshing"] = False
+
+
+def activate_ha_docs() -> None:
+    """Switch to a finished download. Call before Codex starts, while no task reads the old copy."""
+    staged = ha_docs_sibling("staged")
+    old = ha_docs_sibling("old")
+    with ha_docs_lock:
+        if ha_docs_info(staged) is None:
+            return
+        shutil.rmtree(old, ignore_errors=True)
+        if HA_DOCS_ROOT.exists():
+            HA_DOCS_ROOT.rename(old)
+        staged.rename(HA_DOCS_ROOT)
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def prepare_ha_docs() -> None:
+    """Use the newest finished download and refresh it in the background when due."""
+    # Outside the app container there is no private storage to download into.
+    if not ha_docs_enabled() or not HA_DOCS_ROOT.parent.is_dir():
+        return
+    try:
+        activate_ha_docs()
+    except OSError as exc:
+        print(f"Could not switch to the downloaded Home Assistant documentation: {exc}", flush=True)
+    threading.Thread(target=_refresh_ha_docs_worker, daemon=True).start()
+
+
+def ha_docs_status() -> dict[str, Any]:
+    """Describe the copy in use and the last download error for /health."""
+    info =ha_docs_info(HA_DOCS_ROOT) or {}
+    with ha_docs_lock:
+        error = str(ha_docs_state["error"])
+    return {
+        "enabled": ha_docs_enabled(),
+        "available": bool(info),
+        "commit": str(info.get("commit") or ""),
+        "fetched_at": str(info.get("fetched_at") or ""),
+        "error": error,
+    }
+
+
+def ha_docs_note() -> str:
+    """Point Codex at the local documentation when a complete copy is available."""
+    info = ha_docs_info(HA_DOCS_ROOT) if ha_docs_enabled() else None
+    if info is None:
+        return ""
+    return f"""The official Home Assistant documentation is stored locally in {HA_DOCS_ROOT / "source"} (Markdown source of www.home-assistant.io, downloaded {info["fetched_at"][:10]}). Search and read these files with shell commands instead of searching the web for Home Assistant documentation:
+  _integrations/<domain>.markdown: setup and configuration of an integration
+  _actions/<domain>.<action>.markdown, _triggers/<domain>.<trigger>.markdown, _conditions/<domain>.<condition>.markdown: one page per action, trigger, and condition
+  _template_functions/<name>.markdown: template functions and filters
+  _docs/: automations, scripts, templating, blueprints, and YAML configuration
+  _dashboards/<card>.markdown and dashboards/: dashboard cards, views, badges, and features
+Pages contain Liquid tags; snippets they include are under _includes. Search for the relevant section instead of reading long pages in full. Use web search for custom integrations, custom cards, and anything these files do not cover.
+
+"""
+
+
 def codex_env() -> dict[str, str]:
     env = dict(os.environ)
     for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_VERIFICATION_CAPABILITY"):
@@ -2562,6 +2757,7 @@ def attached_image_note(task_id: str) -> str:
 def build_prompt(user_prompt: str, task_id: str, reply: str | None = None) -> str:
     current_request = reply if reply is not None else user_prompt
     attached = attached_image_note(task_id)
+    docs = ha_docs_note()
     return f"""You are Codex running as a Home Assistant add-on worker.
 
 Workspace: /config
@@ -2583,7 +2779,7 @@ The MCP tool runs through the worker outside the shell network sandbox. Do not a
 Use fresh entity readback after any user-authorized reload or change. These tools do not perform reloads or device actions. Only perform those when authorized by the user. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
 After an authorized storage-dashboard edit, add "save_pending":true to the dashboard request to have the worker save that turn's pending dashboard edit and verify API readback before capturing it. This requires auto_save_lovelace to be enabled. Without save_pending, the browser inspects only the dashboard currently loaded in Home Assistant.
 
-At the end, return only an object matching the provided JSON schema:
+{docs}At the end, return only an object matching the provided JSON schema:
 - status: "completed", "needs_input", or "failed"
 - summary: concise result
 - question: use an empty string unless status is "needs_input"
@@ -2995,6 +3191,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         )
         return
 
+    prepare_ha_docs()
     try:
         prompt_file.write_text(build_prompt(prompt, task_id, reply=reply), encoding="utf-8")
     except OSError as exc:
@@ -3304,6 +3501,7 @@ def health() -> Response:
             "auth_flow": auth_status_payload(),
             "task_root": str(task_root()),
             "sandbox_readiness": sandbox,
+            "local_docs": ha_docs_status(),
         }
     )
 
@@ -3776,6 +3974,10 @@ def main() -> None:
     load_task_index()
     verification.cleanup()
     verification.serve(DATA_ROOT / "verification.sock")
+    # Nothing else is running yet, so interrupted work from the last run can go.
+    for leftover in ("download", "old"):
+        shutil.rmtree(ha_docs_sibling(leftover), ignore_errors=True)
+    prepare_ha_docs()
     auto_start_login_if_needed()
     threading.Thread(target=stdin_reader, daemon=True).start()
     app.run(host="0.0.0.0", port=9123)

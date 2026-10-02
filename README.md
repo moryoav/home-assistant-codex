@@ -59,8 +59,9 @@ This repository contains two pieces:
 - Starts Codex tasks from Home Assistant actions, scripts, automations, or Assist/LLM tools.
 - Keeps saved conversations so you can return to an earlier chat and continue with its context.
 - Provides a chat UI with a resizable sidebar, mobile navigation, and light/dark themes.
-- Shows what Codex is doing while it works: reasoning headlines, commands, file edits, searches, and tool calls appear live under your message.
-- Asks Home Assistant to check the configuration after YAML edits, fails the task on errors, and keeps pre-change copies of the affected files for recovery.
+- Shows what Codex is doing while it works: reasoning headlines, commands, file edits, searches, and tool calls appear live under your message, with a timer from the moment you send it.
+- Asks Home Assistant to check the configuration after YAML edits and fails the task on errors.
+- Has Codex save the previous version of each file before changing it, reports changed files that have no saved copy, and removes the copies after a number of days you choose.
 - Mounts the Home Assistant config folder as `/config` inside the worker app.
 - Runs tasks non-interactively and stores task logs/results under `/config/codex_tasks`.
 - Supports Codex device-code sign-in through Home Assistant persistent notifications.
@@ -147,7 +148,7 @@ The app keeps an internal worker API token in private app storage. The **Codex**
 
 The app's web UI is available through Home Assistant Ingress. Do not try to open port `9123` directly; it is intentionally not exposed.
 
-The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model. You can also select GPT-6 Astra, Sol, or Luna, or the older GPT-5.6 Sol, Terra, or Luna explicitly, with GPT-5.5 retained as a legacy fallback. Model availability depends on your account. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota. For GPT-6 Astra, Sol, and Luna, select `low`, `medium`, `high`, or `xhigh`. The `reasoning_summary` option controls whether Codex reports its reasoning in the chat's activity list: `concise` headlines by default, `detailed`, or `none`. The `config_check` option, on by default, has Home Assistant check its configuration after a task changes YAML files; a failing check fails the task and keeps pre-change copies of the affected files.
+The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model. You can also select GPT-6 Astra, Sol, or Luna, or the older GPT-5.6 Sol, Terra, or Luna explicitly, with GPT-5.5 retained as a legacy fallback. Model availability depends on your account. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota. For GPT-6 Astra, Sol, and Luna, select `low`, `medium`, `high`, or `xhigh`. The `reasoning_summary` option controls whether Codex reports its reasoning in the chat's activity list: `concise` headlines by default, `detailed`, or `none`. The `config_check` option, on by default, has Home Assistant check its configuration after a task changes YAML files; a failing check fails the task and points to the saved previous version of the affected files. Codex saves a copy of each file before changing it; the `backup_retention_days` option, 7 by default, sets how long these copies are kept, and the `full_snapshot` option, off by default, archives the whole configuration folder before every message instead.
 
 The app web UI can view and save `/config/AGENTS.md`. You can also set the masked `HA_TOKEN` option when Codex tasks need a Home Assistant token in their environment.
 

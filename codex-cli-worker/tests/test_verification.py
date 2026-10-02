@@ -161,8 +161,8 @@ class VerificationTests(unittest.TestCase):
             self.assertEqual(archive.getnames(), [".storage/lovelace"])
         self.assertIn("secrets.yaml", server.build_manifest())
         self.assertEqual(snapshot["file_count"], 1)
-        recovery = server.preserve_recovery_copies(server.get_run_dir("chat"),
-            {"added": [], "changed": ["secrets.yaml"], "deleted": []}, ["secrets.yaml"])
+        recovery = server.recovery_copies(server.get_run_dir("chat"),
+            {"added": [], "changed": ["secrets.yaml"], "deleted": []}, ["secrets.yaml"], {})
         details = server.validation_details(["secrets.yaml: bad YAML"], {}, recovery)
         self.assertIn("excluded from recovery", details)
         self.assertNotIn("New files", details)

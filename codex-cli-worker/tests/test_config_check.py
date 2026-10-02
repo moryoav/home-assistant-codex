@@ -1,4 +1,4 @@
-"""Home Assistant configuration check, recovery copies, and gated dashboard saves."""
+"""Home Assistant configuration check, pre-change copies, and gated dashboard saves."""
 from __future__ import annotations
 
 import json
@@ -69,7 +69,7 @@ class CheckConfigApiTests(unittest.TestCase):
 
 
 class AssessChangesTests(unittest.TestCase):
-    """Validation, the configuration check, recovery copies, and dashboard saves after a run."""
+    """Validation, the configuration check, pre-change copies, and dashboard saves after a run."""
 
     def setUp(self):
         """Use a temporary config tree and run directory with the Home Assistant calls faked."""
@@ -91,7 +91,7 @@ class AssessChangesTests(unittest.TestCase):
         self.stack.enter_context(patch.object(server, "read_lovelace_registry", return_value={}))
 
     def snapshot(self, files):
-        """Write files into the config tree and record them in the run's pre-change snapshot."""
+        """Write files into the config tree and record them in the run's full snapshot."""
         with tarfile.open(self.run_dir / "snapshot-before.tar.gz", "w:gz") as tar:
             for rel, content in files.items():
                 path = self.config / rel
@@ -113,7 +113,7 @@ class AssessChangesTests(unittest.TestCase):
         self.assertEqual(result["config_check"]["result"], "valid")
         self.assertEqual(result["recovery_files"], [])
         self.check.assert_called_once()
-        self.assertFalse((self.run_dir / "recovery").exists())
+        self.assertFalse((self.run_dir / "backups").exists())
 
     def test_failed_check_fails_validation_and_keeps_pre_change_copies(self):
         self.snapshot({"automations.yaml": "- alias: old\n"})
@@ -123,14 +123,14 @@ class AssessChangesTests(unittest.TestCase):
         result = server.assess_changes("t", self.run_dir, {"added": ["packages/new.yaml"], "changed": ["automations.yaml"], "deleted": []})
         self.assertEqual(result["validation_errors"], ["Home Assistant configuration check failed: required key 'trigger' not provided"])
         self.assertEqual(result["config_check"]["result"], "invalid")
-        copy_path = self.run_dir / "recovery" / "automations.yaml"
+        copy_path = self.run_dir / "backups" / "automations.yaml"
         self.assertEqual(result["recovery_files"], [
             {"path": "automations.yaml", "copy": str(copy_path.resolve())},
             {"path": "packages/new.yaml", "copy": ""},
         ])
         self.assertEqual(copy_path.read_text(encoding="utf-8"), "- alias: old\n")
         details = server.validation_details(result["validation_errors"], result["config_check"], result["recovery_files"])
-        self.assertIn("Pre-change copies of the affected files are kept at: " + str(copy_path.resolve()), details)
+        self.assertIn("Pre-change copies of the affected files are kept for 7 days at: " + str(copy_path.resolve()), details)
         self.assertIn("New files that did not exist before: packages/new.yaml", details)
         self.assertIn("Home Assistant warnings: w", details)
 
@@ -148,7 +148,7 @@ class AssessChangesTests(unittest.TestCase):
             "success": False, "message": "Not saved: the file failed validation.",
         }])
         self.assertEqual({entry["path"] for entry in result["recovery_files"]}, {".storage/lovelace.home", "scripts.yaml"})
-        self.assertTrue((self.run_dir / "recovery" / ".storage" / "lovelace.home").is_file())
+        self.assertTrue((self.run_dir / "backups" / ".storage" / "lovelace.home").is_file())
 
     def test_storage_only_changes_skip_the_check_but_save_dashboards(self):
         self.write(".storage/lovelace.home", json.dumps({"data": {"config": {"views": []}}}))
@@ -188,12 +188,12 @@ class RunTaskWiringTests(unittest.TestCase):
         task, events = self.run_with({
             "validation_errors": ["Home Assistant configuration check failed: bad"],
             "config_check": {"result": "invalid", "errors": "bad", "warnings": ""},
-            "recovery_files": [{"path": "automations.yaml", "copy": "/tasks/x/recovery/automations.yaml"}],
+            "recovery_files": [{"path": "automations.yaml", "copy": "/tasks/x/backups/automations.yaml"}],
             "lovelace_results": [],
         })
         self.assertEqual(task["status"], "failed")
         self.assertIn("Validation errors: Home Assistant configuration check failed: bad", task["details"])
-        self.assertIn("/tasks/x/recovery/automations.yaml", task["details"])
+        self.assertIn("/tasks/x/backups/automations.yaml", task["details"])
         self.assertEqual(task["config_check"]["result"], "invalid")
         self.assertEqual(events[-1]["config_check"]["result"], "invalid")
         self.assertEqual(events[-1]["recovery_files"][0]["path"], "automations.yaml")

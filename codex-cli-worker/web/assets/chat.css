@@ -677,6 +677,10 @@ h1 {
   border-radius: 50%;
   background: var(--accent);
   margin-right: 10px;
+  animation: activity-pulse 1.4s ease-in-out infinite;
+}
+.elapsed {
+  font-variant-numeric: tabular-nums;
 }
 .activity {
   margin-top: 14px;

@@ -236,7 +236,11 @@ function openPicker(name) {
       };
       options.append(button);
     }
-    options.querySelector('[aria-pressed="true"]').focus();
+    // A chat can hold a model that is no longer in the list; then none is marked.
+    (
+      options.querySelector('[aria-pressed="true"]') ||
+      options.firstElementChild
+    )?.focus();
   } else {
     renderEffort();
     $("effort-slider").focus();

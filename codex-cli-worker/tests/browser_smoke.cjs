@@ -596,6 +596,27 @@ function pngBuffer(width = 8, height = 6) {
     });
     await page.getByRole("button", { name: "New chat", exact: false }).click();
     assert.equal(await page.locator(".answer").count(), 0);
+    // A chat that holds a model no longer in the list can still open the menu:
+    // the button shows the id, no row is marked, and the first row has the focus.
+    await page.evaluate(() => {
+      state.chatSettings.set(null, { model: "gone", reasoning_effort: null });
+      controls();
+    });
+    assert.equal(await page.locator("#model-button").textContent(), "gone");
+    await page.locator("#model-button").click();
+    assert.equal(
+      await page.locator('#model-options [aria-pressed="true"]').count(),
+      0,
+    );
+    assert.equal(
+      await page.evaluate(() => document.activeElement.textContent),
+      "GPT-6 Astra",
+    );
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => {
+      state.chatSettings.delete(null);
+      controls();
+    });
     // A new chat names the model it runs on, and the menu marks that model.
     assert.equal(
       await page.locator("#model-button").textContent(),

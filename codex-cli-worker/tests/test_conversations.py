@@ -275,6 +275,33 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(server.tasks[task_id], before)
 
+    def test_log_is_served_only_for_a_saved_task(self):
+        """The log route returns a saved task's Codex log, and nothing for the sign-in log or any other folder."""
+        task_id = self.create()
+        # A task without a log yet gets an empty answer.
+        self.assertEqual(self.client.get(f"/tasks/{task_id}/log", headers=self.headers).text, "")
+        server.write_task_log(task_id, "stdout", "first step")
+        response = self.client.get(f"/tasks/{task_id}/log", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("stdout: first step", response.text)
+        # The sign-in output is logged in the task folder under "auth", which is not a task.
+        server.write_task_log("auth", "codex-login", "sign-in output")
+        (self.root / "codex.log").write_text("outside the task folder")
+        for name in ("auth", "missing", "..", "%2e%2e"):
+            with self.subTest(name=name):
+                response = self.client.get(f"/tasks/{name}/log", headers=self.headers)
+                self.assertEqual(response.status_code, 404)
+                self.assertNotIn("sign-in output", response.text)
+                self.assertNotIn("outside the task folder", response.text)
+        self.assertEqual(self.client.get(f"/tasks/{task_id}/log").status_code, 401)
+
+    def test_missing_worker_token_is_reported_as_such(self):
+        """Without a worker token every API route answers 503 and names the token, not the add-on options."""
+        with patch.object(server, "api_token", return_value=""):
+            response = self.client.get("/chat-options", headers=self.headers)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json["error"], "worker API token is not available")
+
     def test_legacy_reply_remains_waiting_only(self):
         """The legacy reply endpoint accepts a reply only while the task is waiting for input."""
         task_id = self.create()

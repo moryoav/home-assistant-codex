@@ -1892,7 +1892,7 @@ def require_auth(func):
             return func(*args, **kwargs)
         expected = api_token()
         if not expected:
-            return jsonify({"ok": False, "error": "api_token is not configured in add-on options"}), 503
+            return jsonify({"ok": False, "error": "worker API token is not available"}), 503
         supplied = request.headers.get("X-Codex-Worker-Token", "")
         auth = request.headers.get("Authorization", "")
         if auth.lower().startswith("bearer "):
@@ -4181,6 +4181,13 @@ def get_task(task_id: str) -> Response:
 @require_auth
 def get_log(task_id: str) -> Response:
     """Return the end of a task's codex.log as plain text."""
+    # Only a saved task has a log to give out: the sign-in log and any other
+    # folder that holds a codex.log are not tasks.
+    if TASK_ID_RE.fullmatch(task_id) is None:
+        return jsonify({"ok": False, "error": "task not found"}), 404
+    with lock:
+        if task_id not in tasks:
+            return jsonify({"ok": False, "error": "task not found"}), 404
     path = get_task_dir(task_id) / "codex.log"
     if not path.exists():
         return Response("", mimetype="text/plain")

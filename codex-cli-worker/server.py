@@ -389,7 +389,11 @@ def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> 
     )
     effort = settings.get("reasoning_effort")
     if effort is not None and effort not in efforts:
-        raise ValueError("The selected reasoning level is not supported by this model.")
+        if settings.get("model"):
+            raise ValueError("The selected reasoning level is not supported by this model.")
+        # The chat follows the add-on's model, which can change under a saved level.
+        # The chat then shows Medium, so the run uses it.
+        effort = "medium"
     if effort is None:
         effort = model_reasoning_effort(options)
         # The add-on level may not suit the model: none offered supports minimal, and

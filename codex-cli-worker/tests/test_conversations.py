@@ -226,9 +226,14 @@ class ConversationTests(unittest.TestCase):
                 catalog = self.client.get("/chat-options", headers=self.headers).json
                 self.assertEqual(catalog["default_model"], model)
                 self.assertEqual(catalog["default_efforts"], levels[:levels.index(highest) + 1])
+                # A level that model lacks runs Medium, as the chat shows, and stays saved for a model that has it.
+                response = self.post("/tasks", {"prompt": "Review", "chat_settings": {"reasoning_effort": "ultra"}})
+                self.assertEqual(response.status_code, 200)
+                task_id = response.json["task_id"]
+                self.assertEqual(server.tasks[task_id]["turns"][0]["execution_settings"]["reasoning_effort"], "medium")
+                self.assertEqual(server.tasks[task_id]["chat_settings"]["reasoning_effort"], "ultra")
+                self.finish(task_id)
                 # The reasoning levels are that model's, and the run still names no model.
-                rejected = self.post("/tasks", {"prompt": "Review", "chat_settings": {"reasoning_effort": "ultra"}})
-                self.assertEqual(rejected.status_code, 400)
                 response = self.post("/tasks", {"prompt": "Review", "chat_settings": {"reasoning_effort": highest}})
                 self.assertEqual(response.status_code, 200)
                 task_id = response.json["task_id"]

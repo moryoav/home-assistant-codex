@@ -550,6 +550,140 @@ h1 {
   margin-top: 14px;
   font-weight: 500;
 }
+/* Messages formatted as Markdown. A message shown as plain text keeps pre-wrap. */
+.markdown {
+  white-space: normal;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown .md-code,
+.markdown .md-table {
+  margin: 0 0 12px;
+}
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 20px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.markdown h3 {
+  font-size: 18px;
+}
+.markdown h4 {
+  font-size: 16px;
+}
+.markdown h6 {
+  color: var(--muted);
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 24px;
+}
+.markdown li > ul,
+.markdown li > ol {
+  margin: 2px 0;
+}
+.markdown li > p {
+  margin-bottom: 6px;
+}
+.markdown .md-task {
+  list-style: none;
+}
+.markdown .md-task input {
+  margin: 0 8px 0 -20px;
+  vertical-align: -1px;
+}
+.markdown blockquote {
+  padding-left: 14px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+.markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+.markdown hr {
+  margin: 18px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.markdown a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+.markdown code {
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.md-code {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.md-lang {
+  padding: 7px 14px 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+.md-code pre {
+  margin: 0;
+  padding: 10px 14px;
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.6;
+  scrollbar-width: thin;
+}
+.md-code code {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.md-table {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.markdown table {
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.6;
+  /* Columns keep whole words; a table that is too wide scrolls sideways. */
+  overflow-wrap: normal;
+}
+.markdown th,
+.markdown td {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.markdown th {
+  background: var(--surface);
+  font-weight: 600;
+}
+/* The bubble of a sent message already has the surface colour. */
+.message.user :not(pre) > code,
+.message.user .md-code,
+.message.user th {
+  background: var(--bg);
+}
 .check {
   display: flex;
   flex-wrap: wrap;

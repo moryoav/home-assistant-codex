@@ -56,6 +56,8 @@ function pngBuffer(width = 8, height = 6) {
     });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    const requested = [];
+    page.on("request", (request) => requested.push(request.url()));
     await page.goto("http://127.0.0.1:9137/preview/");
     await page.locator(".chat-row").first().waitFor();
     assert.equal(await page.locator(".chat-row").count(), 20);
@@ -170,11 +172,94 @@ function pngBuffer(width = 8, height = 6) {
       fullPage: true,
       animations: "disabled",
     });
+    // Markdown in a sent message and in the answer is shown formatted.
+    await page.locator('[data-task-id="preview-04"]').click();
+    const sentMarkdown = page.locator("#messages .message.user");
+    await sentMarkdown.locator("pre").waitFor();
+    assert.equal(
+      await sentMarkdown.locator("pre code").textContent(),
+      "trigger:\n  - platform: sun\n    event: sunset",
+    );
+    assert.equal(await sentMarkdown.locator(".md-lang").textContent(), "yaml");
+    assert.equal(
+      await sentMarkdown.locator("p code").textContent(),
+      "automation.evening_lights",
+    );
+    assert.equal(
+      await sentMarkdown.locator("strong").textContent(),
+      "20 minutes before sunset",
+    );
+    const answerMarkdown = page.locator("#messages .answer");
+    assert.equal(
+      await answerMarkdown.locator(".message").first().textContent(),
+      "Done. automation.evening_lights now starts 20 minutes before sunset.",
+    );
+    assert.equal(await answerMarkdown.locator("h4").textContent(), "What changed");
+    assert.equal(await answerMarkdown.locator("h5").textContent(), "Next steps");
+    assert.equal(await answerMarkdown.locator("ul > li").count(), 2);
+    assert.equal(await answerMarkdown.locator("ol > li").count(), 2);
+    assert.equal(await answerMarkdown.locator("em").textContent(), "scene");
+    assert.match(
+      await answerMarkdown.locator("pre code").textContent(),
+      /^trigger:\n {2}- platform: sun\n[^]*now asks\."$/,
+    );
+    assert.deepEqual(await answerMarkdown.locator("th").allTextContents(), [
+      "Check",
+      "Result",
+    ]);
+    // A <br> breaks the line inside a table cell.
+    assert.equal(await answerMarkdown.locator("td br").count(), 1);
+    assert.equal(
+      await answerMarkdown.locator("blockquote").textContent(),
+      "A negative offset runs before the event, a positive one after it.",
+    );
+    const docsLink = answerMarkdown.locator("a");
+    assert.equal(
+      await docsLink.getAttribute("href"),
+      "https://www.home-assistant.io/docs/automation/trigger/#sun-trigger",
+    );
+    assert.equal(await docsLink.getAttribute("target"), "_blank");
+    assert.equal(await docsLink.getAttribute("rel"), "noreferrer noopener");
+    // None of the Markdown symbols are left in the conversation or its preview.
+    assert.doesNotMatch(
+      await page.locator("#messages").textContent(),
+      /```|\*\*|##|<br>|\]\(/,
+    );
+    assert.equal(
+      await page
+        .locator('[data-task-id="preview-04"] .row-preview')
+        .textContent(),
+      "Done. automation.evening_lights now starts 20 minutes before sunset.",
+    );
+    await page.setViewportSize({ width: 1440, height: 1400 });
+    await page.screenshot({
+      path: path.join(output, "markdown.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 1440, height: 950 });
+    // A message that would keep the parser busy, or is very long, stays plain text.
+    assert.deepEqual(
+      await page.evaluate(() => {
+        const slow = renderMarkdown("**a ".repeat(12000), "message");
+        const long = renderMarkdown("# Title\n" + "a".repeat(50000), "message");
+        return [
+          slow.className,
+          slow.childElementCount,
+          slow.textContent.length,
+          long.className,
+          long.childElementCount,
+        ];
+      }),
+      ["message", 0, 48000, "message", 0],
+    );
     await page.locator('[data-task-id="preview-00"]').click();
     await page
       .locator("#messages")
       .getByText("Your evening routine looks good.", { exact: false })
       .waitFor();
+    // The numbered suggestions of this answer are a list.
+    assert.equal(await page.locator("#messages .details ol > li").count(), 2);
     // A finished exchange keeps its steps behind a collapsed toggle.
     const storedToggle = page.locator("#activity .activity-toggle");
     await storedToggle.waitFor();
@@ -445,6 +530,84 @@ function pngBuffer(width = 8, height = 6) {
     assert.equal(
       await page.locator("#effort-button svg.picker-chevron").count(),
       1,
+    );
+    // Markdown typed into a message is formatted, but cannot add markup, load
+    // an image, or open anything other than a web or mail address.
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    const typed = [
+      "First line",
+      "second line with `inline code`",
+      "",
+      "```",
+      "<i>code</i> **stays** as typed",
+      "```",
+      "",
+      "[script](javascript:window.untrustedRan=true) [file](/config/automations.yaml)",
+      "![remote image](https://example.invalid/pixel.png)",
+      "<b>raw</b> <script>window.untrustedRan=true</script>",
+      "[site](https://www.home-assistant.io/)",
+    ].join("\n");
+    await page.locator("#message").fill(typed);
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
+    await page.locator("#messages .answer pre").waitFor();
+    const typedMessage = page.locator("#messages .message.user");
+    // A single Enter is still a line break.
+    assert.equal(await typedMessage.locator("p").first().locator("br").count(), 1);
+    assert.equal(
+      await typedMessage.locator("p code").textContent(),
+      "inline code",
+    );
+    assert.equal(
+      await typedMessage.locator("pre code").textContent(),
+      "<i>code</i> **stays** as typed",
+    );
+    assert.match(
+      await typedMessage.textContent(),
+      /<b>raw<\/b> <script>window\.untrustedRan=true<\/script>/,
+    );
+    assert.equal(
+      await page.locator("#messages").locator("img, b, i, script").count(),
+      0,
+    );
+    // The same text is in the sent message and in the echoed answer.
+    assert.deepEqual(
+      await page
+        .locator("#messages a")
+        .evaluateAll((links) =>
+          links.map((link) => [link.textContent, link.href, link.target, link.rel]),
+        ),
+      Array(2)
+        .fill([
+          [
+            "remote image",
+            "https://example.invalid/pixel.png",
+            "_blank",
+            "noreferrer noopener",
+          ],
+          [
+            "site",
+            "https://www.home-assistant.io/",
+            "_blank",
+            "noreferrer noopener",
+          ],
+        ])
+        .flat(),
+    );
+    assert.equal(await page.evaluate(() => window.untrustedRan), undefined);
+    assert.deepEqual(
+      requested.filter((url) => url.includes("example.invalid")),
+      [],
+    );
+    // Codex receives the message exactly as it was typed.
+    assert.equal(
+      await page.evaluate(
+        async () =>
+          (await (await fetch("tasks/" + state.id)).json()).task.turns.at(-1)
+            .message,
+      ),
+      typed,
     );
     // Attach an image to a new chat: pending strip, remove, re-add, send.
     await page.getByRole("button", { name: "New chat", exact: false }).click();
@@ -730,6 +893,29 @@ function pngBuffer(width = 8, height = 6) {
       fullPage: true,
       animations: "disabled",
     });
+    await page.keyboard.press("Escape");
+    // On a phone, a long code line scrolls inside its block instead of widening the page.
+    await page
+      .getByRole("button", { name: "Open conversations", exact: true })
+      .click();
+    await page.locator('[data-task-id="preview-04"]').click();
+    const wideCode = page.locator("#messages .answer pre");
+    await wideCode.waitFor();
+    assert.equal(
+      await wideCode.evaluate((pre) => pre.scrollWidth > pre.clientWidth),
+      true,
+    );
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+    await page.screenshot({
+      path: path.join(output, "markdown-mobile-dark.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
     // Long press on a phone opens the actions sheet without selecting the chat.
     const touch = await browser.newContext({
       viewport: { width: 390, height: 844 },
@@ -815,7 +1001,7 @@ function pngBuffer(width = 8, height = 6) {
     await webview.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

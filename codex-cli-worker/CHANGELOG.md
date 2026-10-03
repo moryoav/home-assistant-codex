@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.66
+
+- **Show Markdown as formatting in the chat.** The web UI used to show Markdown symbols as typed, in your messages and in Codex's answers. It now formats them: code blocks between triple backticks, inline code between single backticks, headings, bold and italic text, lists, task lists, quotes, tables, and links.
+- Code blocks have their own background and a language label, keep their indentation, and scroll sideways when a line is too long. Wide tables scroll the same way, so the chat stays readable on a phone.
+- A single Enter is still a line break. Only the display changes: Codex receives your message exactly as you typed it, and Home Assistant actions and events return the same text as before.
+- HTML in a message is shown as text and is never interpreted. Links are limited to web and mail addresses and open in a new tab. Images are not loaded from a message; they appear as links instead.
+- The preview of each chat in the sidebar shows the answer without Markdown symbols.
+- The Markdown parser, [marked](https://github.com/markedjs/marked) 18.0.14 (MIT), is bundled with the app, so the chat does not load scripts from another server.
+
+Update the **Codex CLI Worker** app to **0.1.66** for formatted messages. The **Codex** integration is also released as **0.1.66** so that both carry the same version; its code is unchanged.
+
 ## 0.1.65
 
 - **GPT-6.1 Sol can be selected.** It appears in the add-on model option and in the chat's model menu, between GPT-6 Astra and GPT-6 Sol, and supports reasoning from Low through Ultra. OpenAI describes it as close to Astra for complex work at a lower cost. GPT-6 Sol stays available as the previous version. Model availability depends on your account.

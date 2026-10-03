@@ -431,7 +431,9 @@ function renderRow(chat) {
   main.append(
     textNode(
       "span",
-      chat.summary || chat.question || labels[chat.status] || chat.status,
+      markdownPlain(chat.summary || chat.question) ||
+        labels[chat.status] ||
+        chat.status,
       "row-preview",
     ),
   );
@@ -777,7 +779,7 @@ function renderTask(force = false) {
         ),
       );
     if (turn.message)
-      exchange.append(textNode("div", turn.message, "message user"));
+      exchange.append(renderMarkdown(turn.message, "message user"));
     const attachments = imageAttachments(turn.attachments);
     const hasAnswer =
       turn.summary || turn.details || turn.question || attachments.length || turn.verification?.length;
@@ -786,11 +788,11 @@ function renderTask(force = false) {
       const heading = textNode("div", "", "answer-heading");
       heading.append(textNode("span", "⌘", "mark"), textNode("span", "Codex"));
       answer.append(heading);
-      if (turn.summary) answer.append(textNode("div", turn.summary, "message"));
+      if (turn.summary) answer.append(renderMarkdown(turn.summary, "message"));
       if (turn.details && turn.details !== turn.summary)
-        answer.append(textNode("div", turn.details, "message details"));
+        answer.append(renderMarkdown(turn.details, "message details"));
       if (turn.question && turn.question !== turn.summary)
-        answer.append(textNode("div", turn.question, "message question"));
+        answer.append(renderMarkdown(turn.question, "message question"));
       const check = renderConfigCheck(turn.config_check);
       if (check) answer.append(check);
       answer.append(...renderBackups(turn));

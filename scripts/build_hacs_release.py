@@ -18,6 +18,7 @@ CHANGELOG = ROOT / "codex-cli-worker" / "CHANGELOG.md"
 
 
 def build(tag: str, output_dir: Path) -> Path:
+    """Validate release metadata and write the integration ZIP and release notes."""
     if TAG_PATTERN.fullmatch(tag) is None:
         raise ValueError(f"Expected a vX.Y.Z tag, got {tag!r}")
 
@@ -92,6 +93,7 @@ def build(tag: str, output_dir: Path) -> Path:
 
 
 def main() -> int:
+    """Build the requested release and return a command-line exit status."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tag", help="vX.Y.Z release tag")
     parser.add_argument("output_dir", type=Path, help="Directory outside the repository for the ZIP")

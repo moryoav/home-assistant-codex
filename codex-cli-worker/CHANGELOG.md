@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.67
+
+- **The remaining quota is shown as bars.** Below **Home Assistant workspace** in the sidebar, the 5h and 7d quotas each have a bar next to the percentage. The filled part is the quota left: green, and red when less than 5% is left. Hover over a bar to see when the quota resets. Until the worker has a value, the bar is an empty outline.
+- **The model button names the model.** A chat without a model of its own used to show **Default**. It now shows the model it runs on: the one set in the app's **Codex model** option or, when that option is `default`, the one Codex picks for your account. The worker reads that from Codex's own status report when it checks the quota, and shows the model the bundled CLI recommends, GPT-6.1 Sol, until the first report.
+- The model menu no longer has a separate **Default** entry. The list marks the model the chat runs on, and choosing the model the app is set to makes the chat follow the app setting again.
+- With the **Codex model** option on `default`, such a chat can use every reasoning level of the model Codex picks, including Max and Ultra where the model has them, instead of only Low through Extra High.
+- `GET /chat-options` returns that model as `default_model`. Runs start as before: with the option on `default`, the worker names no model and Codex chooses it.
+
+Update the **Codex CLI Worker** app to **0.1.67** for the quota bars and the model name. The **Codex** integration is also released as **0.1.67** so that both carry the same version; its code is unchanged.
+
 ## 0.1.66
 
 - **Show Markdown as formatting in the chat.** The web UI used to show Markdown symbols as typed, in your messages and in Codex's answers. It now formats them: code blocks between triple backticks, inline code between single backticks, headings, bold and italic text, lists, task lists, quotes, tables, and links.

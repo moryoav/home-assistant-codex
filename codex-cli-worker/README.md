@@ -24,6 +24,6 @@ Attach screenshots, photos, or design mockups to a message with the paperclip bu
 
 Hover over a chat and use its **⋯** button, right-click the row, or long-press it on a phone to pin, rename, or delete the conversation. Pinned chats stay at the top of the list, and deleting asks for confirmation first.
 
-Use the model name and reasoning label below the message box to customize each conversation. Choices are saved across restarts and apply to the next message. The model menu's **Default** option and the reasoning picker's reset button restore the add-on defaults. The slider only offers reasoning levels supported by the selected model.
+Use the model name and reasoning label below the message box to customize each conversation. Choices are saved across restarts and apply to the next message. A chat that has no model of its own names the model it runs on: the one set in the add-on options, or the one Codex picks when that option is `default`. Choosing that model in the menu, or the reasoning picker's reset button, restores the add-on default. The slider only offers reasoning levels supported by the selected model.
 
 ![Saved conversations in the desktop chat UI](https://raw.githubusercontent.com/moryoav/home-assistant-codex/v0.1.46/examples/chat-ui/desktop.png)

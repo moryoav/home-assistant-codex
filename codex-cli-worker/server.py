@@ -90,6 +90,9 @@ CHAT_MODELS = (
     ("gpt-5.6-luna", "GPT-5.6 Luna", ("low", "medium", "high", "xhigh", "max")),
 )
 CHAT_MODEL_EFFORTS = {model: efforts for model, _, efforts in CHAT_MODELS}
+# The model the bundled CLI picks when none is named. The CLI refreshes its model
+# list per account, so the model its own /status names replaces this once seen.
+CLI_DEFAULT_MODEL = "gpt-6.1-sol"
 # Models that are no longer offered, each with the next model up. An add-on option
 # or a chat that still has one selected runs on the first model in that chain
 # that is still offered. The option schema keeps accepting them: Home Assistant
@@ -159,6 +162,9 @@ WEEKLY_RE = re.compile(
     r"(?P<percent>\d{1,3})%(?:\s+left)?(?:\s+\(resets\s+(?P<reset>[^)]+)\))?"
 )
 CONTEXT_RE = re.compile(r"(?i)(?<!\w)context\s+(?P<percent>\d{1,3})%\s+left\b")
+# The /status panel's own line, as in "Model:   GPT-6.1-Sol (reasoning low, summaries auto)".
+# The startup banner's lowercase "model:" is not it.
+STATUS_MODEL_RE = re.compile(r"(?<![\w.-])Model:[ \t]+(?P<model>[A-Za-z0-9][\w.-]*(?: [\w.-]+)*)(?=[ \t]*[(\n])")
 RESET_TIME_RE = re.compile(
     r"(?i)^\s*(?P<hour>\d{1,2}):(?P<minute>\d{2})"
     r"(?:\s+on\s+(?P<day>\d{1,2})\s+(?P<month>[a-z]{3,9})(?:\s+(?P<year>\d{4}))?)?\s*$"
@@ -259,6 +265,7 @@ usage_state: dict[str, Any] = {
     "error": "",
     "_updated_monotonic": 0.0,
     "_refreshing": False,
+    "_default_model": "",
 }
 
 
@@ -348,6 +355,16 @@ def current_model(model: Any) -> Any:
     return model
 
 
+def default_model(options: dict[str, Any]) -> str:
+    """Return the model a chat runs on when it has not selected one."""
+    model = current_model(str(options.get("codex_model") or "default"))
+    if model in {"default", "gpt-5.3-codex"}:
+        # The add-on leaves the choice to the CLI.
+        with usage_lock:
+            return str(usage_state.get("_default_model") or CLI_DEFAULT_MODEL)
+    return model
+
+
 def current_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Return chat selections with a model that is no longer offered replaced by the next one up."""
     settings = copy.deepcopy(settings)
@@ -366,7 +383,10 @@ def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> 
     model = settings.get("model") or current_model(str(options.get("codex_model") or "default"))
     if model == "gpt-5.3-codex":
         model = "default"
-    efforts = CHAT_MODEL_EFFORTS.get(model, ("low", "medium", "high", "xhigh"))
+    # A run on default names no model; its levels are those of the model the CLI picks.
+    efforts = CHAT_MODEL_EFFORTS.get(
+        default_model(options) if model == "default" else model, ("low", "medium", "high", "xhigh")
+    )
     effort = settings.get("reasoning_effort")
     if effort is not None and effort not in efforts:
         raise ValueError("The selected reasoning level is not supported by this model.")
@@ -840,6 +860,20 @@ def _parse_usage_output(text: str) -> dict[str, str]:
     }
 
 
+def _parse_status_model(text: str) -> str:
+    """Return the model the CLI's /status panel names, or an empty string.
+
+    The panel shows a display name such as GPT-6.1-Sol. A model the worker offers
+    is returned as its id, any other as the CLI names it.
+    """
+    names = STATUS_MODEL_RE.findall(clean_cli_text(text))
+    name = names[-1] if names else ""
+    # Until its session is ready the CLI shows the word "loading" there.
+    if name.casefold() == "loading":
+        return ""
+    return name.casefold() if name.casefold() in CHAT_MODEL_EFFORTS else name
+
+
 def _has_rich_status_panel(text: str) -> bool:
     compacted = compact_cli_text(text)
     return (
@@ -978,6 +1012,10 @@ def fetch_codex_usage_status() -> dict[str, Any]:
         except OSError:
             pass
         parsed = _parse_usage_output(status_text)
+        # The probe names no model, so the panel shows the one the CLI picks itself.
+        if model := _parse_status_model(status_text):
+            with usage_lock:
+                usage_state["_default_model"] = model
         if not parsed["five_hour_limit"] and not parsed["weekly_limit"]:
             return {
                 "status": "error",
@@ -3841,11 +3879,14 @@ def chat_options() -> Response:
     """Return the models, defaults, and settings the web UI needs."""
     options = read_options()
     default = resolve_chat_settings(DEFAULT_CHAT_SETTINGS, options)
+    default_id = default_model(options)
     return jsonify({
         "ok": True,
         "defaults": default,
+        # The defaults' model by name, also when the add-on leaves the choice to the CLI.
+        "default_model": default_id,
         "models": [{"id": model, "label": label, "efforts": efforts} for model, label, efforts in CHAT_MODELS],
-        "default_efforts": CHAT_MODEL_EFFORTS.get(default["model"], ("low", "medium", "high", "xhigh")),
+        "default_efforts": CHAT_MODEL_EFFORTS.get(default_id, ("low", "medium", "high", "xhigh")),
         "backup_retention_days": backup_retention_days(options),
     })
 

@@ -54,9 +54,17 @@ function selectedSettings() {
     state.chatSettings.get(state.id) || { model: null, reasoning_effort: null }
   );
 }
+/** The models a chat can run on, with the add-on's own model when it is not one of the usual choices. */
+function chatModels() {
+  const { models = [], default_model: id, default_efforts: efforts } =
+    state.catalog || {};
+  return !id || models.some((model) => model.id === id)
+    ? models
+    : [{ id, label: id, efforts }, ...models];
+}
 function selectedModel(settings = selectedSettings()) {
-  return state.catalog?.models.find(
-    (model) => model.id === (settings.model || state.catalog.defaults.model),
+  return chatModels().find(
+    (model) => model.id === (settings.model || state.catalog?.default_model),
   );
 }
 function selectedEfforts(settings = selectedSettings()) {
@@ -84,7 +92,7 @@ function renderEffort(effort = effectiveEffort()) {
   const efforts = selectedEfforts();
   const index = Math.max(0, efforts.indexOf(effort));
   $("effort-title").textContent = effortLabels[effort] || effort;
-  $("effort-model").textContent = selectedModel()?.label || "Default model";
+  $("effort-model").textContent = modelLabel();
   $("effort-slider").max = Math.max(0, efforts.length - 1);
   $("effort-slider").value = index;
   $("effort-slider").setAttribute(
@@ -99,15 +107,14 @@ function renderEffort(effort = effectiveEffort()) {
   $("effort-description").textContent =
     effortDescriptions[effort] || "Using the add-on default reasoning level.";
 }
+/** The name of the model a chat runs on, whether it selected one or follows the add-on setting. */
+function modelLabel(settings = selectedSettings()) {
+  return selectedModel(settings)?.label || settings.model || "Model";
+}
 function renderPicker() {
   const settings = selectedSettings();
   const effort = effectiveEffort(settings);
-  $("model-button").textContent = settings.model
-    ? selectedModel(settings)?.label || settings.model
-    : "Default";
-  $("model-button").title = settings.model
-    ? "Select model"
-    : `Use add-on default: ${selectedModel(settings)?.label || "recommended model"}`;
+  $("model-button").textContent = modelLabel(settings);
   $("effort-label").textContent = effortLabels[effort] || effort;
   $("effort-button").title = settings.reasoning_effort
     ? "Select reasoning level"
@@ -158,13 +165,10 @@ function openPicker(name) {
   if (name === "model") {
     const options = $("model-options");
     options.replaceChildren();
-    for (const model of [
-      { id: null, label: "Default" },
-      ...state.catalog.models,
-    ]) {
+    for (const model of chatModels()) {
       const button = textNode("button", "", "model-option");
       button.type = "button";
-      const selected = model.id === selectedSettings().model;
+      const selected = model.id === selectedModel()?.id;
       button.setAttribute("aria-pressed", String(selected));
       const title = textNode("span", "", "model-option-title");
       title.append(
@@ -172,9 +176,12 @@ function openPicker(name) {
         textNode("span", selected ? "✓" : "", "model-check"),
       );
       button.append(title);
-      if (!model.id) button.append(textNode("small", "Use add-on default"));
       button.onclick = async () => {
-        const settings = { ...selectedSettings(), model: model.id };
+        // The add-on's own model is saved as no selection, so the chat keeps following the add-on setting.
+        const settings = {
+          ...selectedSettings(),
+          model: model.id === state.catalog.default_model ? null : model.id,
+        };
         if (
           settings.reasoning_effort &&
           !selectedEfforts(settings).includes(settings.reasoning_effort)
@@ -237,11 +244,11 @@ $("chat-picker").addEventListener("keydown", (event) => {
     options[next].focus();
   }
 });
-async function loadChatOptions() {
+async function loadChatOptions(quiet = false) {
   try {
     state.catalog = await api("chat-options");
   } catch (error) {
-    showError(error);
+    if (!quiet) showError(error);
   }
   controls();
 }
@@ -263,9 +270,15 @@ function renderUsage(usage = {}) {
         : NaN;
     const valid = Number.isFinite(percent) && percent >= 0 && percent <= 100;
     $(id).textContent = valid ? `${percent}% left` : "Unavailable";
+    // The bar is as long as the quota left, turns red below 5%, and is an outline without a value.
+    const bar = $(`${id}-bar`);
+    bar.style.width = valid ? `${percent}%` : "0";
+    bar.parentElement.classList.toggle("low", valid && percent < 5);
+    bar.parentElement.classList.toggle("unknown", !valid);
     const reset =
       dateLabel(usage[`${key}_reset_at`], true) || usage[`${key}_reset`];
-    $(id).title = valid && reset ? `Resets ${reset}` : "";
+    $(id).title = bar.parentElement.title =
+      valid && reset ? `Resets ${reset}` : "";
   }
   $("usage-note").textContent =
     usage.status === "deferred"
@@ -283,6 +296,8 @@ async function loadUsage() {
     if (!document.hidden) {
       const data = await api("status");
       renderUsage(data.codex_usage);
+      // The quota check also tells the worker which model Codex picks when the add-on names none.
+      if (state.catalog) await loadChatOptions(true);
     }
   } catch (_) {
     renderUsage();

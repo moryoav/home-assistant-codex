@@ -213,6 +213,37 @@ class ConversationTests(unittest.TestCase):
                 catalog = self.client.get("/chat-options", headers=self.headers).json
                 self.assertEqual(catalog["defaults"]["reasoning_effort"], "medium")
 
+    def test_chats_without_a_model_are_named_after_the_one_they_run_on(self):
+        levels = ["low", "medium", "high", "xhigh", "max", "ultra"]
+        # The add-on leaves the choice to the CLI: the bundled CLI's pick, until its /status names one.
+        catalog = self.client.get("/chat-options", headers=self.headers).json
+        self.assertEqual(catalog["defaults"]["model"], "default")
+        self.assertEqual(catalog["default_model"], server.CLI_DEFAULT_MODEL)
+        self.assertEqual(catalog["default_efforts"], levels)
+        # A model the worker has no entry for gets the common levels.
+        for model, highest in (("gpt-6-luna", "max"), ("gpt-7-nova", "xhigh")):
+            with self.subTest(model=model), patch.dict(server.usage_state, {"_default_model": model}):
+                catalog = self.client.get("/chat-options", headers=self.headers).json
+                self.assertEqual(catalog["default_model"], model)
+                self.assertEqual(catalog["default_efforts"], levels[:levels.index(highest) + 1])
+                # The reasoning levels are that model's, and the run still names no model.
+                rejected = self.post("/tasks", {"prompt": "Review", "chat_settings": {"reasoning_effort": "ultra"}})
+                self.assertEqual(rejected.status_code, 400)
+                response = self.post("/tasks", {"prompt": "Review", "chat_settings": {"reasoning_effort": highest}})
+                self.assertEqual(response.status_code, 200)
+                task_id = response.json["task_id"]
+                self.assertEqual(server.tasks[task_id]["turns"][0]["execution_settings"],
+                                 {"model": "default", "reasoning_effort": highest})
+                self.assertNotIn("--model", server.build_codex_args(task_id, self.root / "prompt", self.root / "final", None))
+                self.finish(task_id)
+        # A model named in the add-on options is the one, whatever the CLI would pick.
+        with (patch.object(server, "read_options", return_value={"codex_model": "gpt-6-sol"}),
+              patch.dict(server.usage_state, {"_default_model": "gpt-6-luna"})):
+            catalog = self.client.get("/chat-options", headers=self.headers).json
+            self.assertEqual(catalog["default_model"], "gpt-6-sol")
+            self.assertEqual(catalog["default_efforts"], levels)
+            self.assertEqual(self.post("/tasks", {"prompt": "Review", "chat_settings": {"reasoning_effort": "ultra"}}).status_code, 200)
+
     def test_failed_settings_write_keeps_previous_selection(self):
         task_id = self.create()
         self.finish(task_id)

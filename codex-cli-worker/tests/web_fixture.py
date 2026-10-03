@@ -50,6 +50,9 @@ def main():
         server.fire_ha_event = lambda *args: (True, "")
         server.notify = lambda *args: None
         server.refresh_usage_status_async = lambda **kwargs: None
+        # Plenty left of the 5-hour quota and almost none of the weekly one, so both bar colors show.
+        server.usage_state.update(status="ok", five_hour_percent="64", five_hour_reset="19:20",
+                                  weekly_percent="3", weekly_reset="12:00 on 8 Oct")
         session_id = "019fc242-910a-7c92-a17d-54c014e19fc4"
         sessions = server.CODEX_HOME / "sessions"
         sessions.mkdir(parents=True)

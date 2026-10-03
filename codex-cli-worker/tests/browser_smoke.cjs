@@ -65,6 +65,48 @@ function pngBuffer(width = 8, height = 6) {
     await page.waitForFunction(
       () => document.querySelectorAll(".chat-row").length === 25,
     );
+    // The quota left is a bar next to its figure: green, and red below 5%.
+    await page.waitForFunction(
+      () => document.querySelector("#usage-weekly").textContent === "3% left",
+    );
+    assert.deepEqual(
+      await page.evaluate(() =>
+        ["usage-five-hour", "usage-weekly"].map((id) => {
+          const fill = document.getElementById(`${id}-bar`);
+          return [
+            document.getElementById(id).textContent,
+            fill.style.width,
+            fill.parentElement.className,
+            getComputedStyle(fill).backgroundColor,
+            fill.parentElement.title,
+          ];
+        }),
+      ),
+      [
+        ["64% left", "64%", "usage-bar", "rgb(12, 163, 12)", "Resets 19:20"],
+        [
+          "3% left",
+          "3%",
+          "usage-bar low",
+          "rgb(208, 59, 59)",
+          "Resets 12:00 on 8 Oct",
+        ],
+      ],
+    );
+    // Without a value the bar is an empty outline, not an empty quota.
+    await page.evaluate(() => renderUsage({}));
+    assert.equal(
+      await page.locator("#usage .usage-bar.unknown").count(),
+      2,
+    );
+    assert.equal(
+      await page.locator("#usage-five-hour").textContent(),
+      "Unavailable",
+    );
+    await page.evaluate(() => loadUsage());
+    await page.waitForFunction(
+      () => document.querySelector("#usage-weekly").textContent === "3% left",
+    );
     // Chat actions: hovering a row reveals its menu button; pin, rename, delete.
     await page.locator('.chat-row:has([data-task-id="preview-05"])').hover();
     await page.locator('[data-menu-for="preview-05"]').click();
@@ -452,6 +494,23 @@ function pngBuffer(width = 8, height = 6) {
         document.querySelector("#effort-label").textContent === "Ultra" &&
         !document.querySelector("#effort-button").disabled,
     );
+    // Choosing the model the add-on runs anyway clears the chat's own selection.
+    await page.locator("#model-button").click();
+    await page
+      .getByRole("button", { name: "GPT-6.1 Sol", exact: true })
+      .click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#model-button").textContent === "GPT-6.1 Sol" &&
+        !document.querySelector("#model-button").disabled,
+    );
+    assert.deepEqual(
+      await page.evaluate(
+        async () =>
+          (await (await fetch("tasks/preview-00")).json()).task.chat_settings,
+      ),
+      { model: null, reasoning_effort: "ultra" },
+    );
     await page.locator("#model-button").click();
     await page.getByRole("button", { name: "GPT-6 Luna", exact: true }).click();
     await page.waitForFunction(
@@ -503,8 +562,23 @@ function pngBuffer(width = 8, height = 6) {
     });
     await page.getByRole("button", { name: "New chat", exact: false }).click();
     assert.equal(await page.locator(".answer").count(), 0);
-    assert.equal(await page.locator("#model-button").textContent(), "Default");
+    // A new chat names the model it runs on, and the menu marks that model.
+    assert.equal(
+      await page.locator("#model-button").textContent(),
+      "GPT-6.1 Sol",
+    );
     await page.locator("#model-button").click();
+    assert.deepEqual(
+      await page
+        .locator("#model-options .model-option")
+        .evaluateAll((options) =>
+          options
+            .filter((option) => option.getAttribute("aria-pressed") === "true")
+            .map((option) => option.textContent),
+        ),
+      ["GPT-6.1 Sol✓"],
+    );
+    assert.equal(await page.locator("#model-options .model-option").count(), 7);
     await page
       .getByRole("button", { name: "GPT-5.6 Luna", exact: true })
       .click();
@@ -1001,7 +1075,7 @@ function pngBuffer(width = 8, height = 6) {
     await webview.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, the model a chat runs on by name, quota bars, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

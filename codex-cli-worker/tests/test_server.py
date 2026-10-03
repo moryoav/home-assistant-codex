@@ -353,6 +353,34 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         probe.assert_not_called()
 
 
+# What the usage check captures from the bundled CLI: the startup banner, then the
+# /status panel, which names the model by its display name.
+STATUS_PANEL = """\
+╭────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.160.0)                 │
+│ model:     loading   /model to change      │
+│ directory: /config                         │
+╰────────────────────────────────────────────╯
+/status
+
+  >_ OpenAI Codex (v0.160.0)
+
+  Visit https://chatgpt.com/codex/settings/usage for up-to-date
+  information on rate limits and credits
+
+  Model:           GPT-6.1-Sol (reasoning low, summaries auto)
+  Model provider:  openai
+  Directory:       /config
+  Permissions:     Custom (workspace with network access, Ask for approval)
+  Agents.md:       <none>
+
+  Token usage:     2K total  (1.4K input + 600 output)
+  Context window:  100% left (2.2K used / 272K)
+  5h limit:        [███████████░░░░░░░░░] 55% left (resets 09:25)
+  Weekly limit:    [██████████████░░░░░░] 70% left (resets 09:55)
+"""
+
+
 class UsageParsingTests(unittest.TestCase):
     def test_weekly_only_status_is_valid_and_redacts_identifiers(self) -> None:
         session_id = "019fc242-910a-7c92-a17d-54c014e19fc4"
@@ -383,9 +411,31 @@ class UsageParsingTests(unittest.TestCase):
         self.assertEqual(parsed["five_hour_percent"], "64")
         self.assertEqual(parsed["weekly_percent"], "91")
 
+    def test_status_panel_names_the_model_the_cli_picks(self) -> None:
+        # The panel shows the display name; a model the worker offers is returned as its id.
+        self.assertEqual(server._parse_status_model(STATUS_PANEL), "gpt-6.1-sol")
+        # The limits are still read from the same panel.
+        self.assertEqual(server._parse_usage_output(STATUS_PANEL)["weekly_percent"], "70")
+        lines = {
+            "Model:           gpt-6-luna\n": "gpt-6-luna",
+            # A model the worker does not offer keeps the name the CLI gives it.
+            "Model:           Luna Reserve (reasoning low, summaries auto)\n": "Luna Reserve",
+            # The startup banner, which can still say "loading".
+            "model:     GPT-6-Sol medium   /model to change\n": "",
+            # /status before the session is ready.
+            "Model:           loading (reasoning none, summaries auto)\n": "",
+            "Model provider:  openai\n": "",
+            # Output cut off in the middle of the name.
+            "Model:           GPT-6.1-S": "",
+        }
+        for text, model in lines.items():
+            with self.subTest(text=text):
+                self.assertEqual(server._parse_status_model(text), model)
+
 
 class UsageProcessCleanupTests(unittest.TestCase):
-    def test_usage_pty_process_uses_bounded_reap_helper(self) -> None:
+    def fetch_usage(self, **capture):
+        """Run the usage check against a fake pty and CLI; `capture` sets what reading /status does."""
         fake_pty = types.ModuleType("pty")
         fake_pty.openpty = lambda: (10, 11)
         fake_fcntl = types.ModuleType("fcntl")
@@ -404,16 +454,41 @@ class UsageProcessCleanupTests(unittest.TestCase):
             patch.object(server, "codex_login_status", return_value={"status_ok": True}),
             patch.object(server, "codex_env", return_value={}),
             patch.object(server.os, "close"),
+            patch.object(server.os, "write"),
             patch.object(server.subprocess, "Popen", return_value=proc) as popen,
-            patch.object(server, "_capture_status_from_tui", side_effect=RuntimeError("stop")),
+            patch.object(server, "_capture_status_from_tui", **capture),
             patch.object(server, "terminate_and_reap_process") as reap,
         ):
             result = server.fetch_codex_usage_status()
+        return result, proc, popen, reap
+
+    def test_usage_pty_process_uses_bounded_reap_helper(self) -> None:
+        result, proc, popen, reap = self.fetch_usage(side_effect=RuntimeError("stop"))
 
         self.assertEqual(result["status"], "error")
         reap.assert_called_once_with(proc, terminate_timeout=3, kill_timeout=2)
         # The throwaway probe must not start or attach to Codex's shared background server.
         self.assertIn("--no-daemon", popen.call_args.args[0])
+
+    def test_usage_check_remembers_the_model_the_cli_picks(self) -> None:
+        options = {"codex_model": "default"}
+        with patch.dict(server.usage_state):
+            self.assertEqual(server.default_model(options), server.CLI_DEFAULT_MODEL)
+            # The probe starts the CLI without a model, so /status names the CLI's own pick.
+            result, _proc, popen, _reap = self.fetch_usage(
+                return_value=STATUS_PANEL.replace("GPT-6.1-Sol", "GPT-6-Luna")
+            )
+            self.assertEqual(result["status"], "ok")
+            self.assertNotIn("--model", popen.call_args.args[0])
+            self.assertEqual(server.default_model(options), "gpt-6-luna")
+            # It is not part of the quota the worker reports.
+            self.assertNotIn("_default_model", server.usage_status_payload())
+            # A later check that sees no model keeps the last one.
+            self.fetch_usage(return_value="5h limit: 10% left  weekly limit: 20% left")
+            self.assertEqual(server.default_model(options), "gpt-6-luna")
+            # A model named in the add-on options is not left to the CLI.
+            self.assertEqual(server.default_model({"codex_model": "gpt-6-sol"}), "gpt-6-sol")
+            self.assertEqual(server.default_model({"codex_model": "gpt-5.5"}), "gpt-5.6-sol")
 
     def test_status_probe_answers_both_folder_trust_prompts(self) -> None:
         prompts = {
@@ -459,6 +534,8 @@ class ModelSelectionTests(unittest.TestCase):
         args = self.build_args_for_model("default")
 
         self.assertNotIn("--model", args)
+        # The chat names the bundled CLI's pick until the CLI reports its own; it must be a model on offer.
+        self.assertIn(server.CLI_DEFAULT_MODEL, server.CHAT_MODEL_EFFORTS)
 
     def test_legacy_default_model_omits_model_argument(self) -> None:
         args = self.build_args_for_model("gpt-5.3-codex")

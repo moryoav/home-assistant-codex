@@ -164,6 +164,7 @@ class ConversationTests(unittest.TestCase):
     def test_invalid_settings_are_rejected_without_mutation(self):
         invalid = [None, [], "high", {"model": []}, {"model": "invented"},
                    {"reasoning_effort": {}}, {"reasoning_effort": "minimal"},
+                   {"model": "gpt-5.5", "reasoning_effort": {}}, {"model": "gpt-5.5", "reasoning_effort": "minimal"},
                    {"model": "gpt-5.6-luna", "reasoning_effort": "ultra"},
                    {"model": "gpt-6-luna", "reasoning_effort": "ultra"},
                    {"codex_sandbox": "danger-full-access"}]

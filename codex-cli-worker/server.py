@@ -382,12 +382,14 @@ def parse_chat_settings(payload: dict[str, Any], task: dict[str, Any] | None = N
     settings = payload.get("chat_settings", (task or {}).get("chat_settings", DEFAULT_CHAT_SETTINGS))
     if not isinstance(settings, dict) or set(settings) - set(DEFAULT_CHAT_SETTINGS):
         raise ValueError("chat_settings must contain only model and reasoning_effort.")
-    settings = current_chat_settings({**DEFAULT_CHAT_SETTINGS, **settings})
-    model, effort = settings["model"], settings["reasoning_effort"]
+    settings = {**DEFAULT_CHAT_SETTINGS, **settings}
+    model, effort = current_model(settings["model"]), settings["reasoning_effort"]
     if model is not None and (not isinstance(model, str) or model not in CHAT_MODEL_EFFORTS):
         raise ValueError("Select a supported model or use the add-on default.")
     if effort is not None and (not isinstance(effort, str) or effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}):
         raise ValueError("Select a supported reasoning level or use the add-on default.")
+    # Only after the checks: replacing a retired model drops a level its replacement lacks.
+    settings = current_chat_settings(settings)
     resolve_chat_settings(settings, read_options())
     return settings
 

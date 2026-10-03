@@ -452,7 +452,7 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertEqual(server.DEFAULT_OPTIONS["codex_model"], "default")
         self.assertEqual(
             config["schema"]["codex_model"],
-            "list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna)",
+            "list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
         )
 
     def test_default_model_omits_model_argument(self) -> None:
@@ -464,6 +464,24 @@ class ModelSelectionTests(unittest.TestCase):
         args = self.build_args_for_model("gpt-5.3-codex")
 
         self.assertNotIn("--model", args)
+
+    def test_retired_option_model_runs_on_the_next_model_up(self) -> None:
+        args = self.build_args_for_model("gpt-5.5")
+
+        self.assertEqual(args[args.index("--model") + 1], "gpt-5.6-sol")
+
+    def test_retired_models_stay_accepted_and_lead_to_an_offered_model(self) -> None:
+        config = server.yaml.safe_load(
+            (SERVER_PATH.parent / "config.yaml").read_text(encoding="utf-8")
+        )
+        accepted = config["schema"]["codex_model"].removeprefix("list(").removesuffix(")").split("|")
+
+        for model in server.RETIRED_MODELS:
+            with self.subTest(model=model):
+                # Home Assistant does not start an app whose saved option is missing from the list.
+                self.assertIn(model, accepted)
+                self.assertNotIn(model, server.CHAT_MODEL_EFFORTS)
+                self.assertIn(server.current_model(model), server.CHAT_MODEL_EFFORTS)
 
     def test_explicit_model_is_passed_to_codex(self) -> None:
         for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra"):

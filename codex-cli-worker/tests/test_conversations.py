@@ -122,26 +122,48 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"], {"model": "gpt-5.6-terra", "reasoning_effort": "high"})
             self.assertEqual(options, {"codex_model": "gpt-5.6-terra", "model_reasoning_effort": "high"})
 
-    def test_saved_model_that_is_no_longer_offered_inherits_the_default(self):
+    def test_retired_model_continues_on_the_next_model_up(self):
         task_id = self.create()
         self.finish(task_id)
         server.tasks[task_id]["chat_settings"] = {"model": "gpt-5.5", "reasoning_effort": "xhigh"}
+        bumped = {"model": "gpt-5.6-sol", "reasoning_effort": "xhigh"}
         task = self.client.get(f"/tasks/{task_id}", headers=self.headers).json["task"]
-        self.assertEqual(task["chat_settings"], {"model": None, "reasoning_effort": "xhigh"})
-        with patch.object(server, "read_options", return_value={"codex_model": "gpt-6.1-sol"}):
-            # Home Assistant actions continue a chat without sending its settings.
-            self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "Next"}).status_code, 200)
-        self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"], {"model": "gpt-6.1-sol", "reasoning_effort": "xhigh"})
-        self.assertEqual(server.tasks[task_id]["chat_settings"], {"model": None, "reasoning_effort": "xhigh"})
+        self.assertEqual(task["chat_settings"], bumped)
+        # Home Assistant actions continue a chat without sending its settings.
+        self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "Next"}).status_code, 200)
+        self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"], bumped)
+        self.assertEqual(server.tasks[task_id]["chat_settings"], bumped)
+        args = server.build_codex_args(task_id, self.root / "prompt", self.root / "final", self.session_id)
+        self.assertEqual(args[args.index("--model") + 1], "gpt-5.6-sol")
         self.finish(task_id)
-        # A level only the removed model supported is dropped with it.
-        server.tasks[task_id]["chat_settings"] = {"model": "retired", "reasoning_effort": "ultra"}
-        self.assertEqual(server.saved_chat_settings(server.tasks[task_id]), server.DEFAULT_CHAT_SETTINGS)
+        # A page that was open during the update still sends the old model.
+        response = self.post(f"/tasks/{task_id}/continue", {"message": "Again", "chat_settings": {"model": "gpt-5.5"}})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"]["model"], "gpt-5.6-sol")
+        self.finish(task_id)
+        # The add-on option keeps accepting the old model, and new chats run on the next one up.
+        with patch.object(server, "read_options", return_value={"codex_model": "gpt-5.5", "model_reasoning_effort": "high"}):
+            other = self.create("Separate chat")
+            self.assertEqual(server.tasks[other]["turns"][0]["execution_settings"], {"model": "gpt-5.6-sol", "reasoning_effort": "high"})
+            catalog = self.client.get("/chat-options", headers=self.headers).json
+            self.assertEqual(catalog["defaults"]["model"], "gpt-5.6-sol")
+            self.assertEqual(catalog["default_efforts"], ["low", "medium", "high", "xhigh", "max", "ultra"])
+
+    def test_retired_models_follow_the_chain_and_drop_an_unsupported_level(self):
+        with patch.dict(server.RETIRED_MODELS, {"older": "old-sol", "old-sol": "gpt-6-luna"}):
+            self.assertEqual(server.current_model("older"), "gpt-6-luna")
+            self.assertEqual(server.current_chat_settings({"model": "older", "reasoning_effort": "max"}),
+                             {"model": "gpt-6-luna", "reasoning_effort": "max"})
+            # Luna has no Ultra, so the chat inherits the add-on reasoning level.
+            self.assertEqual(server.current_chat_settings({"model": "old-sol", "reasoning_effort": "ultra"}),
+                             {"model": "gpt-6-luna", "reasoning_effort": None})
+        untouched = {"model": "gpt-6-astra", "reasoning_effort": "ultra"}
+        self.assertEqual(server.current_chat_settings(untouched), untouched)
+        self.assertEqual(server.current_chat_settings(server.DEFAULT_CHAT_SETTINGS), server.DEFAULT_CHAT_SETTINGS)
 
     def test_invalid_settings_are_rejected_without_mutation(self):
         invalid = [None, [], "high", {"model": []}, {"model": "invented"},
                    {"reasoning_effort": {}}, {"reasoning_effort": "minimal"},
-                   {"model": "gpt-5.5"},
                    {"model": "gpt-5.6-luna", "reasoning_effort": "ultra"},
                    {"model": "gpt-6-luna", "reasoning_effort": "ultra"},
                    {"codex_sandbox": "danger-full-access"}]

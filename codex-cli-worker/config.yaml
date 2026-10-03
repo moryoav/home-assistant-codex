@@ -37,7 +37,7 @@ options:
   browser_memory_limit_mib: 1536
   ha_url: http://supervisor/core
 schema:
-  codex_model: list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna)
+  codex_model: list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)
   model_reasoning_effort: list(minimal|low|medium|high|xhigh)
   reasoning_summary: list(concise|detailed|none)
   codex_sandbox: list(workspace-write|danger-full-access|read-only)

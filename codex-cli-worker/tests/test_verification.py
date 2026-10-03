@@ -187,6 +187,30 @@ class VerificationTests(unittest.TestCase):
         self.assertNotIn("SUPERVISOR_TOKEN", environment)
         self.assertNotIn("HASSIO_TOKEN", environment)
 
+    def test_token_option_comes_with_the_address_it_works_at(self):
+        """With the HA_TOKEN option Codex also gets HA_URL: Core's own address, or the ha_url option when it names another."""
+        with patch.dict(os.environ, {"HA_URL": "http://stale.example.test", "HA_TOKEN": "inherited"}):
+            # Without the option, neither variable reaches Codex, not even one the worker inherited.
+            environment = server.codex_env()
+            self.assertNotIn("HA_TOKEN", environment)
+            self.assertNotIn("HA_URL", environment)
+            addresses = {
+                None: "http://homeassistant:8123",
+                "  ": "http://homeassistant:8123",
+                # The option's earlier default, which rejects a Home Assistant token.
+                "http://supervisor/core": "http://homeassistant:8123",
+                "http://supervisor/core/api/": "http://homeassistant:8123",
+                "http://homeassistant:8123/": "http://homeassistant:8123",
+                "https://ha.example.test:8443/": "https://ha.example.test:8443",
+            }
+            for value, expected in addresses.items():
+                with self.subTest(ha_url=value), patch.dict(self.options, {"HA_TOKEN": " token ", "ha_url": value}):
+                    environment = server.codex_env()
+                    self.assertEqual((environment["HA_TOKEN"], environment["HA_URL"]), ("token", expected))
+        # The worker's own calls keep going through the Supervisor proxy with its token.
+        with patch.dict(os.environ, {"SUPERVISOR_TOKEN": "private"}), patch.dict(self.options, {"ha_url": "https://ha.example.test"}):
+            self.assertEqual(server.ha_base_url(), "http://supervisor/core")
+
     def test_browser_memory_budget_stops_process_and_revokes_session(self):
         """Stop an over-budget browser and revoke its temporary session."""
         original_popen = subprocess.Popen

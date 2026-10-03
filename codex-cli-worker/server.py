@@ -60,6 +60,10 @@ CODEX_BINARY = "/usr/local/bin/codex"
 AGENTS_PATH = CONFIG_ROOT / "AGENTS.md"
 TASK_STATE_FILE = DATA_ROOT / "task_index.json"
 
+# Home Assistant's own address inside the app network. A Home Assistant token, such
+# as the HA_TOKEN option, works there and not at the Supervisor's Core proxy.
+CORE_URL = "http://homeassistant:8123"
+
 DEFAULT_OPTIONS = {
     "codex_model": "default",
     "model_reasoning_effort": "medium",
@@ -74,7 +78,7 @@ DEFAULT_OPTIONS = {
     "backup_retention_days": 7,
     "browser_verification": True,
     "browser_memory_limit_mib": DEFAULT_BROWSER_MEMORY_LIMIT_MIB,
-    "ha_url": "http://supervisor/core",
+    "ha_url": CORE_URL,
     "HA_TOKEN": "",
 }
 BACKUP_RETENTION_DAYS_RANGE = (1, 365)
@@ -848,6 +852,11 @@ def _read_pty(master_fd: int, timeout_seconds: float) -> str:
     return "".join(chunks)
 
 
+def _last_reset(matches: list[re.Match[str]]) -> str:
+    """Return the reset time of the last limit match on a line that names one, or an empty string."""
+    return next((match.group("reset") for match in reversed(matches) if match.group("reset")), "")
+
+
 def _parse_usage_output(text: str) -> dict[str, str]:
     """Extract the 5-hour and weekly limits, their reset times, and the context left from Codex CLI output."""
     cleaned = clean_cli_text(text)
@@ -862,16 +871,16 @@ def _parse_usage_output(text: str) -> dict[str, str]:
     context_percent = ""
     now = datetime.now().astimezone()
     for line in lines:
+        # The CLI's status line can follow the panel's limit on the same line. It repeats
+        # the percentage without the reset time, so the reset is taken from any match.
         if matches := list(FIVE_HOUR_RE.finditer(line)):
-            match = matches[-1]
-            five_hour_percent = match.group("percent")
-            if reset := match.group("reset"):
+            five_hour_percent = matches[-1].group("percent")
+            if reset := _last_reset(matches):
                 five_hour_reset = reset
             five_hour = f"5h {five_hour_percent}%"
         if matches := list(WEEKLY_RE.finditer(line)):
-            match = matches[-1]
-            weekly_percent = match.group("percent")
-            if reset := match.group("reset"):
+            weekly_percent = matches[-1].group("percent")
+            if reset := _last_reset(matches):
                 weekly_reset = reset
             weekly = f"weekly {weekly_percent}%"
         if matches := list(CONTEXT_RE.finditer(line)):
@@ -2403,15 +2412,33 @@ def assess_changes(
     }
 
 
+def code_span(text: str) -> str:
+    """Return text as Markdown inline code, so the chat shows a path with its underscores and asterisks."""
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def code_spans(paths: list[str]) -> str:
+    """Return paths as a comma-separated list of Markdown inline code."""
+    return ", ".join(code_span(path) for path in paths)
+
+
+def validation_message(message: str) -> str:
+    """Return a validation message with the file it starts with, if any, as Markdown inline code."""
+    rel, sep, rest = message.partition(": ")
+    return f"{code_span(rel)}: {rest}" if sep and not rel.startswith("Home Assistant") else message
+
+
 def unsaved_note(paths: list[str]) -> str:
     """Tell the user which changed files have no copy of their previous version."""
-    shown = ", ".join(paths[:10]) + (f", and {len(paths) - 10} more" if len(paths) > 10 else "")
+    shown = code_spans(paths[:10]) + (f", and {len(paths) - 10} more" if len(paths) > 10 else "")
     return f"No copy of the previous version was saved for: {shown}. Use a Home Assistant backup to restore such a file."
 
 
 def validation_details(validation_errors: list[str], config_check: dict[str, str], recovery_files: list[dict[str, str]]) -> str:
     """The details text for a failed validation, with how to recover."""
-    lines = ["Validation errors: " + "; ".join(validation_errors[:5])]
+    lines = ["Validation errors: " + "; ".join(validation_message(message) for message in validation_errors[:5])]
     copies = [entry for entry in recovery_files if entry.get("copy")]
     added = [entry["path"] for entry in recovery_files if not entry.get("copy") and not entry.get("reason")]
     excluded = [entry["path"] for entry in recovery_files if entry.get("reason") == "excluded_credentials"]
@@ -2419,12 +2446,12 @@ def validation_details(validation_errors: list[str], config_check: dict[str, str
     if copies:
         lines.append(
             f"Pre-change copies of the affected files are kept for {backup_retention_days()} days at: "
-            + ", ".join(entry["copy"] for entry in copies)
+            + code_spans([entry["copy"] for entry in copies])
         )
     if added:
-        lines.append("New files that did not exist before: " + ", ".join(added))
+        lines.append("New files that did not exist before: " + code_spans(added))
     if excluded:
-        lines.append("Credential files excluded from recovery copies; use a Home Assistant backup: " + ", ".join(excluded))
+        lines.append("Credential files excluded from recovery copies; use a Home Assistant backup: " + code_spans(excluded))
     if unsaved:
         lines.append(unsaved_note(unsaved))
     if config_check.get("warnings"):
@@ -2923,21 +2950,36 @@ def auto_start_login_if_needed() -> None:
     start_codex_login_flow(False)
 
 
+def codex_ha_url(options: dict[str, Any]) -> str:
+    """Return the address Codex's own Home Assistant API calls go to with the HA_TOKEN option.
+
+    It is the ha_url option. The option used to default to the Supervisor's Core
+    proxy, which does not accept a Home Assistant token, so that address and an
+    empty option stand for Core's own address.
+    """
+    url = str(options.get("ha_url") or "").strip().rstrip("/")
+    if not url or urlparse(url).hostname == "supervisor":
+        return CORE_URL
+    return url
+
+
 def codex_env() -> dict[str, str]:
     """Return the environment Codex processes run in.
 
     The Supervisor tokens and the verification capability are removed, HOME and
     CODEX_HOME point into the add-on's data folder, and HA_TOKEN is set only
-    from the add-on option.
+    from the add-on option, together with HA_URL, the address it works at.
     """
     env = dict(os.environ)
-    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_VERIFICATION_CAPABILITY"):
+    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_URL", "HA_VERIFICATION_CAPABILITY"):
         env.pop(key, None)
     env["CODEX_HOME"] = str(CODEX_HOME)
     env["HOME"] = str(DATA_ROOT)
-    ha_token = str(read_options().get("HA_TOKEN") or "").strip()
-    if ha_token:
-        env["HA_TOKEN"] = ha_token
+    options = read_options()
+    token = str(options.get("HA_TOKEN") or "").strip()
+    if token:
+        env["HA_TOKEN"] = token
+        env["HA_URL"] = codex_ha_url(options)
     return env
 
 
@@ -2987,11 +3029,24 @@ def backup_instructions(backup_dir: Path | None) -> str:
     )
 
 
+def home_assistant_api_instructions(options: dict[str, Any]) -> str:
+    """Tell Codex where its own Home Assistant API calls go; empty when the add-on gives it no token for them."""
+    if not str(options.get("HA_TOKEN") or "").strip():
+        return ""
+    return (
+        "For Home Assistant API calls you make yourself, such as a reload or a restart the user asked for, use the "
+        "HA_URL and HA_TOKEN environment variables: send the request to $HA_URL, for example "
+        '$HA_URL/api/services/automation/reload, with the header "Authorization: Bearer $HA_TOKEN". '
+        "Do not use http://supervisor/core, which does not accept this token, and never print the token.\n\n"
+    )
+
+
 def build_prompt(user_prompt: str, task_id: str, reply: str | None = None, backup_dir: Path | None = None) -> str:
     """Write the instructions Codex gets for one message, including where to save its backups."""
     current_request = reply if reply is not None else user_prompt
     attached = attached_image_note(task_id)
     backups = backup_instructions(backup_dir)
+    api = home_assistant_api_instructions(read_options())
     return f"""You are Codex running as a Home Assistant add-on worker.
 
 Workspace: /config
@@ -3013,7 +3068,7 @@ The MCP tool runs through the worker outside the shell network sandbox. Do not a
 Use fresh entity readback after any user-authorized reload or change. These tools do not perform reloads or device actions. Only perform those when authorized by the user. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
 After an authorized storage-dashboard edit, add "save_pending":true to the dashboard request to have the worker save that turn's pending dashboard edit and verify API readback before capturing it. This requires auto_save_lovelace to be enabled. Without save_pending, the browser inspects only the dashboard currently loaded in Home Assistant.
 
-At the end, return only an object matching the provided JSON schema:
+{api}At the end, return only an object matching the provided JSON schema:
 - status: "completed", "needs_input", or "failed"
 - summary: concise result
 - question: use an empty string unless status is "needs_input"

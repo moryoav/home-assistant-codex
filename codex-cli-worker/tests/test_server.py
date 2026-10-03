@@ -459,6 +459,28 @@ class UsageParsingTests(unittest.TestCase):
         self.assertEqual(parsed["five_hour_percent"], "64")
         self.assertEqual(parsed["weekly_percent"], "91")
 
+    def test_reset_time_survives_a_status_line_on_the_same_line(self) -> None:
+        """A limit's reset time is kept when the CLI's status line repeats the limit later on the same line."""
+        # As captured from CLI 0.160.0: the redrawn status line follows the panel's last line.
+        output = "\n".join(
+            [
+                "5h limit: [███████████████████░] 95% left (resets 17:22)",
+                "Weekly limit: [████████████████████] 98% left (resets 07:01 on 10 Oct) › Ask Codex to do anything "
+                "GPT-6.1-Sol default · Context 100% left · 5h 94% left · weekly 97% left",
+            ]
+        )
+
+        parsed = server._parse_usage_output(output)
+
+        self.assertEqual(parsed["weekly_reset"], "07:01 on 10 Oct")
+        self.assertTrue(parsed["weekly_reset_at"])
+        self.assertEqual(parsed["five_hour_reset"], "17:22")
+        # The percentage is still the last one on the line, the freshest the CLI printed.
+        self.assertEqual((parsed["five_hour_percent"], parsed["weekly_percent"]), ("94", "97"))
+        # The same for the 5-hour limit when it is the panel's last line.
+        parsed = server._parse_usage_output("5h limit: [###] 95% left (resets 17:22) › Ask Codex · 5h 95% left")
+        self.assertEqual(parsed["five_hour_reset"], "17:22")
+
     def test_status_panel_names_the_model_the_cli_picks(self) -> None:
         """The /status panel names the model the CLI picked; a model the worker offers is returned as its id.
 
@@ -620,6 +642,20 @@ class ModelSelectionTests(unittest.TestCase):
             config["schema"]["codex_model"],
             "list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
         )
+
+    def test_home_assistant_api_url_defaults_to_core(self) -> None:
+        """config.yaml and the worker default the API URL to Home Assistant's own address, where HA_TOKEN works."""
+        config = server.yaml.safe_load(
+            (SERVER_PATH.parent / "config.yaml").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(config["options"]["ha_url"], "http://homeassistant:8123")
+        self.assertEqual(server.DEFAULT_OPTIONS["ha_url"], "http://homeassistant:8123")
+        self.assertEqual(server.codex_ha_url(config["options"]), "http://homeassistant:8123")
+        translations = server.yaml.safe_load(
+            (SERVER_PATH.parent / "translations" / "en.yaml").read_text(encoding="utf-8")
+        )
+        self.assertIn("HA_URL", translations["configuration"]["ha_url"]["description"])
 
     def test_default_model_omits_model_argument(self) -> None:
         """The default option passes no --model to Codex, and the model the chat names meanwhile is one on offer."""
@@ -1296,6 +1332,28 @@ class TaskCancellationTests(unittest.TestCase):
         self.assertIs(server.running_processes[task_id], proc)
         self.assertEqual(server.active_task_id(), task_id)
         self.assertEqual(server.active_task_count(), 1)
+
+
+class WorkerNoteTests(unittest.TestCase):
+    """The notes the worker adds to a task's details."""
+
+    def test_notes_keep_file_names_as_inline_code(self) -> None:
+        """Paths in the worker's notes are Markdown inline code, so the chat shows their underscores and asterisks."""
+        self.assertEqual(server.code_span("custom_components/foo/__init__.py"), "`custom_components/foo/__init__.py`")
+        # A backtick in a name gets a longer fence, and padding when it is at an end.
+        self.assertEqual(server.code_span("odd`name.yaml"), "``odd`name.yaml``")
+        self.assertEqual(server.code_span("`quoted`"), "`` `quoted` ``")
+        self.assertEqual(
+            server.unsaved_note(["__pycache__/a.yaml", "b.yaml"]),
+            "No copy of the previous version was saved for: `__pycache__/a.yaml`, `b.yaml`. "
+            "Use a Home Assistant backup to restore such a file.",
+        )
+        self.assertIn(", and 2 more", server.unsaved_note([f"file_{n}.yaml" for n in range(12)]))
+        # A message from the configuration check names no file and is left as it is.
+        self.assertEqual(
+            server.validation_details(["packages/__init__.yaml: bad", "Home Assistant configuration check failed: x"], {}, []),
+            "Validation errors: `packages/__init__.yaml`: bad; Home Assistant configuration check failed: x",
+        )
 
 
 if __name__ == "__main__":

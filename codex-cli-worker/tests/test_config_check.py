@@ -135,8 +135,8 @@ class AssessChangesTests(unittest.TestCase):
         ])
         self.assertEqual(copy_path.read_text(encoding="utf-8"), "- alias: old\n")
         details = server.validation_details(result["validation_errors"], result["config_check"], result["recovery_files"])
-        self.assertIn("Pre-change copies of the affected files are kept for 7 days at: " + str(copy_path.resolve()), details)
-        self.assertIn("New files that did not exist before: packages/new.yaml", details)
+        self.assertIn(f"Pre-change copies of the affected files are kept for 7 days at: `{copy_path.resolve()}`", details)
+        self.assertIn("New files that did not exist before: `packages/new.yaml`", details)
         self.assertIn("Home Assistant warnings: w", details)
 
     def test_syntax_error_skips_the_check_and_dashboard_save(self):

@@ -177,7 +177,7 @@ From **0.1.54**, the web UI reopens the chat you left open the next time it load
 
 ### Formatted messages
 
-From **0.1.63**, the chat formats Markdown in the messages you send and in Codex's answers. Wrap code in triple backticks to get a code block, with an optional language name after the opening backticks:
+From **0.1.66**, the chat formats Markdown in the messages you send and in Codex's answers. Wrap code in triple backticks to get a code block, with an optional language name after the opening backticks:
 
 ````text
 Why does this trigger never fire?

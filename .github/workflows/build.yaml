@@ -1,9 +1,6 @@
 name: Build Codex CLI Worker
 
 on:
-  release:
-    types:
-      - published
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -49,8 +46,7 @@ jobs:
           {
             echo "image_tags<<EOF"
             echo "${version}"
-            if [ "${GITHUB_EVENT_NAME}" = "release" ] || \
-               [ "${PUBLISH_LATEST}" = "true" ]; then
+            if [ "${PUBLISH_LATEST}" = "true" ]; then
               echo "latest"
             else
               echo "${GITHUB_REF_NAME}"

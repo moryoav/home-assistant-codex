@@ -1,15 +1,20 @@
 # Codex for Home Assistant
 
-[![HACS][hacs-badge]][hacs-url] [![release][release-badge]][release-url] [![build][build-badge]][build-url] [![license][license-badge]][license-url]
+[![Release][release-badge]][release-url]
+[![HACS][hacs-badge]][hacs-url]
+[![License][license-badge]][license-url]
 
 ---
 
 ## ❤️ Help support this project
 
-If this project is useful to you, you can support its continued development:
+If this project is useful to you, you can support my work:
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y5B124NZ2L)
-<a href="https://github.com/sponsors/moryoav"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&amp;logo=githubsponsors&amp;logoColor=white" alt="Sponsor on GitHub" height="36"></a>
+<p>
+  <a href="https://ko-fi.com/Y5B124NZ2L"><img src="https://img.shields.io/badge/Support_on_Ko--fi-FF5E5B?style=for-the-badge&amp;logo=kofi&amp;logoColor=white" alt="Support on Ko-fi" height="36"></a>
+  &nbsp;
+  <a href="https://github.com/sponsors/moryoav"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&amp;logo=githubsponsors&amp;logoColor=white" alt="Sponsor on GitHub" height="36"></a>
+</p>
 
 ---
 
@@ -63,9 +68,10 @@ This repository contains two pieces:
 - Starts Codex tasks from Home Assistant actions, scripts, automations, or Assist/LLM tools.
 - Keeps saved conversations so you can return to an earlier chat and continue with its context.
 - Provides a chat UI with a resizable sidebar, mobile navigation, and light/dark themes.
-- Shows what Codex is doing while it works: reasoning headlines, commands, file edits, searches, and tool calls appear live under your message.
+- Shows what Codex is doing while it works: reasoning headlines, commands, file edits, searches, and tool calls appear live under your message, with a timer from the moment you send it.
 - Formats Markdown in the chat, in your messages and in Codex's answers: code blocks, inline code, headings, lists, tables, and links.
-- Asks Home Assistant to check the configuration after YAML edits, fails the task on errors, and keeps pre-change copies of the affected files for recovery.
+- Asks Home Assistant to check the configuration after YAML edits and fails the task on errors.
+- Has Codex save the previous version of each file before changing it, reports changed files that have no saved copy, and removes the copies after a number of days you choose.
 - Mounts the Home Assistant config folder as `/config` inside the worker app.
 - Runs tasks non-interactively and stores task logs/results under `/config/codex_tasks`.
 - Supports Codex device-code sign-in through Home Assistant persistent notifications.
@@ -152,7 +158,7 @@ The app keeps an internal worker API token in private app storage. The **Codex**
 
 The app's web UI is available through Home Assistant Ingress. Do not try to open port `9123` directly; it is intentionally not exposed.
 
-The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model. You can also select GPT-6 Astra, Sol, or Luna, or the older GPT-5.6 Sol, Terra, or Luna explicitly, with GPT-5.5 retained as a legacy fallback. Model availability depends on your account. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota. For GPT-6 Astra, Sol, and Luna, select `low`, `medium`, `high`, or `xhigh`. The `reasoning_summary` option controls whether Codex reports its reasoning in the chat's activity list: `concise` headlines by default, `detailed`, or `none`. The `config_check` option, on by default, has Home Assistant check its configuration after a task changes YAML files; a failing check fails the task and keeps pre-change copies of the affected files.
+The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model. You can also select GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, or GPT-6 Luna, or the older GPT-5.6 Sol, Terra, or Luna explicitly. The retired GPT-5.5 choice stays in the list so that existing setups keep starting, and runs GPT-5.6 Sol. Model availability depends on your account. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota. For GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna, select `low`, `medium`, `high`, or `xhigh`. `minimal` is not supported by the current models and runs `medium`. The `reasoning_summary` option controls whether Codex reports its reasoning in the chat's activity list: `concise` headlines by default, `detailed`, or `none`. The `config_check` option, on by default, has Home Assistant check its configuration after a task changes YAML files; a failing check fails the task and points to the saved previous version of the affected files. Codex saves a copy of each file before changing it; the `backup_retention_days` option, 7 by default, sets how long these copies are kept, and the `full_snapshot` option, off by default, also archives the whole configuration folder before every message and supplies the previous version of any file Codex did not copy.
 
 The app web UI can view and save `/config/AGENTS.md`. You can also set the masked `HA_TOKEN` option when Codex tasks need a Home Assistant token in their environment.
 
@@ -305,13 +311,15 @@ Use the default repository URL for stable releases:
 https://github.com/moryoav/home-assistant-codex
 ```
 
-Development and canary builds are tested on the `dev` branch before being merged to `main`:
+The `dev` branch can be used for optional worker app development and canary builds:
 
 ```text
 https://github.com/moryoav/home-assistant-codex#dev
 ```
 
-Only use the `dev` branch if you want to test changes before they are released to regular users. Stable users should stay on the default repository URL.
+The `#dev` URL applies to the worker app repository. HACS installs the
+integration from the ZIP attached to a release. To test integration changes
+from a development branch, use the manual installation instructions above.
 
 ## Publishing Images
 
@@ -324,6 +332,13 @@ ghcr.io/moryoav/codex-cli-worker
 The app `config.yaml` points at that image. Home Assistant uses the app version as the image tag.
 
 Release builds also publish the `latest` image tag. Manual workflow builds from development branches publish the app version and branch name tags, but do not move `latest`.
+
+To prepare a release, set the same version in `codex-cli-worker/config.yaml`
+and `custom_components/codex_cli/manifest.json`, and add its notes to
+`codex-cli-worker/CHANGELOG.md`. After merging and checking CI, push a
+`vX.Y.Z` tag for that commit. The release workflow validates the repository,
+attaches `codex_cli.zip`, and publishes the worker images. Release packaging
+rejects mismatched versions and missing changelog notes.
 
 ## Development Layout
 
@@ -343,11 +358,9 @@ Release builds also publish the `latest` image tag. Manual workflow builds from 
 
 [assist-screenshot]: https://raw.githubusercontent.com/moryoav/home-assistant-codex/main/examples/codex-1.JPG
 [notification-screenshot]: https://raw.githubusercontent.com/moryoav/home-assistant-codex/main/examples/codex-2.JPG
-[hacs-badge]: https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=flat-square
-[hacs-url]: https://github.com/hacs/integration
+[hacs-badge]: https://img.shields.io/badge/HACS-41BDF5.svg?style=flat-square
+[hacs-url]: #installation
 [release-badge]: https://img.shields.io/github/v/release/moryoav/home-assistant-codex?style=flat-square
-[release-url]: https://github.com/moryoav/home-assistant-codex/releases
-[build-badge]: https://img.shields.io/github/actions/workflow/status/moryoav/home-assistant-codex/build.yaml?branch=main&style=flat-square&label=build
-[build-url]: https://github.com/moryoav/home-assistant-codex/actions/workflows/build.yaml
+[release-url]: https://github.com/moryoav/home-assistant-codex/releases/latest
 [license-badge]: https://img.shields.io/github/license/moryoav/home-assistant-codex?style=flat-square
 [license-url]: https://github.com/moryoav/home-assistant-codex/blob/main/LICENSE

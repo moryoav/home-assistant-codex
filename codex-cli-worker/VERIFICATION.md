@@ -189,8 +189,9 @@ HTTP errors, and invalid dashboard templates still require separate fixes.
 Supervisor credentials are removed from AI subprocess environments. An explicitly
 configured `HA_TOKEN` retains its opt-in behavior. Known credential files such as
 `secrets.yaml`, auth stores, and `core.config_entries` remain in change detection
-but are excluded from new snapshots. Existing snapshots are not rewritten. Those
-files need Home Assistant backups for recovery. Other files can contain inline
+but are excluded from per-file backups and full snapshots. Snapshots made before
+0.1.58 are not rewritten; like all backups they are deleted after the retention
+period. Those files need Home Assistant backups for recovery. Other files can contain inline
 secrets, so this is targeted protection, not complete secret detection.
 
 Chromium uses the app's container/AppArmor confinement with its own sandbox disabled

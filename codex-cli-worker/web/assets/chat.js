@@ -617,6 +617,78 @@ function renderConfigCheck(check) {
     node.append(textNode("pre", `Warnings: ${check.warnings}`, "check-detail"));
   return node;
 }
+/**
+ * Say which changed files have a copy of their previous version and which have
+ * none. Copies are deleted after the retention period set in the app options.
+ */
+function renderBackups(turn) {
+  const entries = Array.isArray(turn.backups) ? turn.backups : [];
+  const saved = entries.filter((entry) => entry.status === "saved");
+  const unsaved = entries.filter((entry) =>
+    ["missing", "unverified"].includes(entry.status),
+  );
+  const count = (list) =>
+    list.length === 1 ? "1 file" : `${list.length} files`;
+  const nodes = [];
+  if (saved.length) {
+    const node = textNode("div", "", "check check-valid backups-saved");
+    const days = state.catalog?.backup_retention_days;
+    node.append(
+      textNode("span", "✓", "check-mark"),
+      textNode(
+        "span",
+        turn.backups_removed
+          ? `Previous version saved for ${count(saved)}; the copies have since been removed`
+          : `Previous version saved for ${count(saved)}${days ? `, kept for ${days === 1 ? "1 day" : `${days} days`}` : ""}`,
+      ),
+    );
+    if (!turn.backups_removed)
+      node.append(
+        textNode(
+          "pre",
+          saved.map((entry) => `${entry.path} → ${entry.copy}`).join("\n"),
+          "check-detail",
+        ),
+      );
+    nodes.push(node);
+  }
+  if (unsaved.length) {
+    const node = textNode("div", "", "check backups-missing");
+    node.append(
+      textNode("span", "!", "check-mark"),
+      textNode("span", `No previous version saved for ${count(unsaved)}`),
+      textNode(
+        "pre",
+        unsaved.map((entry) => entry.path).join("\n"),
+        "check-detail",
+      ),
+    );
+    nodes.push(node);
+  }
+  return nodes;
+}
+/** "12s", "1m 05s", or "1h 02m": how long the running exchange has taken so far. */
+function elapsedLabel(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = String(total % 60);
+  if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  return minutes ? `${minutes}m ${seconds.padStart(2, "0")}s` : `${seconds}s`;
+}
+/** Show the running time next to the waiting line and the step list heading. */
+function tickElapsed() {
+  const activity = state.activity;
+  const running =
+    activity &&
+    activity.id === state.id &&
+    activity.startedAt !== null &&
+    (activity.running || taskActive());
+  for (const node of document.querySelectorAll(".elapsed"))
+    node.textContent = running
+      ? ` · ${elapsedLabel(Date.now() - activity.startedAt)}`
+      : "";
+}
 function renderVerification(turn, taskId) {
   const checks = turn.verification || [];
   if (!checks.length) return null;
@@ -660,6 +732,7 @@ function renderVerification(turn, taskId) {
   section.append(textNode("p", "Screenshots are evidence for visual review. State and configuration checks do not prove automation behavior.", "verification-note"));
   return section;
 }
+/** Draw the open chat: every exchange with its answer, checks, saved copies, and steps. */
 function renderTask(force = false) {
   const task = state.task;
   if (!task) return;
@@ -670,6 +743,7 @@ function renderTask(force = false) {
     task.turns,
     task.history_incomplete,
     task.status,
+    state.catalog?.backup_retention_days,
   ]);
   if (!force && signature === state.signature) {
     controls();
@@ -721,6 +795,7 @@ function renderTask(force = false) {
         answer.append(renderMarkdown(turn.question, "message question"));
       const check = renderConfigCheck(turn.config_check);
       if (check) answer.append(check);
+      answer.append(...renderBackups(turn));
       const evidence = renderVerification(turn, task.task_id);
       if (evidence) answer.append(evidence);
       if (attachments.length)
@@ -750,7 +825,10 @@ function renderTask(force = false) {
           : "Working on your request…",
         "pending",
       );
-      if (latest) pending.id = "pending";
+      if (latest) {
+        pending.id = "pending";
+        pending.append(textNode("span", "", "elapsed"));
+      }
       exchange.append(pending);
       if (latest) exchange.append(activityBlock());
     }
@@ -774,6 +852,8 @@ const stepIcons = {
   error: "!",
   outcome: "■",
   notice: "…",
+  // What the worker itself is doing, before and after Codex runs.
+  phase: "◦",
   other: "•",
 };
 function taskActive() {
@@ -792,6 +872,7 @@ function resetActivity(id) {
         seq: 0,
         steps: new Map(),
         running: false,
+        startedAt: null,
         loaded: false,
         loading: false,
         expanded: null,
@@ -838,6 +919,7 @@ async function pollActivity() {
       activity.expanded = null;
       activity.seq = 0;
       activity.turnId = data.turn_id;
+      activity.startedAt = null;
       restart = true;
       return;
     }
@@ -847,7 +929,17 @@ async function pollActivity() {
     activity.seq = data.seq;
     activity.running = data.running;
     activity.loaded = true;
+    if (data.running && typeof data.elapsed_ms === "number") {
+      const startedAt = Date.now() - data.elapsed_ms;
+      // Keep the first reading unless it is clearly off, so the seconds tick evenly.
+      if (
+        activity.startedAt === null ||
+        Math.abs(startedAt - activity.startedAt) > 1500
+      )
+        activity.startedAt = startedAt;
+    } else activity.startedAt = null;
     if (data.steps.length || wasRunning !== data.running) renderActivity();
+    tickElapsed();
     if (!data.running && taskActive()) fetchSelected().catch(showError);
   } catch (error) {
     // The regular refresh reports worker problems; the steps just pause.
@@ -860,6 +952,7 @@ async function pollActivity() {
     }
   }
 }
+/** Draw the step list of the latest exchange, with its heading, count, and timer. */
 function renderActivity() {
   const block = $("activity");
   const activity = state.activity;
@@ -884,15 +977,14 @@ function renderActivity() {
   toggle.type = "button";
   toggle.setAttribute("aria-expanded", String(expanded));
   toggle.setAttribute("aria-controls", "activity-steps");
-  toggle.append(
-    textNode("span", "", "activity-chevron"),
-    textNode(
-      "span",
-      running
-        ? `Working on your request… · ${count}`
-        : `${expanded ? "Hide" : "Show"} activity (${count})`,
-    ),
+  const label = textNode(
+    "span",
+    running
+      ? `Working on your request… · ${count}`
+      : `${expanded ? "Hide" : "Show"} activity (${count})`,
   );
+  if (running) label.append(textNode("span", "", "elapsed"));
+  toggle.append(textNode("span", "", "activity-chevron"), label);
   toggle.onclick = () => {
     activity.expanded = !expanded;
     renderActivity();
@@ -902,6 +994,7 @@ function renderActivity() {
   list.hidden = !expanded;
   for (const step of steps) list.append(renderStep(step, activity));
   block.replaceChildren(toggle, list);
+  tickElapsed();
   if (nearBottom) area.scrollTop = area.scrollHeight;
 }
 function renderStep(step, activity) {
@@ -1813,3 +1906,4 @@ controls();
 restore = reopenLastChat();
 refresh();
 loadUsage();
+setInterval(tickElapsed, 1000);

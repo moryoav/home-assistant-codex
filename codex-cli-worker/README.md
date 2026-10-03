@@ -2,7 +2,7 @@
 
 Run Codex CLI tasks against your Home Assistant configuration folder from Home Assistant.
 
-The app provides a responsive chat UI with saved conversations, a resizable desktop sidebar and a mobile chat drawer, a token-protected local worker API for the Codex integration, device-code sign-in for Codex CLI, task snapshots, task logs, and notifications when work completes or needs input.
+The app provides a responsive chat UI with saved conversations, a resizable desktop sidebar and a mobile chat drawer, a token-protected local worker API for the Codex integration, device-code sign-in for Codex CLI, per-file backups of changed files, task logs, and notifications when work completes or needs input.
 
 ## Dashboard browser verification
 

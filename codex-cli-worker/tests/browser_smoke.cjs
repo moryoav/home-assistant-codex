@@ -328,6 +328,15 @@ function pngBuffer(width = 8, height = 6) {
       await page.locator("#messages .check-invalid .check-detail").textContent(),
       /required key 'trigger'/,
     );
+    // The same exchange says which changed files have a saved previous version.
+    assert.match(
+      await page.locator("#messages .backups-saved").textContent(),
+      /^✓Previous version saved for 1 file, kept for 7 daysautomations\.yaml → \/config\/codex_tasks\/.*\/backups\/automations\.yaml$/,
+    );
+    assert.equal(
+      await page.locator("#messages .backups-missing").textContent(),
+      "!No previous version saved for 1 filescripts.yaml",
+    );
     await page.screenshot({
       path: path.join(output, "config-check-failed.png"),
       fullPage: true,
@@ -346,11 +355,63 @@ function pngBuffer(width = 8, height = 6) {
     await page
       .getByRole("button", { name: "Send message", exact: true })
       .click();
+    // The worker's own first step shows at once, with a pulsing dot and a timer
+    // that counts up, long before Codex reports anything.
+    await page
+      .locator("#activity.running .step-phase.is-running")
+      .waitFor({ timeout: 5000 });
+    assert.equal(
+      await page.locator("#activity .step-phase .step-text").first().textContent(),
+      "Noting the current state of your configuration files",
+    );
+    const elapsedSeconds = async () => {
+      const text = await page
+        .locator("#activity .activity-toggle .elapsed")
+        .textContent();
+      assert.match(text, /^ · \d+s$/);
+      return Number(text.match(/\d+/)[0]);
+    };
+    await page.waitForFunction(() =>
+      /\d+s$/.test(
+        document.querySelector("#activity .activity-toggle .elapsed")
+          ?.textContent || "",
+      ),
+    );
+    const firstReading = await elapsedSeconds();
+    assert.ok(firstReading <= 2, `timer started at ${firstReading}s`);
+    assert.deepEqual(
+      await page.evaluate(() => {
+        // The waiting line is only on screen for a moment, so check its dot on a copy.
+        const line = document.createElement("p");
+        line.className = "pending";
+        document.querySelector("#messages").append(line);
+        const names = [
+          getComputedStyle(line, "::before").animationName,
+          getComputedStyle(
+            document.querySelector("#activity .activity-chevron"),
+            "::before",
+          ).animationName,
+        ];
+        line.remove();
+        return names;
+      }),
+      ["activity-pulse", "activity-pulse"],
+    );
     // Steps appear one by one while the simulated run works, expanded by default.
     await page
       .locator("#activity.running .step-command.is-running")
       .waitFor({ timeout: 15000 });
     assert.equal(await page.locator("#activity-steps").isVisible(), true);
+    assert.ok((await elapsedSeconds()) > firstReading, "timer did not advance");
+    assert.deepEqual(
+      await page.locator("#activity .step-phase .step-text").allTextContents(),
+      [
+        "Noting the current state of your configuration files",
+        "Starting Codex",
+        "Codex is thinking",
+      ],
+    );
+    assert.equal(await page.locator("#activity .step-phase.is-running").count(), 0);
     await page.screenshot({
       path: path.join(output, "activity-running.png"),
       fullPage: true,
@@ -362,11 +423,13 @@ function pngBuffer(width = 8, height = 6) {
         exact: true,
       })
       .waitFor();
+    // Four steps from Codex and four from the worker; the timer stops with the run.
     await page.waitForFunction(
       () =>
         document.querySelector("#activity .activity-toggle")?.textContent ===
-        "Show activity (4 steps)",
+        "Show activity (8 steps)",
     );
+    assert.equal(await page.locator(".elapsed").count(), 0);
     assert.equal(await page.locator("#activity").count(), 1);
     assert.equal(await page.locator("#activity .step.is-running").count(), 0);
     assert.equal(await page.locator(".message.user").count(), 2);
@@ -390,15 +453,15 @@ function pngBuffer(width = 8, height = 6) {
         !document.querySelector("#effort-button").disabled,
     );
     await page.locator("#model-button").click();
-    await page.getByRole("button", { name: "GPT-5.5", exact: true }).click();
+    await page.getByRole("button", { name: "GPT-6 Luna", exact: true }).click();
     await page.waitForFunction(
       () =>
-        document.querySelector("#model-button").textContent === "GPT-5.5" &&
+        document.querySelector("#model-button").textContent === "GPT-6 Luna" &&
         !document.querySelector("#model-button").disabled,
     );
     assert.equal(await page.locator("#effort-label").textContent(), "Medium");
     await page.locator("#effort-button").click();
-    assert.equal(await page.locator("#effort-slider").getAttribute("max"), "3");
+    assert.equal(await page.locator("#effort-slider").getAttribute("max"), "4");
     await page.locator("#effort-slider").fill("2");
     await page.waitForFunction(
       () =>
@@ -777,7 +840,7 @@ function pngBuffer(width = 8, height = 6) {
         exact: true,
       })
       .waitFor();
-    assert.equal(await page.locator("#model-button").textContent(), "GPT-5.5");
+    assert.equal(await page.locator("#model-button").textContent(), "GPT-6 Luna");
     assert.equal(await page.locator("#effort-label").textContent(), "Medium");
     assert.equal(await page.locator("#scrim").isHidden(), true);
     assert.equal(

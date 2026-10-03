@@ -67,26 +67,34 @@ DEFAULT_OPTIONS = {
     "task_timeout_seconds": 3600,
     "auto_save_lovelace": True,
     "config_check": True,
+    "full_snapshot": False,
+    "backup_retention_days": 7,
     "browser_verification": True,
     "browser_memory_limit_mib": DEFAULT_BROWSER_MEMORY_LIMIT_MIB,
     "ha_url": "http://supervisor/core",
     "HA_TOKEN": "",
 }
+BACKUP_RETENTION_DAYS_RANGE = (1, 365)
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 # Codex only emits reasoning items when summaries are requested; "auto" produced none.
 REASONING_SUMMARIES = {"concise", "detailed", "none"}
-# Supported choices in the bundled CLI 0.157.1 model catalog. Availability still
+# Supported choices in the bundled CLI 0.160.0 model catalog. Availability still
 # depends on the signed-in account; the CLI reports unavailable models normally.
 CHAT_MODELS = (
     ("gpt-6-astra", "GPT-6 Astra", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-6.1-sol", "GPT-6.1 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6-sol", "GPT-6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6-luna", "GPT-6 Luna", ("low", "medium", "high", "xhigh", "max")),
     ("gpt-5.6-sol", "GPT-5.6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-terra", "GPT-5.6 Terra", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-luna", "GPT-5.6 Luna", ("low", "medium", "high", "xhigh", "max")),
-    ("gpt-5.5", "GPT-5.5", ("low", "medium", "high", "xhigh")),
 )
 CHAT_MODEL_EFFORTS = {model: efforts for model, _, efforts in CHAT_MODELS}
+# Models that are no longer offered, each with the next model up. An add-on option
+# or a chat that still has one selected runs on the first model in that chain
+# that is still offered. The option schema keeps accepting them: Home Assistant
+# does not start an app whose saved option is missing from the list.
+RETIRED_MODELS = {"gpt-5.5": "gpt-5.6-sol"}
 DEFAULT_CHAT_SETTINGS = {"model": None, "reasoning_effort": None}
 
 AGENTS_MAX_BYTES = 256 * 1024
@@ -322,9 +330,40 @@ def reasoning_summary(options: dict[str, Any]) -> str:
     return value if value in REASONING_SUMMARIES else DEFAULT_OPTIONS["reasoning_summary"]
 
 
+def backup_retention_days(options: dict[str, Any] | None = None) -> int:
+    """Return how many days backups are kept, within the supported range."""
+    value = (read_options() if options is None else options).get("backup_retention_days")
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = DEFAULT_OPTIONS["backup_retention_days"]
+    low, high = BACKUP_RETENTION_DAYS_RANGE
+    return min(high, max(low, days))
+
+
+def current_model(model: Any) -> Any:
+    """Return the model that replaces one that is no longer offered."""
+    while isinstance(model, str) and model in RETIRED_MODELS:
+        model = RETIRED_MODELS[model]
+    return model
+
+
+def current_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Return chat selections with a model that is no longer offered replaced by the next one up."""
+    settings = copy.deepcopy(settings)
+    model = current_model(settings.get("model"))
+    if model != settings.get("model"):
+        settings["model"] = model
+        # The replacement may not support a level the retired model did.
+        if settings.get("reasoning_effort") not in CHAT_MODEL_EFFORTS.get(model, ()):
+            settings["reasoning_effort"] = None
+    return settings
+
+
 def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
     """Resolve inheritance once per turn, without changing shared options."""
-    model = settings.get("model") or str(options.get("codex_model") or "default")
+    settings = current_chat_settings(settings)
+    model = settings.get("model") or current_model(str(options.get("codex_model") or "default"))
     if model == "gpt-5.3-codex":
         model = "default"
     efforts = CHAT_MODEL_EFFORTS.get(model, ("low", "medium", "high", "xhigh"))
@@ -333,8 +372,9 @@ def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> 
         raise ValueError("The selected reasoning level is not supported by this model.")
     if effort is None:
         effort = model_reasoning_effort(options)
-        # A legacy global setting may not suit an explicitly selected model.
-        if model in CHAT_MODEL_EFFORTS and effort not in efforts:
+        # The add-on level may not suit the model: none offered supports minimal, and
+        # neither does the model the CLI picks for default, which gets it unchanged.
+        if effort not in efforts:
             effort = "medium"
     return {"model": model, "reasoning_effort": effort}
 
@@ -344,11 +384,13 @@ def parse_chat_settings(payload: dict[str, Any], task: dict[str, Any] | None = N
     if not isinstance(settings, dict) or set(settings) - set(DEFAULT_CHAT_SETTINGS):
         raise ValueError("chat_settings must contain only model and reasoning_effort.")
     settings = {**DEFAULT_CHAT_SETTINGS, **settings}
-    model, effort = settings["model"], settings["reasoning_effort"]
+    model, effort = current_model(settings["model"]), settings["reasoning_effort"]
     if model is not None and (not isinstance(model, str) or model not in CHAT_MODEL_EFFORTS):
         raise ValueError("Select a supported model or use the add-on default.")
     if effort is not None and (not isinstance(effort, str) or effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}):
         raise ValueError("Select a supported reasoning level or use the add-on default.")
+    # Only after the checks: replacing a retired model drops a level its replacement lacks.
+    settings = current_chat_settings(settings)
     resolve_chat_settings(settings, read_options())
     return settings
 
@@ -403,7 +445,7 @@ def _codex_sandbox_probe(mode: str) -> dict[str, Any]:
     if not codex:
         return {"ok": False, "error": "Codex CLI executable is unavailable."}
     try:
-        # The pinned CLI (0.157.1) takes the command directly: `codex sandbox
+        # The pinned CLI (0.160.0) takes the command directly: `codex sandbox
         # [options] -- <command>`. It has no platform subcommand, so any word
         # before `--` that is not an option is executed as the program.
         result = subprocess.run(
@@ -1028,7 +1070,33 @@ def start_activity(task_id: str, turn_id: str) -> None:
         task_activity[task_id] = {
             "turn_id": turn_id, "seq": 0, "running": True, "capped": False,
             "steps": [], "by_id": {}, "clock": {},
+            "started": time.monotonic(), "edited": set(),
         }
+
+
+def start_phase(task_id: str, phase: str, text: str) -> None:
+    """Show what the worker itself is doing, so the chat has a step before Codex reports one."""
+    append_activity_step(task_id, {"id": f"worker:{phase}", "kind": "phase", "status": "running", "text": text})
+
+
+def finish_phase(task_id: str, *phases: str, failed: bool = False) -> None:
+    """Close the named worker steps as done or failed; steps that never started are left alone."""
+    for phase in phases:
+        with lock:
+            record = task_activity.get(task_id)
+            step = record["by_id"].get(f"worker:{phase}") if record else None
+            if step is None or step["status"] != "running":
+                continue
+            text = step["text"]
+        status = "failed" if failed else "done"
+        append_activity_step(task_id, {"id": f"worker:{phase}", "kind": "phase", "status": status, "text": text})
+
+
+def edited_paths(task_id: str) -> set[str]:
+    """Existing files under /config that Codex reported editing or deleting in the running exchange."""
+    with lock:
+        record = task_activity.get(task_id)
+        return set(record["edited"]) if record else set()
 
 
 def clip_activity_text(value: Any, limit: int) -> tuple[str, bool]:
@@ -1177,17 +1245,38 @@ def append_activity_error(task_id: str, message: Any) -> None:
     append_activity_step(task_id, {"id": "", "kind": "error", "status": "failed", "text": text})
 
 
+def note_edited_files(task_id: str, step: dict[str, Any]) -> None:
+    """Remember which existing files Codex says it edited, to check their backups afterwards."""
+    paths = {
+        change["path"] for change in step.get("files") or []
+        if change["kind"] != "add" and change["path"] and not change["path"].startswith("/")
+    }
+    if not paths:
+        return
+    with lock:
+        record = task_activity.get(task_id)
+        if record is not None:
+            record["edited"].update(paths)
+
+
 def record_activity_event(task_id: str, event: Any) -> None:
     """Map one line of `codex exec --json` output onto the running exchange's steps."""
     if not isinstance(event, dict):
         return
     kind = str(event.get("type") or "")
-    if kind in {"item.started", "item.updated", "item.completed"}:
+    if kind == "thread.started":
+        finish_phase(task_id, "launch")
+    elif kind == "turn.started":
+        finish_phase(task_id, "launch")
+        start_phase(task_id, "think", "Codex is thinking")
+    elif kind in {"item.started", "item.updated", "item.completed"}:
+        finish_phase(task_id, "launch", "think")
         item = event.get("item")
         if isinstance(item, dict):
             step = activity_step_from_item(item)
             if step is not None:
                 append_activity_step(task_id, step)
+                note_edited_files(task_id, step)
     elif kind == "error":
         append_activity_error(task_id, event.get("message"))
     elif kind == "turn.failed":
@@ -1201,11 +1290,16 @@ def public_activity_step(step: dict[str, Any]) -> dict[str, Any]:
 
 
 def activity_payload_locked(record: dict[str, Any], after: int = 0) -> dict[str, Any]:
+    """The steps after a sequence number, with the running time while the exchange lasts."""
     steps = [public_activity_step(step) for step in record["steps"] if step["seq"] > after]
-    return {
+    payload = {
         "turn_id": record["turn_id"], "seq": record["seq"], "running": record["running"],
         "total": len(record["steps"]), "steps": steps,
     }
+    if record["running"]:
+        # Lets the chat show a timer that does not depend on the browser's clock.
+        payload["elapsed_ms"] = round((time.monotonic() - record["started"]) * 1000)
+    return payload
 
 
 def activity_file(task_id: str, turn_id: str) -> Path:
@@ -1234,6 +1328,13 @@ def finish_activity(task_id: str) -> None:
                 if step.get("status") == "running":
                     step["status"] = "failed"
         append_activity_step(task_id, outcome, force=True)
+    else:
+        with lock:
+            # A worker step still open when the exchange ends well has simply finished.
+            for step in record["steps"]:
+                if step.get("kind") == "phase" and step.get("status") == "running":
+                    record["seq"] += 1
+                    step.update(status="done", seq=record["seq"])
     with lock:
         record["running"] = False
         payload = activity_payload_locked(record)
@@ -1265,7 +1366,7 @@ def load_stored_activity(task_id: str, turn_id: str) -> dict[str, Any] | None:
 TURN_RESULT_FIELDS = (
     "status", "summary", "details", "question", "started_at", "completed_at",
     "returncode", "changes", "validation_errors", "lovelace_results", "error",
-    "attachments", "config_check", "recovery_files", "verification", "verification_attachments",
+    "attachments", "config_check", "recovery_files", "backups", "verification", "verification_attachments",
 )
 # The check result recorded when no check ran: launch failures, cancellations, and new turns.
 EMPTY_CONFIG_CHECK = {"result": "skipped", "errors": "", "warnings": ""}
@@ -1598,7 +1699,7 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
         result["pinned"] = bool(task.get("pinned"))
     else:
         result = copy.deepcopy(task)
-        result["chat_settings"] = copy.deepcopy(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
+        result["chat_settings"] = current_chat_settings(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
         result["turns"] = task_turns(task)
         result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
     result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES
@@ -1802,21 +1903,46 @@ def file_hash(path: Path) -> str:
     return hasher.hexdigest()
 
 
+# What the last scan of /config saw, so the next scan reads only the files that
+# changed since. A file is trusted when its size and both timestamps are the
+# same and it was already at rest some time before that scan started.
+manifest_cache: dict[str, Any] = {"root": "", "scanned_ns": 0, "files": {}}
+MANIFEST_SETTLE_NS = 2_000_000_000
+
+
 def build_manifest() -> dict[str, dict[str, Any]]:
+    """List the files under /config with a hash of each, to find what an exchange changed."""
+    root = str(CONFIG_ROOT)
+    with lock:
+        same_root = manifest_cache["root"] == root
+        known: dict[str, tuple[int, int, int, str]] = manifest_cache["files"] if same_root else {}
+        trusted_before = (manifest_cache["scanned_ns"] if same_root else 0) - MANIFEST_SETTLE_NS
+    scanned_ns = time.time_ns()
+    own_files = str(task_root()) + os.sep
+    seen: dict[str, tuple[int, int, int, str]] = {}
     manifest: dict[str, dict[str, Any]] = {}
     for path in CONFIG_ROOT.rglob("*"):
-        if not should_include_file(path):
+        # The worker's own task files are not part of the user's configuration.
+        if str(path).startswith(own_files) or not should_include_file(path):
             continue
         rel = path.relative_to(CONFIG_ROOT).as_posix()
         try:
             stat = path.stat()
-            manifest[rel] = {
-                "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
-                "sha256": file_hash(path),
-            }
+            previous = known.get(rel)
+            if (
+                previous is not None
+                and previous[:3] == (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                and stat.st_ctime_ns < trusted_before
+            ):
+                digest = previous[3]
+            else:
+                digest = file_hash(path)
         except OSError:
             continue
+        seen[rel] = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, digest)
+        manifest[rel] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": digest}
+    with lock:
+        manifest_cache.update(root=root, scanned_ns=scanned_ns, files=seen)
     return manifest
 
 
@@ -1835,10 +1961,19 @@ def diff_manifests(before: dict[str, Any], after: dict[str, Any]) -> dict[str, l
     }
 
 
-def create_snapshot(task_id: str) -> dict[str, Any]:
-    task_dir = get_run_dir(task_id)
-    snapshot_path = task_dir / "snapshot-before.tar.gz"
+def record_baseline(task_id: str) -> dict[str, dict[str, Any]]:
+    """Note the state of /config before an exchange, to find afterwards what it changed."""
     manifest = build_manifest()
+    (get_run_dir(task_id) / BASELINE_FILE).write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
+def create_snapshot(task_id: str, manifest: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Archive every listed file before an exchange; only done when full snapshots are turned on."""
+    task_dir = get_run_dir(task_id)
+    snapshot_path = task_dir / SNAPSHOT_FILE
+    if manifest is None:
+        manifest = record_baseline(task_id)
     file_count = 0
     with tarfile.open(snapshot_path, "w:gz") as tar:
         for rel in sorted(manifest):
@@ -1848,7 +1983,6 @@ def create_snapshot(task_id: str) -> dict[str, Any]:
             if path.exists():
                 tar.add(path, arcname=rel, recursive=False)
                 file_count += 1
-    (task_dir / "manifest-before.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     snapshot_path.chmod(0o600)
     return {"path": str(snapshot_path), "file_count": file_count, "created_at": utc_now()}
 
@@ -1882,7 +2016,14 @@ def validate_changed_files(changes: dict[str, list[str]]) -> list[str]:
 CONFIG_CHECK_TIMEOUT = 180
 CONFIG_CHECK_SUFFIXES = {".yaml", ".yml"}
 CONFIG_CHECK_TEXT_MAX = 4000
+BASELINE_FILE = "manifest-before.json"
+SNAPSHOT_FILE = "snapshot-before.tar.gz"
+# Copies of files as they were before an exchange changed them: made by Codex
+# before each edit, or taken from the full snapshot when that option is on.
+BACKUP_DIR = "backups"
+# Folder name used for recovery copies before 0.1.63; only cleaned up now.
 RECOVERY_DIR = "recovery"
+DASHBOARD_STORAGE_PREFIX = ".storage/lovelace"
 
 
 def yaml_config_changes(changes: dict[str, list[str]]) -> list[str]:
@@ -1947,46 +2088,150 @@ def files_in_validation_errors(validation_errors: list[str]) -> list[str]:
     return sorted(files)
 
 
-def preserve_recovery_copies(run_dir: Path, changes: dict[str, list[str]], affected: list[str]) -> list[dict[str, str]]:
-    """Copy the pre-change version of each affected file out of the snapshot.
+def codex_backup_dir(run_dir: Path, options: dict[str, Any]) -> Path | None:
+    """The folder Codex copies files into before changing them, or None when it cannot write there."""
+    mode = str(options.get("codex_sandbox") or DEFAULT_OPTIONS["codex_sandbox"])
+    if mode == "read-only":
+        return None
+    folder = run_dir / BACKUP_DIR
+    # The workspace-write sandbox only lets Codex write inside /config.
+    if mode != "danger-full-access" and not folder.resolve().is_relative_to(CONFIG_ROOT.resolve()):
+        return None
+    return folder
 
-    Returns one entry per affected file: `copy` is the recovery file for files
-    that existed before the exchange, and empty for files the exchange added.
+
+def safe_relative_path(rel: str) -> bool:
+    """Whether a path from a task result stays inside the folder it is joined to."""
+    return bool(rel) and not rel.startswith("/") and ".." not in Path(rel).parts
+
+
+def copied_files(run_dir: Path) -> dict[str, Path]:
+    """The files in an exchange's backup folder by their path under /config.
+
+    Codex can write in this folder, so links to folders are not followed.
     """
-    snapshot_path = run_dir / "snapshot-before.tar.gz"
+    root = run_dir / BACKUP_DIR
+    if root.is_symlink() or not root.is_dir():
+        return {}
+    return {
+        Path(folder, name).relative_to(root).as_posix(): Path(folder, name)
+        for folder, _, names in os.walk(root) for name in names
+    }
+
+
+def drop_credential_backups(run_dir: Path) -> None:
+    """Delete copies of credential files, which Codex is told not to make."""
+    for rel, path in copied_files(run_dir).items():
+        if snapshot_secret_path(rel):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def saved_copy(run_dir: Path, rel: str, before: dict[str, Any]) -> dict[str, str]:
+    """Find the copy Codex made of a file before changing it.
+
+    A copy counts as saved only when it is identical to the file the worker saw
+    before the exchange started. `status` is `saved`, `missing`, `unverified`
+    for a copy that is not the earlier version, or `excluded` for credential
+    files, which are never copied.
+    """
+    entry = {"path": rel, "status": "missing", "copy": ""}
+    # Codex can write in this folder, so never follow a link it may have left there.
+    if not safe_relative_path(rel) or (run_dir / BACKUP_DIR).is_symlink():
+        return entry
+    if snapshot_secret_path(rel):
+        return {**entry, "status": "excluded"}
+    root = (run_dir / BACKUP_DIR).resolve()
+    target = root / rel
+    expected = str((before.get(rel) or {}).get("sha256") or "")
+    try:
+        if not target.resolve().is_relative_to(root) or target.is_symlink() or not target.is_file():
+            return entry
+        if expected and file_hash(target) == expected:
+            return {**entry, "status": "saved", "copy": str(target)}
+    except OSError:
+        return entry
+    return {**entry, "status": "unverified", "copy": str(target)}
+
+
+def fill_from_snapshot(run_dir: Path, entries: list[dict[str, str]]) -> None:
+    """With a full snapshot, take every previous version Codex did not save out of the archive."""
+    wanted = {
+        entry["path"]: entry for entry in entries
+        if entry["status"] in {"missing", "unverified"} and safe_relative_path(entry["path"])
+    }
+    snapshot_path = run_dir / SNAPSHOT_FILE
+    if not wanted or not snapshot_path.is_file() or (run_dir / BACKUP_DIR).is_symlink():
+        return
+    root = (run_dir / BACKUP_DIR).resolve()
+    with tarfile.open(snapshot_path, "r:gz") as tar:
+        for member in tar:
+            entry = wanted.get(member.name)
+            target = root / member.name
+            if entry is None or not member.isfile() or not target.resolve().is_relative_to(root):
+                continue
+            source = tar.extractfile(member)
+            if source is None:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read())
+            entry.update(status="saved", copy=str(target))
+
+
+def previous_versions(run_dir: Path, paths: list[str], before: dict[str, Any]) -> list[dict[str, str]]:
+    """Say for each changed file where its previous version is saved, if anywhere."""
+    entries = [saved_copy(run_dir, rel, before) for rel in paths]
+    try:
+        fill_from_snapshot(run_dir, entries)
+    except (OSError, tarfile.TarError) as exc:
+        print(f"Could not read {run_dir / SNAPSHOT_FILE}: {redact(str(exc))}", flush=True)
+    return entries
+
+
+def review_backups(run_dir: Path, before: dict[str, Any], changes: dict[str, list[str]], edited: set[str]) -> list[dict[str, str]]:
+    """Report which changed files have a copy of their previous version.
+
+    Home Assistant rewrites its own storage files all the time, so only files
+    that are Codex's doing are reviewed: the ones it reported editing, the ones
+    it copied, and changed YAML and dashboard files.
+    """
+    drop_credential_backups(run_dir)
+    copied = {rel for rel, path in copied_files(run_dir).items() if not path.is_symlink()}
+    existed = set(changes.get("changed", [])) | set(changes.get("deleted", []))
+    reviewed = sorted(
+        rel for rel in existed
+        if rel in edited or rel in copied or rel.startswith(DASHBOARD_STORAGE_PREFIX)
+        or (not rel.startswith(".storage/") and Path(rel).suffix.lower() in CONFIG_CHECK_SUFFIXES)
+    )
+    return previous_versions(run_dir, reviewed, before)
+
+
+def recovery_copies(run_dir: Path, changes: dict[str, list[str]], affected: list[str], before: dict[str, Any]) -> list[dict[str, str]]:
+    """Point to the pre-change version of each file that failed validation.
+
+    Returns one entry per affected file: `copy` is the saved previous version,
+    and empty for files the exchange added or that have no saved copy; `reason`
+    then says why.
+    """
     added = set(changes.get("added", []))
-    wanted = [rel for rel in affected if rel and not rel.startswith("/") and ".." not in Path(rel).parts]
-    if not wanted:
-        return []
-    recovery_root = (run_dir / RECOVERY_DIR).resolve()
-    results: dict[str, dict[str, str]] = {rel: {"path": rel, "copy": ""} for rel in wanted}
+    wanted = [rel for rel in affected if safe_relative_path(rel)]
+    saved = {entry["path"]: entry for entry in previous_versions(run_dir, [rel for rel in wanted if rel not in added], before)}
+    results = []
     for rel in wanted:
-        if rel not in added and snapshot_secret_path(rel):
-            results[rel]["reason"] = "excluded_credentials"
-    if snapshot_path.is_file() and any(rel not in added for rel in wanted):
-        with tarfile.open(snapshot_path, "r:gz") as tar:
-            for rel in wanted:
-                if rel in added or snapshot_secret_path(rel):
-                    continue
-                try:
-                    member = tar.getmember(rel)
-                except KeyError:
-                    continue
-                if not member.isfile():
-                    continue
-                target = (recovery_root / rel).resolve()
-                if not target.is_relative_to(recovery_root):
-                    continue
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(source.read())
-                results[rel]["copy"] = str(target)
-    return [results[rel] for rel in wanted]
+        entry = {"path": rel, "copy": ""}
+        if rel in saved and saved[rel]["status"] == "saved":
+            entry["copy"] = saved[rel]["copy"]
+        elif rel in saved:
+            entry["reason"] = "excluded_credentials" if saved[rel]["status"] == "excluded" else "no_backup"
+        results.append(entry)
+    return results
 
 
-def assess_changes(task_id: str, run_dir: Path, changes: dict[str, list[str]]) -> dict[str, Any]:
+def assess_changes(
+    task_id: str, run_dir: Path, changes: dict[str, list[str]], before: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Validate what the exchange changed and prepare recovery copies when it failed.
 
     Syntax validation runs first. When it passes and YAML files changed, Home
@@ -2013,9 +2258,9 @@ def assess_changes(task_id: str, run_dir: Path, changes: dict[str, list[str]]) -
     recovery_files: list[dict[str, str]] = []
     if affected:
         try:
-            recovery_files = preserve_recovery_copies(run_dir, changes, affected)
+            recovery_files = recovery_copies(run_dir, changes, affected, before or {})
         except Exception as exc:
-            write_task_log(task_id, "worker", f"Could not keep recovery copies: {exc}")
+            write_task_log(task_id, "worker", f"Could not find recovery copies: {exc}")
     lovelace_results: list[dict[str, Any]] = []
     failed_storage = {rel for rel in files_in_validation_errors(validation_errors) if rel.startswith(".storage/")}
     for rel in sorted(failed_storage):
@@ -2038,18 +2283,30 @@ def assess_changes(task_id: str, run_dir: Path, changes: dict[str, list[str]]) -
     }
 
 
+def unsaved_note(paths: list[str]) -> str:
+    """Tell the user which changed files have no copy of their previous version."""
+    shown = ", ".join(paths[:10]) + (f", and {len(paths) - 10} more" if len(paths) > 10 else "")
+    return f"No copy of the previous version was saved for: {shown}. Use a Home Assistant backup to restore such a file."
+
+
 def validation_details(validation_errors: list[str], config_check: dict[str, str], recovery_files: list[dict[str, str]]) -> str:
     """The details text for a failed validation, with how to recover."""
     lines = ["Validation errors: " + "; ".join(validation_errors[:5])]
     copies = [entry for entry in recovery_files if entry.get("copy")]
     added = [entry["path"] for entry in recovery_files if not entry.get("copy") and not entry.get("reason")]
     excluded = [entry["path"] for entry in recovery_files if entry.get("reason") == "excluded_credentials"]
+    unsaved = [entry["path"] for entry in recovery_files if entry.get("reason") == "no_backup"]
     if copies:
-        lines.append("Pre-change copies of the affected files are kept at: " + ", ".join(entry["copy"] for entry in copies))
+        lines.append(
+            f"Pre-change copies of the affected files are kept for {backup_retention_days()} days at: "
+            + ", ".join(entry["copy"] for entry in copies)
+        )
     if added:
         lines.append("New files that did not exist before: " + ", ".join(added))
     if excluded:
-        lines.append("Credential files excluded from recovery snapshots; use a Home Assistant backup: " + ", ".join(excluded))
+        lines.append("Credential files excluded from recovery copies; use a Home Assistant backup: " + ", ".join(excluded))
+    if unsaved:
+        lines.append(unsaved_note(unsaved))
     if config_check.get("warnings"):
         lines.append("Home Assistant warnings: " + config_check["warnings"])
     return "\n".join(lines)
@@ -2559,9 +2816,26 @@ def attached_image_note(task_id: str) -> str:
     )
 
 
-def build_prompt(user_prompt: str, task_id: str, reply: str | None = None) -> str:
+def backup_instructions(backup_dir: Path | None) -> str:
+    """Tell Codex to keep the previous version of each file it changes."""
+    if backup_dir is None:
+        return ""
+    return (
+        f"Before you change, move, or delete a file that already exists under /config, copy it to {backup_dir} under "
+        f"the same relative path, creating folders as needed: /config/automations.yaml goes to {backup_dir}/automations.yaml "
+        f"and /config/.storage/lovelace.kitchen goes to {backup_dir}/.storage/lovelace.kitchen. Copy each file once, before "
+        "your first change to it for this message, and only the files you are about to change. Files you create need no copy. "
+        "Never copy secrets.yaml, .storage/auth, .storage/auth_provider.*, .storage/http.auth, or .storage/core.config_entries. "
+        "Do not leave other backup copies in /config. The worker checks these copies when you finish and tells the user "
+        "which changed files have none.\n\n"
+    )
+
+
+def build_prompt(user_prompt: str, task_id: str, reply: str | None = None, backup_dir: Path | None = None) -> str:
+    """Write the instructions Codex gets for one message, including where to save its backups."""
     current_request = reply if reply is not None else user_prompt
     attached = attached_image_note(task_id)
+    backups = backup_instructions(backup_dir)
     return f"""You are Codex running as a Home Assistant add-on worker.
 
 Workspace: /config
@@ -2571,7 +2845,7 @@ Follow /config/AGENTS.md. Treat this as a live Home Assistant config tree. Make 
 
 This is a non-interactive run. Do not wait for terminal input. If you need the user's decision or verification before continuing, stop cleanly by returning status "needs_input" with one concise question.
 
-If the user asks for an image, use the built-in image generation tool. Every image it generates is attached to this conversation and shown to the user automatically, so leave it at its default save location and describe it in the summary. Copy it into /config only when the user asks for a file at a specific path. The default save location is not a failure.
+{backups}If the user asks for an image, use the built-in image generation tool. Every image it generates is attached to this conversation and shown to the user automatically, so leave it at its default save location and describe it in the summary. Copy it into /config only when the user asks for a file at a specific path. The default save location is not a failure.
 
 Use the home_assistant MCP verify tool for authenticated Home Assistant checks, with these argument examples:
   {{"operation":"entity","entity_id":"light.kitchen","expected_state":"on","attributes":["brightness"]}}
@@ -2781,6 +3055,7 @@ def request_task_cancellation(
                 "attachments": [],
                 "config_check": dict(EMPTY_CONFIG_CHECK),
                 "recovery_files": [],
+                "backups": [],
                 "updated_at": utc_now(),
             }
         )
@@ -2832,6 +3107,7 @@ def publish_cancelled_task_outcome(task_id: str, returncode: int | None = None) 
         "attachments": [],
         "config_check": dict(EMPTY_CONFIG_CHECK),
         "recovery_files": [],
+        "backups": [],
         "response": {
             "status": "cancelled",
             "summary": CANCELLED_TASK_SUMMARY,
@@ -2879,6 +3155,7 @@ def fail_task_launch(
         "attachments": [],
         "config_check": dict(EMPTY_CONFIG_CHECK),
         "recovery_files": [],
+        "backups": [],
     }
     if resolved_session_id:
         task_updates["session_id"] = resolved_session_id
@@ -2900,6 +3177,7 @@ def fail_task_launch(
         "attachments": [],
         "config_check": dict(EMPTY_CONFIG_CHECK),
         "recovery_files": [],
+        "backups": [],
         "response": {
             "status": "failed",
             "summary": summary,
@@ -2947,6 +3225,7 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
                         "attachments": [],
                         "config_check": dict(EMPTY_CONFIG_CHECK),
                         "recovery_files": [],
+                        "backups": [],
                         "updated_at": completed_at,
                     }
                 )
@@ -2958,13 +3237,14 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
 
 
 def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: str | None = None) -> None:
+    """Run one exchange: record the configuration, launch Codex, then check and report what it changed."""
     if task_cancellation_requested(task_id):
         return
     task_dir = get_run_dir(task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
     final_file = task_dir / ("final-resume.json" if reply else "final.json")
     prompt_file = task_dir / ("prompt-resume.txt" if reply else "prompt.txt")
-    before_manifest_path = task_dir / "manifest-before.json"
+    before_manifest_path = task_dir / BASELINE_FILE
 
     update_task(task_id, status="running", started_at=utc_now(), error="")
     verification_capability = verification.begin(task_id)
@@ -2973,15 +3253,30 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     start_activity(task_id, current_turn_id)
     if task_cancellation_requested(task_id):
         return
+    options = read_options()
     if not before_manifest_path.exists():
         try:
-            snapshot = create_snapshot(task_id)
-            update_task(task_id, snapshot=snapshot)
+            start_phase(task_id, "baseline", "Noting the current state of your configuration files")
+            manifest = record_baseline(task_id)
+            finish_phase(task_id, "baseline")
+            if options.get("full_snapshot"):
+                start_phase(task_id, "snapshot", "Saving a full snapshot of your configuration")
+                update_task(task_id, snapshot=create_snapshot(task_id, manifest))
+                finish_phase(task_id, "snapshot")
         except Exception as exc:
-            write_task_log(task_id, "worker", f"Snapshot failed: {exc}")
+            # Otherwise the step would be closed as done when the exchange ends well.
+            finish_phase(task_id, "baseline", "snapshot", failed=True)
+            write_task_log(task_id, "worker", f"Could not record the configuration before the run: {exc}")
             update_task(task_id, snapshot_error=str(exc))
     if task_cancellation_requested(task_id):
         return
+    backup_dir = codex_backup_dir(task_dir, options)
+    if backup_dir is not None:
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            write_task_log(task_id, "worker", f"Could not create the backup folder: {exc}")
+            backup_dir = None
 
     try:
         final_file.unlink(missing_ok=True)
@@ -2996,7 +3291,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
 
     try:
-        prompt_file.write_text(build_prompt(prompt, task_id, reply=reply), encoding="utf-8")
+        prompt_file.write_text(build_prompt(prompt, task_id, reply=reply, backup_dir=backup_dir), encoding="utf-8")
     except OSError as exc:
         fail_task_launch(
             task_id,
@@ -3011,6 +3306,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     args = build_codex_args(task_id, prompt_file, final_file, session_id)
     write_task_log(task_id, "worker", "Starting Codex: " + " ".join(args))
 
+    start_phase(task_id, "launch", "Starting Codex")
     readiness = sandbox_readiness()
     if task_cancellation_requested(task_id):
         return
@@ -3119,8 +3415,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
 
     final = parse_final(final_file, returncode)
+    start_phase(task_id, "review", "Checking the changes")
     after_manifest = build_manifest()
-    (task_dir / "manifest-after.json").write_text(json.dumps(after_manifest, indent=2), encoding="utf-8")
     try:
         before_manifest = json.loads(before_manifest_path.read_text(encoding="utf-8"))
     except Exception:
@@ -3129,7 +3425,12 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     (task_dir / "changes.json").write_text(json.dumps(changes, indent=2), encoding="utf-8")
     if task_cancellation_requested(task_id):
         return
-    assessment = assess_changes(task_id, task_dir, changes)
+    try:
+        backups = review_backups(task_dir, before_manifest, changes, edited_paths(task_id))
+    except Exception as exc:
+        backups = []
+        write_task_log(task_id, "worker", f"Could not review the saved copies: {exc}")
+    assessment = assess_changes(task_id, task_dir, changes, before_manifest)
     if task_cancellation_requested(task_id):
         return
     validation_errors = assessment["validation_errors"]
@@ -3139,6 +3440,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     verification.after_changes(task_id, lovelace_results)
     if task_cancellation_requested(task_id):
         return
+    finish_phase(task_id, "review")
 
     if timed_out:
         final = {
@@ -3151,10 +3453,13 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         final["details"] = f"Codex exited with {returncode}. {final.get('details', '')}".strip()
 
     status = str(final.get("status") or "failed")
+    # Files the validation details already report as having no saved copy.
+    named: set[str] = set()
     if validation_errors and status == "completed":
         status = "failed"
         final["status"] = "failed"
         final["details"] = validation_details(validation_errors, config_check, recovery_files)
+        named = {entry["path"] for entry in recovery_files if entry.get("reason") == "no_backup"}
     elif config_check["result"] == "unavailable" and status == "completed":
         note = "Home Assistant could not check the configuration, so the change is applied but unverified: " + config_check["errors"]
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
@@ -3164,6 +3469,9 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     if incomplete:
         note = f"Verification needs review: {incomplete} check(s) failed, found issues, or could not run. See the evidence below."
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
+    unsaved =[entry["path"] for entry in backups if entry["status"] in {"missing", "unverified"} and entry["path"] not in named]
+    if unsaved:
+        final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), unsaved_note(unsaved)) if part)
     task_status = "waiting_for_input" if status == "needs_input" else status
     completed_at = utc_now() if status != "needs_input" else ""
     session_id = (
@@ -3189,6 +3497,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         validation_errors=validation_errors,
         config_check=config_check,
         recovery_files=recovery_files,
+        backups=backups,
         lovelace_results=lovelace_results,
         attachments=attachments,
     ) is False:
@@ -3208,6 +3517,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         "validation_errors": validation_errors,
         "config_check": config_check,
         "recovery_files": recovery_files,
+        "backups": backups,
         "lovelace_results": lovelace_results,
         "attachments": attachments,
         "verification": copy.deepcopy(tasks.get(task_id, {}).get("verification") or []),
@@ -3232,12 +3542,115 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     refresh_usage_status_async(force=True)
 
 
+TURN_ID_RE = re.compile(r"[0-9a-f]{32}")
+# Only needed while an exchange runs; exchanges from before 0.1.63 left them behind.
+WORKING_FILES = (BASELINE_FILE, "manifest-after.json")
+BACKUP_ARTIFACTS = (SNAPSHOT_FILE, BACKUP_DIR, RECOVERY_DIR)
+BACKUP_CLEANUP_INTERVAL_SECONDS = 3600
+backup_cleanup_lock = threading.Lock()
+
+
+def remove_run_artifacts(run_dir: Path, names: tuple[str, ...]) -> None:
+    """Delete the named files and folders of one exchange, without following links."""
+    for name in names:
+        target = run_dir / name
+        try:
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(target)
+        except OSError as exc:
+            print(f"Could not remove {target}: {redact(str(exc))}", flush=True)
+
+
+def timestamp_seconds(value: Any) -> float | None:
+    """Read a saved ISO timestamp as seconds since the epoch, or None when it is not one."""
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except ValueError:
+        return None
+
+
+def ended_before(record: dict[str, Any], cutoff: float) -> bool:
+    """Whether an exchange ended before the given time; one without a readable time did not."""
+    ended = timestamp_seconds(record.get("completed_at") or record.get("updated_at") or record.get("created_at"))
+    return ended is not None and ended <= cutoff
+
+
+def cleanup_backups() -> None:
+    """Delete the backups of exchanges that ended longer ago than the retention setting.
+
+    The age counts from the end of the exchange, not from file dates, which a
+    copy can inherit from its original. The exchange that is running is skipped.
+    """
+    if not backup_cleanup_lock.acquire(blocking=False):
+        return
+    try:
+        cutoff = time.time() - backup_retention_days() * 86400
+        root = task_root()
+        finished: list[tuple[str, str, bool]] = []
+        with lock:
+            active = _active_task_ids_locked()
+            for task_id, task in tasks.items():
+                if TASK_ID_RE.fullmatch(task_id) is None:
+                    continue
+                running = task_id in active or task.get("status") in {"queued", "running"}
+                turns = task["turns"] if "turns" in task else []
+                # A chat from before conversation history keeps the files of its early
+                # exchanges in the chat's own folder, also after it was continued.
+                early = [turn for turn in turns if str(turn.get("turn_id") or "").startswith("legacy")] if "turns" in task else [task]
+                if early and not task.get("backups_removed") and not (running and not task.get("current_turn_id")):
+                    finished.append((task_id, "", ended_before(early[-1], cutoff)))
+                for turn in turns:
+                    turn_id = str(turn.get("turn_id") or "")
+                    if turn.get("backups_removed") or TURN_ID_RE.fullmatch(turn_id) is None:
+                        continue
+                    if running and turn_id == task.get("current_turn_id"):
+                        continue
+                    finished.append((task_id, turn_id, ended_before(turn, cutoff)))
+        expired: dict[str, set[str]] = {}
+        for task_id, turn_id, old in finished:
+            run_dir = root / task_id / "turns" / turn_id if turn_id else root / task_id
+            remove_run_artifacts(run_dir, WORKING_FILES)
+            if old:
+                remove_run_artifacts(run_dir, BACKUP_ARTIFACTS)
+                expired.setdefault(task_id, set()).add(turn_id)
+        for task_id, turn_ids in expired.items():
+            with lock:
+                task = tasks.get(task_id)
+                if task is None:
+                    continue
+                # Saved in place: this must not move the chat in the recent list.
+                if "" in turn_ids:
+                    task["backups_removed"] = True
+                for turn in task.get("turns") or []:
+                    if turn.get("turn_id") in turn_ids:
+                        turn["backups_removed"] = True
+                try:
+                    atomic_json_write(get_task_dir(task_id) / "task.json", task)
+                except OSError as exc:
+                    print(f"Could not record the backup cleanup for {task_id}: {redact(str(exc))}", flush=True)
+    finally:
+        backup_cleanup_lock.release()
+
+
+def backup_cleanup_loop() -> None:
+    """Clean up when the worker starts, and keep doing so while it sits idle."""
+    while True:
+        try:
+            cleanup_backups()
+        except Exception as exc:
+            print(f"Backup cleanup failed: {redact(str(exc))}", flush=True)
+        time.sleep(BACKUP_CLEANUP_INTERVAL_SECONDS)
+
+
 def _run_background_task(
     task_id: str,
     prompt: str,
     session_id: str | None,
     reply: str | None,
 ) -> None:
+    """Run an exchange in its thread and always release the worker and clean up afterwards."""
     try:
         run_task(task_id, prompt, session_id, reply)
     except Exception as exc:
@@ -3253,8 +3666,13 @@ def _run_background_task(
                     if running_processes.get(task_id) is proc:
                         running_processes.pop(task_id, None)
         finish_activity(task_id)
+        remove_run_artifacts(get_run_dir(task_id), WORKING_FILES)
         with lock:
             active_task_runners.discard(task_id)
+        try:
+            cleanup_backups()
+        except Exception as exc:
+            print(f"Backup cleanup failed: {redact(str(exc))}", flush=True)
 
 
 def start_background_task(
@@ -3420,6 +3838,7 @@ def list_tasks() -> Response:
 @app.get("/chat-options")
 @require_auth
 def chat_options() -> Response:
+    """Return the models, defaults, and settings the web UI needs."""
     options = read_options()
     default = resolve_chat_settings(DEFAULT_CHAT_SETTINGS, options)
     return jsonify({
@@ -3427,6 +3846,7 @@ def chat_options() -> Response:
         "defaults": default,
         "models": [{"id": model, "label": label, "efforts": efforts} for model, label, efforts in CHAT_MODELS],
         "default_efforts": CHAT_MODEL_EFFORTS.get(default["model"], ("low", "medium", "high", "xhigh")),
+        "backup_retention_days": backup_retention_days(options),
     })
 
 
@@ -3707,6 +4127,7 @@ def continue_task(task_id: str) -> Response:
 
 
 def continue_task_request(task_id: str, field: str, *, waiting_only: bool = False) -> Response:
+    """Add a message to a saved chat as a new exchange and start it."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or not isinstance(payload.get(field), str) or not payload[field].strip():
         return jsonify({"ok": False, "error": f"{field} must be non-empty text"}), 400
@@ -3749,7 +4170,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
                 reply_history=reply_history, summary="", question="", details="",
                 error="", started_at="", completed_at="", returncode=None,
                 changes={}, validation_errors=[], lovelace_results=[], attachments=[],
-                config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[],
+                config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[], backups=[],
                 verification=[], verification_attachments=[],
             )
         except Exception as exc:
@@ -3765,6 +4186,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
 
 
 def main() -> None:
+    """Prepare the worker's files, start its background threads, and serve the API."""
     ensure_runtime_files()
     version = codex_version_status()
     sandbox = sandbox_readiness()
@@ -3775,6 +4197,7 @@ def main() -> None:
     print(f"Codex sandbox preflight: {sandbox['message']}", flush=True)
     load_task_index()
     verification.cleanup()
+    threading.Thread(target=backup_cleanup_loop, daemon=True).start()
     verification.serve(DATA_ROOT / "verification.sock")
     auto_start_login_if_needed()
     threading.Thread(target=stdin_reader, daemon=True).start()

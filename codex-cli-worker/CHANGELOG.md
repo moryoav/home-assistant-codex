@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.63
+## 0.1.66
 
 - **Show Markdown as formatting in the chat.** The web UI used to show Markdown symbols as typed, in your messages and in Codex's answers. It now formats them: code blocks between triple backticks, inline code between single backticks, headings, bold and italic text, lists, task lists, quotes, tables, and links.
 - Code blocks have their own background and a language label, keep their indentation, and scroll sideways when a line is too long. Wide tables scroll the same way, so the chat stays readable on a phone.
@@ -9,7 +9,39 @@
 - The preview of each chat in the sidebar shows the answer without Markdown symbols.
 - The Markdown parser, [marked](https://github.com/markedjs/marked) 18.0.14 (MIT), is bundled with the app, so the chat does not load scripts from another server.
 
-Update the **Codex CLI Worker** app to **0.1.63** for formatted messages. The **Codex** integration remains at **0.1.62** and does not need an update.
+Update the **Codex CLI Worker** app to **0.1.66** for formatted messages. The **Codex** integration is also released as **0.1.66** so that both carry the same version; its code is unchanged.
+
+## 0.1.65
+
+- **GPT-6.1 Sol can be selected.** It appears in the add-on model option and in the chat's model menu, between GPT-6 Astra and GPT-6 Sol, and supports reasoning from Low through Ultra. OpenAI describes it as close to Astra for complex work at a lower cost. GPT-6 Sol stays available as the previous version. Model availability depends on your account.
+- **GPT-5.5 moves to GPT-5.6 Sol automatically.** OpenAI retires GPT-5.5 from Codex with ChatGPT sign-in on October 14, 2026, so it is no longer in the chat's model menu. A chat that had it selected continues on GPT-5.6 Sol, the next model up, from its next message. An app whose **Codex model** option is GPT-5.5 keeps starting and runs GPT-5.6 Sol; the `gpt-5.5` value stays in the option list only for that.
+- A **Model reasoning effort** of `minimal` now runs Medium when the model is left on `default`, as it already did with an explicitly selected model. None of the current models supports `minimal`, and Codex passed it on to the model unchanged.
+- Update the bundled Codex CLI from 0.157.1 to 0.160.0. The CLI's built-in model list includes GPT-6.1 Sol from 0.159.1; with 0.157.1, Codex ran it on fallback metadata and ran Ultra as Medium. The `codex exec`, `codex exec resume`, `codex sandbox`, `codex login`, and `codex logout` options the worker uses are unchanged.
+- The new CLI's built-in model list recommends GPT-6.1 Sol instead of GPT-6 Astra, so chats that leave the model on **Default** may now run on GPT-6.1 Sol. Select a model explicitly to keep using a specific one.
+
+Update the **Codex CLI Worker** app to **0.1.65** to use GPT-6.1 Sol. The **Codex** integration is also released as **0.1.65** so that both carry the same version; its code is unchanged.
+
+## 0.1.64
+
+- Added an automatically packaged `codex_cli.zip` to GitHub releases for HACS installs and updates.
+- Aligned the worker and integration versions with the release tag and added a packaging check that rejects version mismatches.
+- Kept worker image publishing in the release workflow, including `amd64`, `aarch64`, and `latest` image tags.
+- Standardized HACS and Hassfest validation triggers, README badges, and support buttons.
+- Worker and integration runtime behavior is unchanged.
+
+Update both the **Codex CLI Worker** app and the **Codex** integration to **0.1.64**, then restart Home Assistant.
+
+## 0.1.63
+
+- **Messages start faster.** The worker used to archive the whole configuration folder before every message, which on a large configuration took longer than Codex needed to start answering. It now only records which files exist, and reads a file again only when its size or timestamps changed since the last scan.
+- **Codex saves the previous version of each file it changes.** Before changing, moving, or deleting a file, Codex copies it to the exchange's `backups` folder. When the run ends, the worker checks that each copy matches the file as it was before the run, lists the saved copies under the answer, and names changed files that have none. Credential files are never copied.
+- **New option: Full snapshot before every message** (`full_snapshot`), off by default. Turn it on to keep archiving the whole configuration folder before every message. The worker then fills in the previous version of any file Codex did not copy.
+- **New option: Keep backups for (days)** (`backup_retention_days`), 7 by default. Per-file copies and full snapshots are deleted this many days after their exchange ended. The cleanup runs when the app starts, after every exchange, and once an hour, and also removes the archives earlier versions left behind once they are older than the setting.
+- **The chat shows that work has started.** The waiting dot pulses from the moment a message is sent, a timer next to it counts how long the exchange has been running, and the worker's own steps (recording the state of the configuration, starting Codex, waiting for its first response, checking the changes) appear in the activity list before Codex reports its first step.
+- Recovery copies for a failed configuration check are now read from the `backups` folder instead of a separate `recovery` folder. The task details say how long they are kept, and name affected files that have no saved copy.
+- Worker API and the `codex_cli_task_result` event carry `backups` (`path`, `status`, and `copy`) on the task result and on each turn. `GET /tasks/<task_id>/activity` reports `elapsed_ms` while an exchange runs.
+
+Update the **Codex CLI Worker** app to **0.1.63**. The **Codex** integration remains at **0.1.62** and does not need an update. If you want the previous behavior, turn on **Full snapshot before every message** in the app's **Configuration** tab.
 
 ## 0.1.62
 

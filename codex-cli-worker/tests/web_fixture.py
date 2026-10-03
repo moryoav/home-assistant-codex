@@ -82,15 +82,27 @@ def main():
             live = task_id == "preview-00"
 
             def run():
+                """Play the worker's and Codex's steps for one exchange, then finish it."""
                 server.update_task(task_id, status="running", started_at=server.utc_now())
                 server.start_activity(task_id, server.tasks[task_id].get("current_turn_id") or "")
-                for event in preview_events(summary):
+                # The worker's own steps come first, as in a real run.
+                server.start_phase(task_id, "baseline", "Noting the current state of your configuration files")
+                if live:
+                    time.sleep(1.5)
+                server.finish_phase(task_id, "baseline")
+                server.start_phase(task_id, "launch", "Starting Codex")
+                started = [{"type": "thread.started", "thread_id": session_id}, {"type": "turn.started"}]
+                for event in started + preview_events(summary):
                     if live:
                         time.sleep(0.4)
                     server.record_activity_event(task_id, event)
                     if live and event["type"] == "item.started":
                         # Hold the command open long enough for the browser to show it running.
                         time.sleep(2)
+                server.start_phase(task_id, "review", "Checking the changes")
+                if live:
+                    time.sleep(0.4)
+                server.finish_phase(task_id, "review")
                 server.update_task(task_id, status="completed", session_id=session_id, summary=summary,
                                    details="", question="", completed_at=server.utc_now())
                 server.finish_activity(task_id)
@@ -179,17 +191,21 @@ def main():
                     "preview-01", shot_id, shot, "image/png", name="dashboard-mobile.png", origin="verification",
                     viewport="mobile", expires_at=time.time() + 3600)]
             if index == 3:
-                # A YAML edit that Home Assistant rejected; the worker kept the previous file.
+                # A YAML edit that Home Assistant rejected. Codex saved the previous
+                # version of one file it changed, and none of the other.
+                saved_copy = "/config/codex_tasks/preview-03/turns/x/backups/automations.yaml"
                 extra.update(config_check={"result": "invalid", "warnings": "",
                                            "errors": "Invalid config for 'automation' at automations.yaml, line 12: required key 'trigger' not provided"},
                              validation_errors=["Home Assistant configuration check failed: required key 'trigger' not provided"],
-                             recovery_files=[{"path": "automations.yaml", "copy": "/config/codex_tasks/preview-03/turns/x/recovery/automations.yaml"}])
+                             recovery_files=[{"path": "automations.yaml", "copy": saved_copy}],
+                             backups=[{"path": "automations.yaml", "status": "saved", "copy": saved_copy},
+                                      {"path": "scripts.yaml", "status": "missing", "copy": ""}])
             server.update_task(f"preview-{index:02}", title=title if index < 3 or index == 4 else f"Earlier chat {index}",
                                prompt=message, created_at=f"2026-09-{20 - index % 19:02}T10:00:00+00:00",
                                turns=[turn], current_turn_id=turn["turn_id"],
                                status="failed" if index == 3 else "completed",
                                session_id=task_session, summary=summary, question="",
-                               details="Validation errors: Home Assistant configuration check failed. Pre-change copies of the affected files are kept at: /config/codex_tasks/preview-03/turns/x/recovery/automations.yaml" if index == 3 else details,
+                               details="Validation errors: Home Assistant configuration check failed. Pre-change copies of the affected files are kept for 7 days at: /config/codex_tasks/preview-03/turns/x/backups/automations.yaml" if index == 3 else details,
                                attachments=attachments, **extra)
             server.tasks[f"preview-{index:02}"]["updated_at"] = f"2026-09-{20 - index % 19:02}T10:00:00+00:00"
             if index == 0:

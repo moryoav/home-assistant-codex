@@ -17,7 +17,7 @@ from server import verification_mcp_args
 
 def main():
     binary = os.environ.get("HA_TEST_CODEX", "/usr/local/bin/codex")
-    assert "0.157.1" in subprocess.check_output([binary, "--version"], text=True)
+    assert "0.160.0" in subprocess.check_output([binary, "--version"], text=True)
     with tempfile.TemporaryDirectory(prefix="ha-mcp-test-") as root:
         root = Path(root)
         checks = []

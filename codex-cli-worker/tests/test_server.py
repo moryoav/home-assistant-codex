@@ -137,15 +137,9 @@ class SessionIdParsingTests(unittest.TestCase):
                     task_dir.mkdir(parents=True)
                     final_file.write_text(json.dumps(stale_payload), encoding="utf-8")
 
-                def create_snapshot(_task_id: str) -> dict[str, object]:
-                    """Stand in for the full snapshot: write an empty baseline and report an empty archive."""
-                    (task_dir / "manifest-before.json").write_text("{}", encoding="utf-8")
-                    return {"path": "snapshot", "file_count": 0}
-
                 with (
                     patch.object(server, "get_task_dir", return_value=task_dir),
                     patch.object(server, "save_task_index"),
-                    patch.object(server, "create_snapshot", side_effect=create_snapshot),
                     patch.object(
                         server,
                         "read_options",
@@ -709,7 +703,6 @@ class TaskLaunchFailureTests(unittest.TestCase):
             with (
                 patch.object(server, "get_task_dir", return_value=task_dir),
                 patch.object(server, "update_task", side_effect=lambda _task_id, **values: updates.append(values)),
-                patch.object(server, "create_snapshot", return_value={"path": "snapshot"}),
                 patch.object(server, "read_options", return_value={"task_timeout_seconds": 30}),
                 patch.object(
                     server,
@@ -806,7 +799,6 @@ class TaskLaunchFailureTests(unittest.TestCase):
                         "update_task",
                         side_effect=lambda _task_id, **values: updates.append(values),
                     ),
-                    patch.object(server, "create_snapshot", return_value={"path": "snapshot"}),
                     patch.object(
                         server,
                         "read_options",
@@ -1021,7 +1013,6 @@ class TaskCancellationTests(unittest.TestCase):
                 patch.object(server, "get_task_dir", return_value=Path(temp_dir) / task_id),
                 patch.object(server, "save_task_index"),
                 patch.object(server, "api_token", return_value="test-token"),
-                patch.object(server, "create_snapshot", return_value={"path": "snapshot"}),
                 patch.object(server, "build_prompt", return_value="prompt"),
                 patch.object(
                     server,
@@ -1126,7 +1117,6 @@ class TaskCancellationTests(unittest.TestCase):
                 patch.object(server, "get_task_dir", return_value=Path(temp_dir) / task_id),
                 patch.object(server, "save_task_index"),
                 patch.object(server, "api_token", return_value="test-token"),
-                patch.object(server, "create_snapshot", return_value={"path": "snapshot"}),
                 patch.object(server, "build_prompt", return_value="prompt"),
                 patch.object(
                     server,

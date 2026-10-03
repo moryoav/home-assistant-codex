@@ -4,6 +4,7 @@
 
 - **GPT-6.1 Sol can be selected.** It appears in the add-on model option and in the chat's model menu, between GPT-6 Astra and GPT-6 Sol, and supports reasoning from Low through Ultra. OpenAI describes it as close to Astra for complex work at a lower cost. GPT-6 Sol stays available as the previous version. Model availability depends on your account.
 - **GPT-5.5 moves to GPT-5.6 Sol automatically.** OpenAI retires GPT-5.5 from Codex with ChatGPT sign-in on October 14, 2026, so it is no longer in the chat's model menu. A chat that had it selected continues on GPT-5.6 Sol, the next model up, from its next message. An app whose **Codex model** option is GPT-5.5 keeps starting and runs GPT-5.6 Sol; the `gpt-5.5` value stays in the option list only for that.
+- A **Model reasoning effort** of `minimal` now runs Medium when the model is left on `default`, as it already did with an explicitly selected model. None of the current models supports `minimal`, and Codex passed it on to the model unchanged.
 - Update the bundled Codex CLI from 0.157.1 to 0.160.0. The CLI's built-in model list includes GPT-6.1 Sol from 0.159.1; with 0.157.1, Codex ran it on fallback metadata and ran Ultra as Medium. The `codex exec`, `codex exec resume`, `codex sandbox`, `codex login`, and `codex logout` options the worker uses are unchanged.
 - The new CLI's built-in model list recommends GPT-6.1 Sol instead of GPT-6 Astra, so chats that leave the model on **Default** may now run on GPT-6.1 Sol. Select a model explicitly to keep using a specific one.
 

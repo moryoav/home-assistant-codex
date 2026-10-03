@@ -161,6 +161,16 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(server.current_chat_settings(untouched), untouched)
         self.assertEqual(server.current_chat_settings(server.DEFAULT_CHAT_SETTINGS), server.DEFAULT_CHAT_SETTINGS)
 
+    def test_minimal_add_on_reasoning_runs_medium_for_every_model(self):
+        for model in ("default", "gpt-6.1-sol", "gpt-5.5"):
+            options = {"codex_model": model, "model_reasoning_effort": "minimal"}
+            with self.subTest(model=model), patch.object(server, "read_options", return_value=options):
+                task_id = self.create()
+                self.assertEqual(server.tasks[task_id]["turns"][0]["execution_settings"]["reasoning_effort"], "medium")
+                args = server.build_codex_args(task_id, self.root / "prompt", self.root / "final", None)
+                self.assertIn('model_reasoning_effort="medium"', args)
+                self.finish(task_id)
+
     def test_invalid_settings_are_rejected_without_mutation(self):
         invalid = [None, [], "high", {"model": []}, {"model": "invented"},
                    {"reasoning_effort": {}}, {"reasoning_effort": "minimal"},
@@ -197,9 +207,10 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(efforts["gpt-6-luna"], ["low", "medium", "high", "xhigh", "max"])
         self.assertNotIn("HA_TOKEN", json.dumps(catalog))
         self.assertNotIn("gpt-5.5", efforts)
-        with patch.object(server, "read_options", return_value={"codex_model": "gpt-6-astra", "model_reasoning_effort": "minimal"}):
-            catalog = self.client.get("/chat-options", headers=self.headers).json
-            self.assertEqual(catalog["defaults"]["reasoning_effort"], "medium")
+        for model in ("gpt-6-astra", "default"):
+            with patch.object(server, "read_options", return_value={"codex_model": model, "model_reasoning_effort": "minimal"}):
+                catalog = self.client.get("/chat-options", headers=self.headers).json
+                self.assertEqual(catalog["defaults"]["reasoning_effort"], "medium")
 
     def test_failed_settings_write_keeps_previous_selection(self):
         task_id = self.create()

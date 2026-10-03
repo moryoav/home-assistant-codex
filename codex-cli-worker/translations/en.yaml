@@ -4,7 +4,7 @@ configuration:
     description: Model passed to codex exec. Use default to let Codex CLI choose its recommended model, or select GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, or GPT-6 Luna, or the older GPT-5.6 Sol, Terra, or Luna. gpt-5.5 is deprecated, do not select it. It is listed only so that existing setups keep starting, and it runs GPT-5.6 Sol. Model availability depends on your account. Legacy GPT-5.3-Codex selections are treated as default for upgrade compatibility.
   model_reasoning_effort:
     name: Model reasoning effort
-    description: Reasoning effort passed to codex exec for supported models. minimal is fastest; low is lighter; medium is balanced; high uses more reasoning; xhigh uses extra reasoning. For GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna, select low, medium, high, or xhigh.
+    description: Reasoning effort passed to codex exec for supported models. low is lighter; medium is balanced; high uses more reasoning; xhigh uses extra reasoning. minimal is not supported by the current models and runs medium.
   reasoning_summary:
     name: Reasoning summaries
     description: How much of its thinking Codex reports while it works. concise shows short headlines in the chat activity list, detailed asks for fuller summaries, and none hides reasoning from the list. Commands, file edits, searches, and progress notes are shown regardless.

@@ -372,8 +372,9 @@ def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> 
         raise ValueError("The selected reasoning level is not supported by this model.")
     if effort is None:
         effort = model_reasoning_effort(options)
-        # A legacy global setting may not suit an explicitly selected model.
-        if model in CHAT_MODEL_EFFORTS and effort not in efforts:
+        # The add-on level may not suit the model: none offered supports minimal, and
+        # neither does the model the CLI picks for default, which gets it unchanged.
+        if effort not in efforts:
             effort = "medium"
     return {"model": model, "reasoning_effort": effort}
 

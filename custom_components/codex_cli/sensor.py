@@ -39,10 +39,13 @@ async def async_setup_entry(
 
 
 class _CodexSensor(CoordinatorEntity[CodexCliCoordinator], SensorEntity):
+    """Base for the Codex sensors: diagnostic entities on the Codex device that read the coordinator's worker status."""
+
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: CodexCliCoordinator, entry: ConfigEntry, key: str) -> None:
+        """Set the unique ID from the entry ID and key, and attach the sensor to the Codex device of the config entry."""
         super().__init__(coordinator)
         self._entry = entry
         self._key = key
@@ -63,15 +66,18 @@ class CodexLastTaskSensor(_CodexSensor):
     _attr_translation_key = "last_task"
 
     def __init__(self, coordinator: CodexCliCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor with the unique ID key "last_task"."""
         super().__init__(coordinator, entry, "last_task")
 
     @property
     def native_value(self) -> str:
+        """Return the status of the worker's latest task, or "unknown" when there is none."""
         latest = (self.coordinator.data or {}).get("latest_task") or {}
         return latest.get("status") or "unknown"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the latest task's details, plus the active task ID and error from the worker status."""
         latest = (self.coordinator.data or {}).get("latest_task") or {}
         return {
             "task_id": latest.get("task_id"),
@@ -91,15 +97,18 @@ class CodexTaskCountSensor(_CodexSensor):
     _attr_translation_key = "active_tasks"
 
     def __init__(self, coordinator: CodexCliCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor with the unique ID key "task_count"."""
         super().__init__(coordinator, entry, "task_count")
 
     @property
     def native_value(self) -> int:
+        """Return the worker's active task count, falling back to its task_count field, or 0 when neither is set."""
         data = self.coordinator.data or {}
         return int(data.get("active_task_count") or data.get("task_count") or 0)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the active task ID and the total number of tasks the worker knows."""
         data = self.coordinator.data or {}
         return {
             "active_task_id": data.get("active_task_id"),
@@ -114,10 +123,12 @@ class CodexAuthSensor(_CodexSensor):
     _attr_translation_key = "auth_status"
 
     def __init__(self, coordinator: CodexCliCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor with the unique ID key "auth_status"."""
         super().__init__(coordinator, entry, "auth_status")
 
     @property
     def native_value(self) -> str:
+        """Return "logged_in", "auth_file_present" (saved credentials that fail the login check) or "not_logged_in"."""
         login = (self.coordinator.data or {}).get("codex_login") or {}
         if login.get("status_ok"):
             return "logged_in"
@@ -127,6 +138,7 @@ class CodexAuthSensor(_CodexSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the login check message and auth file flag, plus the login flow's status, URL, user code and QR URL."""
         login = (self.coordinator.data or {}).get("codex_login") or {}
         auth_flow = (self.coordinator.data or {}).get("auth_flow") or {}
         return {
@@ -148,10 +160,12 @@ class CodexFiveHourLimitSensor(_CodexSensor):
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator: CodexCliCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor with the unique ID key "five_hour_limit"."""
         super().__init__(coordinator, entry, "five_hour_limit")
 
     @property
     def native_value(self) -> int | None:
+        """Return the percentage of the 5-hour limit that is left, or None when it is missing or not an integer."""
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         try:
             return int(str(usage.get("five_hour_percent") or ""))
@@ -160,6 +174,7 @@ class CodexFiveHourLimitSensor(_CodexSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the usage refresh state, the 5-hour, weekly and context figures, and the raw usage excerpt."""
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return {
             "usage_status": usage.get("status"),
@@ -180,6 +195,10 @@ class CodexFiveHourLimitSensor(_CodexSensor):
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
+    """Return a datetime for an ISO 8601 value, or None when it is empty, invalid or has no timezone.
+
+    A value that is already a datetime is returned unchanged.
+    """
     if not value:
         return None
     if isinstance(value, datetime):
@@ -201,15 +220,18 @@ class CodexFiveHourResetSensor(_CodexSensor):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     def __init__(self, coordinator: CodexCliCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor with the unique ID key "five_hour_reset"."""
         super().__init__(coordinator, entry, "five_hour_reset")
 
     @property
     def native_value(self) -> datetime | None:
+        """Return when the 5-hour limit resets, from the worker's five_hour_reset_at, or None when it is not known."""
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return _parse_timestamp(usage.get("five_hour_reset_at"))
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the usage refresh state, plus the 5-hour reset text, limit text and percentage Codex reported."""
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return {
             "usage_status": usage.get("status"),
@@ -231,10 +253,12 @@ class CodexWeeklyLimitSensor(_CodexSensor):
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator: CodexCliCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor with the unique ID key "weekly_limit"."""
         super().__init__(coordinator, entry, "weekly_limit")
 
     @property
     def native_value(self) -> int | None:
+        """Return the percentage of the weekly limit that is left, or None when it is missing or not an integer."""
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         try:
             return int(str(usage.get("weekly_percent") or ""))
@@ -243,6 +267,7 @@ class CodexWeeklyLimitSensor(_CodexSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the usage refresh state, the weekly, 5-hour and context figures, and the raw usage excerpt."""
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return {
             "usage_status": usage.get("status"),
@@ -270,15 +295,18 @@ class CodexWeeklyResetSensor(_CodexSensor):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     def __init__(self, coordinator: CodexCliCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor with the unique ID key "weekly_reset"."""
         super().__init__(coordinator, entry, "weekly_reset")
 
     @property
     def native_value(self) -> datetime | None:
+        """Return when the weekly limit resets, from the worker's weekly_reset_at, or None when it is not known."""
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return _parse_timestamp(usage.get("weekly_reset_at"))
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the usage refresh state, plus the weekly reset text, limit text and percentage Codex reported."""
         usage = (self.coordinator.data or {}).get("codex_usage") or {}
         return {
             "usage_status": usage.get("status"),

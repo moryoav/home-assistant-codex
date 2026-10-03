@@ -1,3 +1,5 @@
+"""The integration's 5-hour and weekly usage sensors, with and without each limit reported."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -19,24 +21,36 @@ def _load_sensor_module() -> types.ModuleType:
     """Load the real sensor module without requiring Home Assistant."""
 
     class CoordinatorEntity:
+        """Stand-in for Home Assistant's coordinator entity base class."""
+
         @classmethod
         def __class_getitem__(cls, _item: Any) -> type[CoordinatorEntity]:
+            """Return the class itself for `CoordinatorEntity[...]`."""
             return cls
 
         def __init__(self, coordinator: Any, context: Any = None) -> None:
+            """Keep the coordinator and context the entity is created with."""
             self.coordinator = coordinator
             self.coordinator_context = context
 
     class SensorEntity:
+        """Stand-in for Home Assistant's sensor entity base class."""
+
         pass
 
     class SensorDeviceClass:
+        """Stand-in with the device class the reset sensors use."""
+
         TIMESTAMP = "timestamp"
 
     class SensorStateClass:
+        """Stand-in with the state class the limit sensors use."""
+
         MEASUREMENT = "measurement"
 
     class EntityCategory:
+        """Stand-in with the entity category the sensors use."""
+
         DIAGNOSTIC = "diagnostic"
 
     package_name = "codex_sensor_test_package"
@@ -112,6 +126,7 @@ sensor = _load_sensor_module()
 
 
 def _usage_sensors(usage: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+    """Return the 5-hour limit, 5-hour reset, weekly limit, and weekly reset sensors for the usage data."""
     coordinator = SimpleNamespace(data={"codex_usage": usage})
     entry = SimpleNamespace(
         entry_id="test-entry",
@@ -126,7 +141,10 @@ def _usage_sensors(usage: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
 
 
 class UsageSensorTests(unittest.TestCase):
+    """Values and attributes of the usage sensors, depending on which limits Codex reports."""
+
     def test_weekly_only_usage_is_reported_without_five_hour_values(self) -> None:
+        """With only the weekly limit reported, its sensors have values and the 5-hour sensors stay unknown."""
         five_hour_limit, five_hour_reset, weekly_limit, weekly_reset = _usage_sensors(
             {
                 "status": "ok",
@@ -157,6 +175,7 @@ class UsageSensorTests(unittest.TestCase):
         self.assertIs(five_hour_reset.extra_state_attributes["reported"], False)
 
     def test_missing_five_hour_metrics_stay_unknown_and_unreported(self) -> None:
+        """Empty 5-hour values leave the 5-hour sensors unknown and marked as not reported."""
         five_hour_limit, five_hour_reset, _, _ = _usage_sensors(
             {
                 "status": "ok",
@@ -173,6 +192,7 @@ class UsageSensorTests(unittest.TestCase):
         self.assertIs(five_hour_reset.extra_state_attributes["reported"], False)
 
     def test_five_hour_and_weekly_usage_remain_compatible(self) -> None:
+        """With both limits reported, all four sensors have values and each limit sensor shows the other's percent."""
         five_hour_limit, five_hour_reset, weekly_limit, weekly_reset = _usage_sensors(
             {
                 "status": "ok",

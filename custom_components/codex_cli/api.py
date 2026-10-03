@@ -12,6 +12,7 @@ class CodexCliApiError(Exception):
     """Raised when the Codex CLI Worker API fails."""
 
     def __init__(self, message: str, *, status: int | None = None) -> None:
+        """Store the error message and the HTTP status the worker returned, if any."""
         super().__init__(message)
         self.status = status
 
@@ -24,6 +25,7 @@ class CodexCliApiClient:
     """Small async client for the local Codex CLI Worker."""
 
     def __init__(self, session: ClientSession, base_url: str, api_token: str) -> None:
+        """Store the aiohttp session, the worker URL without a trailing slash, and the worker API token."""
         self._session = session
         self._base_url = base_url.rstrip("/")
         self._api_token = api_token
@@ -86,6 +88,11 @@ class CodexCliApiClient:
         auth: bool = True,
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Send one request to the worker, with the API token unless auth is false, and return its JSON object.
+
+        Raises CodexCliAuthError for HTTP 401 and 403, and CodexCliApiError for any other failure,
+        using the worker's own error text when it sent one.
+        """
         headers = {}
         if auth and self._api_token:
             headers["Authorization"] = f"Bearer {self._api_token}"

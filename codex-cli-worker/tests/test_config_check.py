@@ -16,6 +16,7 @@ class FakeResponse:
     """A minimal stand-in for a `requests` response."""
 
     def __init__(self, status_code=200, payload=None, text=""):
+        """Hold the status code, JSON payload, and body text the fake response returns."""
         self.status_code = status_code
         self._payload = payload
         self.text = text
@@ -38,6 +39,7 @@ class CheckConfigApiTests(unittest.TestCase):
         self.stack.enter_context(patch.object(server, "ha_token_source", return_value="supervisor"))
 
     def test_valid_invalid_and_unavailable_results(self):
+        """Home Assistant's reply becomes valid, invalid, or unavailable, and anything but valid carries errors."""
         cases = [
             (FakeResponse(200, {"result": "valid", "errors": None, "warnings": None}), ("valid", "", "")),
             (FakeResponse(200, {"result": "invalid", "errors": "Invalid config for 'automation'", "warnings": "deprecated"}),
@@ -60,6 +62,7 @@ class CheckConfigApiTests(unittest.TestCase):
                 self.assertEqual(post.call_args.kwargs["timeout"], server.CONFIG_CHECK_TIMEOUT)
 
     def test_connection_failure_and_missing_token(self):
+        """A failed connection or a missing token makes the check unavailable instead of raising."""
         with patch.object(server.requests, "post", side_effect=OSError("unreachable")):
             outcome = server.check_home_assistant_config()
         self.assertEqual(outcome["result"], "unavailable")
@@ -154,6 +157,7 @@ class AssessChangesTests(unittest.TestCase):
         self.assertTrue((self.run_dir / "backups" / ".storage" / "lovelace.home").is_file())
 
     def test_storage_only_changes_skip_the_check_but_save_dashboards(self):
+        """A change to dashboard storage alone skips the check and still saves the dashboard."""
         self.write(".storage/lovelace.home", json.dumps({"data": {"config": {"views": []}}}))
         result = server.assess_changes("t", self.run_dir, {"added": [], "changed": [".storage/lovelace.home"], "deleted": []})
         self.assertEqual(result["config_check"]["result"], "skipped")
@@ -162,6 +166,7 @@ class AssessChangesTests(unittest.TestCase):
         self.assertEqual(result["lovelace_results"][0]["success"], True)
 
     def test_option_disables_the_check(self):
+        """With the config_check option off, a YAML change is reported as disabled and the check never runs."""
         self.options["config_check"] = False
         self.write("automations.yaml", "- alias: new\n")
         result = server.assess_changes("t", self.run_dir, {"added": [], "changed": ["automations.yaml"], "deleted": []})
@@ -169,6 +174,7 @@ class AssessChangesTests(unittest.TestCase):
         self.check.assert_not_called()
 
     def test_deleted_yaml_triggers_the_check(self):
+        """Deleting a YAML file is enough to run the check."""
         result = server.assess_changes("t", self.run_dir, {"added": [], "changed": [], "deleted": ["packages/old.yaml"]})
         self.assertEqual(result["config_check"]["result"], "valid")
         self.check.assert_called_once()
@@ -203,6 +209,7 @@ class RunTaskWiringTests(unittest.TestCase):
         self.assertEqual(events[-1]["recovery_files"][0]["path"], "automations.yaml")
 
     def test_unavailable_check_keeps_success_but_notes_it(self):
+        """The task stays completed and its details note that the configuration could not be checked."""
         task, events = self.run_with({
             "validation_errors": [],
             "config_check": {"result": "unavailable", "errors": "HTTP 502", "warnings": ""},
@@ -259,6 +266,7 @@ class TerminalOutcomeResetTests(unittest.TestCase):
         self.assertEqual(record["recovery_files"], [])
 
     def test_new_turn_starts_without_the_previous_check(self):
+        """A new turn starts with an empty check and no recovery files; the earlier turn keeps its own."""
         response = self.client.post(f"/tasks/{self.task_id}/continue", json={"message": "Try again"}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         task = server.tasks[self.task_id]
@@ -267,6 +275,7 @@ class TerminalOutcomeResetTests(unittest.TestCase):
         self.assertEqual(task["turns"][0]["config_check"]["result"], "invalid")
 
     def test_failed_launch_resets_and_reports_the_fields(self):
+        """A failed launch clears the check and recovery files on the task, its turn, and the result event."""
         self.client.post(f"/tasks/{self.task_id}/continue", json={"message": "Try again"}, headers=self.headers)
         server.tasks[self.task_id].update(self.STALE)
         server.fail_task_launch(self.task_id, RuntimeError("no binary"))
@@ -275,6 +284,7 @@ class TerminalOutcomeResetTests(unittest.TestCase):
         self.assert_reset(self.events[-1])
 
     def test_cancellation_resets_and_reports_the_fields(self):
+        """A cancellation clears the check and recovery files on the task, its turn, and the result event."""
         self.client.post(f"/tasks/{self.task_id}/continue", json={"message": "Try again"}, headers=self.headers)
         server.tasks[self.task_id].update(self.STALE)
         ok, _proc, error = server.request_task_cancellation(self.task_id)

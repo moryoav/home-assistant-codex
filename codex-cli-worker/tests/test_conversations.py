@@ -15,7 +15,10 @@ from test_server import server
 
 
 class ConversationTests(unittest.TestCase):
+    """Saved chats: continuing, model settings, listing, pinning, renaming, deleting, and the chat page."""
+
     def setUp(self):
+        """Isolate task storage and CODEX_HOME in a temp directory, save a Codex session, and mock the task runner."""
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
@@ -35,18 +38,22 @@ class ConversationTests(unittest.TestCase):
         self.session_file.write_text('{}\n')
 
     def post(self, path, body):
+        """POST a JSON body to the worker API with the test token."""
         return self.client.post(path, json=body, headers=self.headers)
 
     def create(self, message="Review my automation"):
+        """Create a queued task through the API and return its id."""
         response = self.post("/tasks", {"prompt": message})
         self.assertEqual(response.status_code, 200)
         return response.json["task_id"]
 
     def finish(self, task_id, status="completed", summary="First answer"):
+        """End the current exchange with the saved session and release the task runner."""
         server.update_task(task_id, status=status, session_id=self.session_id, summary=summary, completed_at=server.utc_now())
         server.active_task_runners.discard(task_id)
 
     def test_continue_preserves_exchanges_and_survives_restart(self):
+        """Continuing a chat adds an exchange, leaves the earlier one unchanged, and the history survives a restart."""
         task_id = self.create()
         self.finish(task_id)
         original = copy.deepcopy(server.tasks[task_id]["turns"][0])
@@ -65,6 +72,7 @@ class ConversationTests(unittest.TestCase):
         self.assertFalse(task["history_incomplete"])
 
     def test_all_terminal_statuses_can_continue(self):
+        """A completed, waiting, failed, or cancelled chat can be continued, which clears a cancellation request."""
         for status in server.CONTINUABLE_STATUSES:
             with self.subTest(status=status):
                 task_id = self.create()
@@ -78,6 +86,7 @@ class ConversationTests(unittest.TestCase):
                 self.finish(task_id)
 
     def test_model_settings_persist_and_apply_to_new_and_resumed_runs(self):
+        """A chat's model and reasoning level are saved, survive a restart, and reach Codex on new and resumed runs."""
         settings = {"model": "gpt-6-astra", "reasoning_effort": "ultra"}
         response = self.post("/tasks", {"prompt": "Review", "chat_settings": settings})
         self.assertEqual(response.status_code, 200)
@@ -104,6 +113,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(server.tasks[task_id]["turns"][0], first)
 
     def test_settings_inherit_defaults_without_leaking_between_chats(self):
+        """A chat with no selection of its own follows the add-on options, and chats never share a selection."""
         options = {"codex_model": "gpt-5.6-sol", "model_reasoning_effort": "high"}
         with patch.object(server, "read_options", return_value=options):
             task_id = self.create()
@@ -124,6 +134,7 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual(options, {"codex_model": "gpt-5.6-terra", "model_reasoning_effort": "high"})
 
     def test_retired_model_continues_on_the_next_model_up(self):
+        """A chat or add-on option still set to a retired model runs on the next model up instead of failing."""
         task_id = self.create()
         self.finish(task_id)
         server.tasks[task_id]["chat_settings"] = {"model": "gpt-5.5", "reasoning_effort": "xhigh"}
@@ -151,6 +162,7 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual(catalog["default_efforts"], ["low", "medium", "high", "xhigh", "max", "ultra"])
 
     def test_retired_models_follow_the_chain_and_drop_an_unsupported_level(self):
+        """A retired model resolves through the whole chain, and a reasoning level its replacement lacks is dropped."""
         with patch.dict(server.RETIRED_MODELS, {"older": "old-sol", "old-sol": "gpt-6-luna"}):
             self.assertEqual(server.current_model("older"), "gpt-6-luna")
             self.assertEqual(server.current_chat_settings({"model": "older", "reasoning_effort": "max"}),
@@ -163,6 +175,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(server.current_chat_settings(server.DEFAULT_CHAT_SETTINGS), server.DEFAULT_CHAT_SETTINGS)
 
     def test_minimal_add_on_reasoning_runs_medium_for_every_model(self):
+        """The add-on's minimal reasoning level runs as medium, whichever model the add-on names."""
         for model in ("default", "gpt-6.1-sol", "gpt-5.5"):
             options = {"codex_model": model, "model_reasoning_effort": "minimal"}
             with self.subTest(model=model), patch.object(server, "read_options", return_value=options):
@@ -173,6 +186,7 @@ class ConversationTests(unittest.TestCase):
                 self.finish(task_id)
 
     def test_invalid_settings_are_rejected_without_mutation(self):
+        """Invalid chat settings get HTTP 400 and neither create a task nor change or continue a saved chat."""
         invalid = [None, [], "high", {"model": []}, {"model": "invented"},
                    {"reasoning_effort": {}}, {"reasoning_effort": "minimal"},
                    {"model": "gpt-5.5", "reasoning_effort": {}}, {"model": "gpt-5.5", "reasoning_effort": "minimal"},
@@ -195,6 +209,7 @@ class ConversationTests(unittest.TestCase):
         self.runner.assert_not_called()
 
     def test_settings_auth_active_task_guard_and_catalog(self):
+        """Settings need the token and a finished chat, and the catalog lists each offered model with its levels."""
         self.assertEqual(self.client.get("/chat-options").status_code, 401)
         self.assertEqual(self.client.post("/tasks/missing/settings", json={"chat_settings": {}}).status_code, 401)
         self.assertEqual(self.post("/tasks/missing/settings", {"chat_settings": {}}).status_code, 404)
@@ -214,6 +229,7 @@ class ConversationTests(unittest.TestCase):
                 self.assertEqual(catalog["defaults"]["reasoning_effort"], "medium")
 
     def test_chats_without_a_model_are_named_after_the_one_they_run_on(self):
+        """The catalog names the model that chats without a selection run on, and they get that model's levels."""
         levels = ["low", "medium", "high", "xhigh", "max", "ultra"]
         # The add-on leaves the choice to the CLI: the bundled CLI's pick, until its /status names one.
         catalog = self.client.get("/chat-options", headers=self.headers).json
@@ -250,6 +266,7 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual(self.post("/tasks", {"prompt": "Review", "chat_settings": {"reasoning_effort": "ultra"}}).status_code, 200)
 
     def test_failed_settings_write_keeps_previous_selection(self):
+        """When saving chat settings fails, the worker returns HTTP 500 and keeps the previous selection."""
         task_id = self.create()
         self.finish(task_id)
         before = copy.deepcopy(server.tasks[task_id])
@@ -259,6 +276,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(server.tasks[task_id], before)
 
     def test_legacy_reply_remains_waiting_only(self):
+        """The legacy reply endpoint accepts a reply only while the task is waiting for input."""
         task_id = self.create()
         self.finish(task_id)
         self.assertEqual(self.post(f"/tasks/{task_id}/reply", {"reply": "More"}).status_code, 409)
@@ -266,6 +284,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(self.post(f"/tasks/{task_id}/reply", {"reply": "More"}).status_code, 200)
 
     def test_missing_session_never_starts_fresh_or_changes_history(self):
+        """A chat whose Codex session is gone is not continued: no run starts and its history is unchanged."""
         task_id = self.create()
         self.finish(task_id)
         self.session_file.unlink()
@@ -278,6 +297,7 @@ class ConversationTests(unittest.TestCase):
         self.runner.assert_not_called()
 
     def test_active_task_and_duplicate_continue_are_rejected(self):
+        """Continuing is refused while this or another task is active, so a duplicate message adds no exchange."""
         task_id = self.create()
         self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "More"}).status_code, 409)
         self.finish(task_id)
@@ -289,6 +309,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(len(server.tasks[task_id]["turns"]), 2)
 
     def test_recent_summary_pagination_and_status_filters(self):
+        """The task list pages by recent activity, gives summaries without the history, and filters by status."""
         ids = []
         for index in range(3):
             task_id = self.create(f"Prompt {index}")
@@ -311,6 +332,7 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("prompt", full["tasks"][0])
 
     def test_invalid_filters_and_message_bodies(self):
+        """Bad list filters and malformed message bodies get HTTP 400, and requests without the token get 401."""
         for query in ("limit=0", "limit=501", "offset=-1", "limit=no", "status=no", "order=no"):
             self.assertEqual(self.client.get("/tasks?" + query, headers=self.headers).status_code, 400)
         for body in ([], {"prompt": []}, {"prompt": " "}):
@@ -321,6 +343,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(self.client.post("/tasks/missing/continue", json={"message": "test"}).status_code, 401)
 
     def test_legacy_history_is_honest_and_retained_when_continuing(self):
+        """A chat from before conversation history gets no invented answers and stays incomplete when continued."""
         server.tasks["old"] = {"task_id": "old", "prompt": "Original", "status": "completed", "session_id": self.session_id,
                                "summary": "Latest only", "reply_history": [{"at": "2026-09-19", "reply": "Follow-up"}]}
         data = self.client.get("/tasks/old", headers=self.headers).json["task"]
@@ -332,6 +355,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(len(server.tasks["old"]["turns"]), 3)
 
     def test_restart_marks_current_exchange_failed(self):
+        """A worker restart marks an active task and its current exchange as failed and says why in the summary."""
         task_id = self.create()
         server.tasks.clear()
         server.active_task_runners.clear()
@@ -341,6 +365,7 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("restarted", server.tasks[task_id]["turns"][0]["summary"])
 
     def test_cancellation_updates_only_current_exchange(self):
+        """Cancelling a continued chat marks only the current exchange as cancelled."""
         task_id = self.create()
         self.finish(task_id)
         self.post(f"/tasks/{task_id}/continue", {"message": "More"})
@@ -350,25 +375,33 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(server.tasks[task_id]["turns"][1]["status"], "cancelled")
 
     def test_followup_prompt_does_not_reissue_original_request(self):
+        """The prompt for a follow-up message carries that message and not the chat's original request."""
         prompt = server.build_prompt("ORIGINAL_REQUEST", "task", reply="CURRENT_MESSAGE")
         self.assertIn("CURRENT_MESSAGE", prompt)
         self.assertNotIn("ORIGINAL_REQUEST", prompt)
 
     def test_runs_keep_separate_artifacts_and_changes(self):
+        """Each exchange keeps Codex's output in its own folder and records only its own file changes."""
         task_id = self.create()
         output_dirs = []
         manifests = [{}, {"first.yaml": {"sha256": "one"}}, {"first.yaml": {"sha256": "one"}}, {"first.yaml": {"sha256": "one"}, "second.yaml": {"sha256": "two"}}]
 
         class FakeProcess:
+            """A stand-in for the Codex process that reports the session and writes a completed answer."""
+
             def __init__(self, args, **kwargs):
+                """Prepare the event stream with the session id and note where the final answer goes."""
                 self.stdin = io.StringIO()
                 self.stdout = io.StringIO(json.dumps({"type": "thread.started", "thread_id": self_session}) + "\n")
                 self.stderr = io.StringIO("")
                 self.returncode = 0
                 self.output = Path(args[args.index("--output-last-message") + 1])
                 output_dirs.append(self.output.parent)
-            def poll(self): return 0
+            def poll(self):
+                """Report that the process has exited."""
+                return 0
             def wait(self, timeout=None):
+                """Write the final answer and report a clean exit."""
                 self.output.write_text(json.dumps({"status": "completed", "summary": "Saved response", "details": "", "question": ""}))
                 return 0
 
@@ -500,6 +533,7 @@ class ConversationTests(unittest.TestCase):
         self.assertTrue(server.get_task_dir(other).exists())
 
     def test_web_assets_are_packaged_and_load_without_account_calls(self):
+        """The chat page opens only through Home Assistant Ingress and loads its scripts and styles from the add-on."""
         self.assertEqual(self.client.get("/").status_code, 403)
         self.assertEqual(self.client.get("/assets/index.html").status_code, 404)
         response = self.client.get("/", headers={"X-Ingress-Path": "/api/hassio_ingress/test"}, environ_overrides={"REMOTE_ADDR": server.INGRESS_PROXY_IP})

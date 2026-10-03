@@ -13,11 +13,13 @@ function pngBuffer(width = 8, height = 6) {
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     return c >>> 0;
   });
+  /** Return the CRC-32 checksum that a PNG chunk carries. */
   const crc = (buf) => {
     let c = 0xffffffff;
     for (const b of buf) c = table[(c ^ b) & 0xff] ^ (c >>> 8);
     return (c ^ 0xffffffff) >>> 0;
   };
+  /** Build one PNG chunk: length, tag, data, and checksum. */
   const chunk = (tag, data) => {
     const len = Buffer.alloc(4);
     len.writeUInt32BE(data.length);
@@ -95,6 +97,10 @@ function pngBuffer(width = 8, height = 6) {
     );
     // An account can lack either limit, or both. A missing one reads Unavailable
     // with an empty outline instead of an empty quota, and the other keeps its bar.
+    /**
+     * Render a quota payload in the page and return, for each limit, the text
+     * shown, the bar width, and the bar's classes.
+     */
     const quotaRows = (usage) =>
       page.evaluate((value) => {
         renderUsage(value);
@@ -433,6 +439,7 @@ function pngBuffer(width = 8, height = 6) {
       await page.locator("#activity .step-phase .step-text").first().textContent(),
       "Noting the current state of your configuration files",
     );
+    /** Return the seconds on the step list timer, checking its format. */
     const elapsedSeconds = async () => {
       const text = await page
         .locator("#activity .activity-toggle .elapsed")
@@ -785,11 +792,13 @@ function pngBuffer(width = 8, height = 6) {
       window.__restoreBitmap = () => {
         window.createImageBitmap = original;
       };
+      /** Hold each decode back until the test releases it. */
       window.createImageBitmap = (...args) =>
         new Promise((resolve) => {
           window.__bitmapGates.push(() => resolve(original(...args)));
         });
     });
+    /** Wait for a held-back image decode and let it go ahead. */
     const releaseDecode = async () => {
       await page.waitForFunction(() => window.__bitmapGates.length > 0);
       await page.evaluate(() => window.__bitmapGates.shift()());
@@ -1034,6 +1043,7 @@ function pngBuffer(width = 8, height = 6) {
       () => document.querySelector("#sidebar").getBoundingClientRect().x >= 0,
     );
     const input = await touch.newCDPSession(phone);
+    /** Touch the middle of the preview-01 chat row for hold milliseconds. */
     const press = async (hold) => {
       const row = phone.locator('[data-task-id="preview-01"]');
       await row.scrollIntoViewIfNeeded();

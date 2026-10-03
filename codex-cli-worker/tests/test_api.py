@@ -13,7 +13,10 @@ SPEC.loader.exec_module(api)
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
+    """The requests the integration's client sends to the worker and the errors it raises."""
+
     def setUp(self):
+        """Build a client whose session returns one canned worker response."""
         self.response = MagicMock()
         self.response.status = 200
         self.response.json = AsyncMock(return_value={"ok": True})
@@ -25,12 +28,14 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.client = api.CodexCliApiClient(self.session, "http://worker", "test-token")
 
     async def test_list_filters_are_encoded_and_legacy_url_stays_unchanged(self):
+        """List filters go into the query string, and a call without filters requests the plain tasks URL."""
         await self.client.list_tasks()
         self.assertEqual(self.session.request.call_args.args, ("GET", "http://worker/tasks"))
         await self.client.list_tasks(limit=10, offset=20, order="updated_desc", summary=True)
         self.assertEqual(self.session.request.call_args.args, ("GET", "http://worker/tasks?limit=10&offset=20&order=updated_desc&summary=true"))
 
     async def test_continue_and_legacy_reply_use_correct_payloads(self):
+        """Continue and the legacy reply each post to their own endpoint with their own field name."""
         await self.client.continue_task("chat", "More detail")
         self.assertEqual(self.session.request.call_args.args, ("POST", "http://worker/tasks/chat/continue"))
         self.assertEqual(self.session.request.call_args.kwargs["json"], {"message": "More detail"})
@@ -39,6 +44,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.request.call_args.kwargs["json"], {"reply": "Yes"})
 
     async def test_continuation_error_is_actionable(self):
+        """A refused continuation raises an error carrying the worker's own message and the HTTP status."""
         self.response.status = 409
         self.response.json.return_value = {"ok": False, "error": "The saved Codex session is unavailable."}
         with self.assertRaisesRegex(api.CodexCliApiError, "saved Codex session") as raised:
@@ -46,6 +52,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status, 409)
 
     async def test_non_json_http_error_keeps_status(self):
+        """An HTTP error without a JSON body still raises an error that names the status code."""
         self.response.status = 502
         self.response.json.side_effect = ValueError("not JSON")
         with self.assertRaisesRegex(api.CodexCliApiError, "HTTP 502"):

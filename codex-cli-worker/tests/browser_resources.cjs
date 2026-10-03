@@ -3,13 +3,20 @@ const assert = require('node:assert/strict');
 const {EventEmitter} = require('node:events');
 const {ResourcePolicy, createExternalFetcher, publicAddress} = require('../browser_resources.cjs');
 
+/**
+ * Check which local and external resources the policy allows, then run the
+ * external fetcher against fake DNS and HTTPS: public addresses only,
+ * redirects, content types, compression, and the request and size limits.
+ */
 async function main() {
   const policy = new ResourcePolicy('http://ha.test:8123', {
     files: ['/browser_mod.js', '/api/action.js', '//unsafe.test/card.js'],
     directories: ['/custom_icons', '/oref_alert_internal_static'],
     extra_urls: ['https://assets.example.test/cards/main.js'],
   });
+  /** Ask the policy whether a path on the Home Assistant origin may load. */
   const local = (path, method = 'GET', type = 'script') => policy.local(new URL(path, policy.origin), method, type);
+  /** Ask the policy whether an external URL may load. */
   const remote = (url, method = 'GET', type = 'script') => policy.remote(new URL(url), method, type);
   assert(local('/browser_mod.js?v=3'));
   assert(local('/custom_icons/nested/icons.json', 'GET', 'fetch'));
@@ -75,7 +82,13 @@ async function main() {
   const calls = [];
   let answers = [{address: '8.8.8.8', family: 4}], responses = [], dnsCalls = 0;
   const dependencies = {
+    /** Count the DNS lookup and answer with the addresses the test set. */
     lookup: async () => { dnsCalls++; return answers; },
+    /**
+     * Stand in for https.request: check that the fetcher verifies
+     * certificates, sends only its own plain headers, and pins the resolved
+     * address, then answer with the next queued response.
+     */
     request: (url, options, callback) => {
       calls.push({url: url.href, options});
       assert.equal(options.rejectUnauthorized, true);

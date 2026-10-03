@@ -18,18 +18,31 @@ GLOBAL_V6.addSubnet('2000::', 3, 'ipv6');
 const PRIVATE_V6 = new net.BlockList();
 for (const [ip,bits] of [['2001::',23], ['2001:db8::',32], ['2002::',16], ['3fff::',20]]) PRIVATE_V6.addSubnet(ip,bits,'ipv6');
 
+/**
+ * Return whether a string is a public IP address, outside the private, local,
+ * multicast, reserved, and documentation ranges.
+ */
 function publicAddress(address) {
   const family = net.isIP(address);
   return family === 4 ? !PRIVATE_V4.check(address) : family === 6 &&
     GLOBAL_V6.check(address, 'ipv6') && !PRIVATE_V6.check(address, 'ipv6');
 }
 
+/**
+ * Return whether a URL can only name a public HTTPS host: default port, no
+ * credentials, a host name rather than an IP address, and no local suffix
+ * such as .local or .lan. The addresses it resolves to are checked separately.
+ */
 function publicURL(url) {
   return url.protocol === 'https:' && !url.username && !url.password && !url.port &&
     !net.isIP(url.hostname.replace(/^\[|\]$/g, '')) && !url.hostname.endsWith('.') &&
     !/(?:^|\.)(?:localhost|local|internal|home|lan)$/.test(url.hostname);
 }
 
+/**
+ * Return whether a URL is an asset on one of the well-known CDNs that need no
+ * registration: Google Fonts, jsDelivr, cdnjs, and unpkg.
+ */
 function cdnAsset(url) {
   if (url.hostname === 'fonts.googleapis.com') return ['/css', '/css2'].includes(url.pathname);
   if (url.hostname === 'fonts.gstatic.com') return url.pathname.startsWith('/s/') && CSS_ASSET.test(url.pathname);
@@ -41,7 +54,18 @@ function cdnAsset(url) {
   return false;
 }
 
+/**
+ * The rules for what a dashboard may load besides the frontend's own files:
+ * local files and directories that Home Assistant has registered, and
+ * external assets that are registered or come from a well-known CDN.
+ */
 class ResourcePolicy {
+  /**
+   * Take the Home Assistant origin and the files, directories, and extra URLs
+   * it reports. Local paths are kept only when they start with a single slash
+   * and hold none of the characters ? % # \ { }; at most 256 entries of each
+   * kind are read.
+   */
   constructor(origin, resources = {}) {
     this.origin = origin;
     this.files = new Set();
@@ -57,6 +81,11 @@ class ResourcePolicy {
     for (const value of (Array.isArray(resources.extra_urls) ? resources.extra_urls : []).slice(0, 256)) this.register(value);
   }
 
+  /**
+   * Allow an external URL. A script or stylesheet also allows the other assets
+   * under its directory unless allowDirectory is false. Same-origin and
+   * non-public URLs are ignored, as is anything after 256 URLs.
+   */
   register(value, allowDirectory = true) {
     if (typeof value !== 'string' || value.length > 2048 || this.external.size >= 256) return;
     let url;
@@ -69,12 +98,21 @@ class ResourcePolicy {
       this.externalDirectories.add(new URL('.', url).href);
   }
 
+  /**
+   * Return whether a same-origin request is a GET or HEAD for an asset that is
+   * a registered file or lies in a registered directory. API paths never pass.
+   */
   local(url, method, type) {
     if (url.origin !== this.origin || !['GET','HEAD'].includes(method) || !RESOURCE_TYPES.has(type) ||
         /^\/api(?:\/|$)/.test(url.pathname) || /[%\\]/.test(url.pathname) || !ASSET.test(url.pathname)) return false;
     return this.files.has(url.pathname) || [...this.directories].some(prefix => prefix && url.pathname.startsWith(prefix + '/'));
   }
 
+  /**
+   * Return whether an external request is a GET or HEAD for a registered URL,
+   * a well-known CDN asset, or an asset under the directory of a registered
+   * script or stylesheet. Only public HTTPS URLs outside /api and /auth pass.
+   */
   remote(url, method, type) {
     if (url.origin === this.origin || !['GET','HEAD'].includes(method) || !RESOURCE_TYPES.has(type) ||
         !publicURL(url) || /[%\\]/.test(url.pathname) || /^\/(?:api|auth)(?:\/|$)/.test(url.pathname)) return false;
@@ -83,6 +121,10 @@ class ResourcePolicy {
       (ASSET.test(clean.pathname) && [...this.externalDirectories].some(prefix => clean.href.startsWith(prefix)));
   }
 
+  /**
+   * Register the external stylesheets, fonts, and images that a fetched
+   * stylesheet refers to with url() or @import, resolved against its URL.
+   */
   cssDependencies(body, source) {
     // Only fetched stylesheets can extend the resource set, never page messages
     // or arbitrary request parameters. Each resulting URL still needs public DNS.
@@ -97,10 +139,22 @@ class ResourcePolicy {
   }
 }
 
+/**
+ * Return a function that fetches external resources without any credentials.
+ * All its fetches share one budget of 128 requests and 32 MB. The dependencies
+ * argument lets tests replace the DNS lookup and the HTTPS request.
+ */
 function createExternalFetcher(policy, dependencies = {}) {
   const lookup = dependencies.lookup || ((...args) => dns.lookup(...args));
   const request = dependencies.request || ((...args) => https.request(...args));
   let requests = 0, bytes = 0;
+  /**
+   * Fetch one external resource over HTTPS, connecting only to the public
+   * address a fresh DNS lookup returned. Follows at most three redirects, with
+   * the policy and DNS checked again on each hop, within 15 seconds and 8 MB.
+   * Returns the status, the decoded body, and a few safe headers, and
+   * registers what a stylesheet refers to; throws when a check or limit fails.
+   */
   return async function fetchResource(initial, method, type) {
     let url = new URL(initial);
     const deadline = Date.now() + 15000;

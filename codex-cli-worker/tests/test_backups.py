@@ -338,6 +338,8 @@ class RunTests(unittest.TestCase):
         test = self
 
         class FakeProcess:
+            """A stand-in for the Codex process that reports a file change and makes the edits when waited on."""
+
             def __init__(self, args, **kwargs):
                 """Remember where Codex writes its answer and prepare its event stream."""
                 del kwargs

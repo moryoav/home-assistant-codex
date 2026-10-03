@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.68
+
+- **Codex reaches Home Assistant with your token.** With the `HA_TOKEN` option set, Codex was given the token but no address, and tended to use `http://supervisor/core`, which rejects a Home Assistant token with HTTP 401. A reload or restart you asked for then failed, and Codex asked you to do it. Codex now also gets `HA_URL`, the address the token works at, and is told to use the two together.
+- The **Home Assistant API URL** option (`ha_url`) is that address. Its default is now `http://homeassistant:8123`, Home Assistant's own address inside the app network; change it only if your Home Assistant uses HTTPS or another port. An installation that still has the earlier default `http://supervisor/core` saved gets the new default, so nothing has to be changed after the update. The app's own calls to Home Assistant are unchanged.
+- **The weekly quota shows its reset time again.** Since 0.1.65 the 7d bar had no reset time on hover, and the **Weekly reset** sensor was unknown most of the time. With Codex CLI 0.160.0 the status line follows the weekly limit on the same line, and the worker took the limit from there, where it has no reset time.
+- **File names in the worker's notes keep their underscores.** The chat formats the details as Markdown, so a path such as `custom_components/foo/__init__.py` in the notes about saved copies and failed validation showed as a bold "init". Paths in those notes are now inline code. This changes the `details` text that actions and the `codex_cli_task_result` event return: each path is wrapped in backticks.
+
+Update the **Codex CLI Worker** app to **0.1.68**. The **Codex** integration is also released as **0.1.68** so that both carry the same version; its code is unchanged.
+
 ## 0.1.67
 
 - **The remaining quota is shown as bars.** Below **Home Assistant workspace** in the sidebar, the 5h and 7d quotas each have a bar next to the percentage. The filled part is the quota left: green, and red when less than 5% is left. Hover over a bar to see when the quota resets. A limit the worker has no value for, such as the 5h limit on a plan without one, keeps reading **Unavailable** and its bar is an empty outline.

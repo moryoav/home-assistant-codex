@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.68
+
+- **Codex can apply the changes you ask for.** After editing YAML it can reload the configuration, and it can turn automations on or off. The app makes these calls itself, so no token is needed and it works on a new installation without any setup, in every sandbox mode except read-only. Before, Codex had to reach Home Assistant from its own shell, which needs the `HA_TOKEN` option and a shell with network access.
+- **New option: Home Assistant actions** (`ha_actions`). `reload_and_automations` is the default: reloads, and `automation.turn_on` and `automation.turn_off`. `all_services` also lets Codex call any other service, such as lights, locks, covers, scripts, and restarts; text that Codex reads in a file or on a web page could then lead to a real action, so choose it deliberately. `off` allows no action, as before this release.
+- Every action is listed under the answer as **Home Assistant actions**, also when it was refused or failed. It is in the turn's `verification` list in the task API and in the `codex_cli_task_result` event, with `operation` `reload` or `call_service`.
+- When changed YAML passed the configuration check but was not reloaded through the app, the details say so. Refused and failed actions are pointed out there as well.
+- **The weekly quota shows its reset time again.** Since 0.1.65 the 7d bar had no reset time on hover, and the **Weekly reset** sensor was unknown most of the time. With Codex CLI 0.160.0 the status line follows the weekly limit on the same line, and the worker took the limit from there, where it has no reset time.
+- **File names in the worker's notes keep their underscores.** The chat formats the details as Markdown, so a path such as `custom_components/foo/__init__.py` in the notes about saved copies and failed validation showed as a bold "init". Paths in those notes are now inline code. This changes the `details` text that actions and the `codex_cli_task_result` event return: each path is wrapped in backticks.
+
+Update the **Codex CLI Worker** app to **0.1.68**. The **Codex** integration is also released as **0.1.68** so that both carry the same version; its code is unchanged.
+
 ## 0.1.67
 
 - **The remaining quota is shown as bars.** Below **Home Assistant workspace** in the sidebar, the 5h and 7d quotas each have a bar next to the percentage. The filled part is the quota left: green, and red when less than 5% is left. Hover over a bar to see when the quota resets. A limit the worker has no value for, such as the 5h limit on a plan without one, keeps reading **Unavailable** and its bar is an empty outline.

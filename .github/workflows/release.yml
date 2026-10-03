@@ -42,9 +42,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          # The releases/tags API does not return drafts, so read the release by its own URL.
+          if release_api="$(gh release view "$GITHUB_REF_NAME" --json apiUrl --jq '.apiUrl' 2>/dev/null)"; then
             asset_name="$(basename "$ASSET")"
-            release_api="repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
             stored_digest="$(gh api "$release_api" --jq ".assets[] | select(.name == \"$asset_name\") | .digest")"
             if [ -z "$stored_digest" ]; then
               gh release upload "$GITHUB_REF_NAME" "$ASSET"

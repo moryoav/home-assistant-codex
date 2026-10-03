@@ -34,7 +34,7 @@ configuration:
     description: How many days after an exchange its backups are kept, from 1 to 365. Applies to the copies Codex saves before changing a file and to full snapshots. Default is 7 days.
   ha_url:
     name: Home Assistant API URL
-    description: API base URL used by the app for Home Assistant calls. The default Supervisor Core proxy is recommended.
+    description: Address that Codex uses for its own Home Assistant API calls when HA_TOKEN is set. It is passed to Codex as the HA_URL environment variable. The default, http://homeassistant:8123, is Home Assistant's own address inside the app network; change it only if your Home Assistant uses HTTPS or another port. The earlier default, http://supervisor/core, does not accept a Home Assistant token and is treated as the default. The app's own calls do not use this address.
   browser_verification:
     name: Enable built-in browser
     description: Allow dashboard inspection and desktop/mobile screenshots. The browser uses RAM while it runs; set its budget with Browser memory limit below. Turn this off to completely disable browser launches and screenshots if you do not need them or your system has limited RAM. State and configuration checks remain available. No Home Assistant password or manually created token is needed.
@@ -43,4 +43,4 @@ configuration:
     description: Memory budget for dashboard screenshots, from 512 to 8192 MiB. Default is 1536 MiB (1.5 GiB). Increase it for larger dashboards if your system has enough free memory for Home Assistant and other apps. This sets a limit for browser captures; it does not reserve RAM or limit the whole app.
   HA_TOKEN:
     name: HA_TOKEN
-    description: Optional Home Assistant token exposed to Codex subprocesses as the HA_TOKEN environment variable.
+    description: Optional Home Assistant token exposed to Codex subprocesses as the HA_TOKEN environment variable, together with HA_URL, the address above. Codex can then call Home Assistant's API with the rights of the token's user, for example to reload automations or restart Home Assistant.

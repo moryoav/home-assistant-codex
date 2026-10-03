@@ -409,6 +409,16 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("CURRENT_MESSAGE", prompt)
         self.assertNotIn("ORIGINAL_REQUEST", prompt)
 
+    def test_prompt_names_the_api_address_only_when_codex_has_a_token(self):
+        """With the HA_TOKEN option the prompt tells Codex to call Home Assistant at HA_URL; without it, nothing is said."""
+        self.assertNotIn("HA_URL", server.build_prompt("Reload the automations", "task"))
+        with patch.object(server, "read_options", return_value={"HA_TOKEN": "token-value"}):
+            prompt = server.build_prompt("Reload the automations", "task")
+        self.assertIn('$HA_URL/api/services/automation/reload, with the header "Authorization: Bearer $HA_TOKEN"', prompt)
+        self.assertIn("Do not use http://supervisor/core, which does not accept this token", prompt)
+        # The token itself is never written into the prompt.
+        self.assertNotIn("token-value", prompt)
+
     def test_runs_keep_separate_artifacts_and_changes(self):
         """Each exchange keeps Codex's output in its own folder and records only its own file changes."""
         task_id = self.create()

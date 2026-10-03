@@ -60,6 +60,10 @@ CODEX_BINARY = "/usr/local/bin/codex"
 AGENTS_PATH = CONFIG_ROOT / "AGENTS.md"
 TASK_STATE_FILE = DATA_ROOT / "task_index.json"
 
+# Home Assistant's own address inside the app network. A Home Assistant token, such
+# as the HA_TOKEN option, works there and not at the Supervisor's Core proxy.
+CORE_URL = "http://homeassistant:8123"
+
 DEFAULT_OPTIONS = {
     "codex_model": "default",
     "model_reasoning_effort": "medium",
@@ -74,7 +78,7 @@ DEFAULT_OPTIONS = {
     "backup_retention_days": 7,
     "browser_verification": True,
     "browser_memory_limit_mib": DEFAULT_BROWSER_MEMORY_LIMIT_MIB,
-    "ha_url": "http://supervisor/core",
+    "ha_url": CORE_URL,
     "HA_TOKEN": "",
 }
 BACKUP_RETENTION_DAYS_RANGE = (1, 365)
@@ -2946,21 +2950,36 @@ def auto_start_login_if_needed() -> None:
     start_codex_login_flow(False)
 
 
+def codex_ha_url(options: dict[str, Any]) -> str:
+    """Return the address Codex's own Home Assistant API calls go to with the HA_TOKEN option.
+
+    It is the ha_url option. The option used to default to the Supervisor's Core
+    proxy, which does not accept a Home Assistant token, so that address and an
+    empty option stand for Core's own address.
+    """
+    url = str(options.get("ha_url") or "").strip().rstrip("/")
+    if not url or urlparse(url).hostname == "supervisor":
+        return CORE_URL
+    return url
+
+
 def codex_env() -> dict[str, str]:
     """Return the environment Codex processes run in.
 
     The Supervisor tokens and the verification capability are removed, HOME and
     CODEX_HOME point into the add-on's data folder, and HA_TOKEN is set only
-    from the add-on option.
+    from the add-on option, together with HA_URL, the address it works at.
     """
     env = dict(os.environ)
-    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_VERIFICATION_CAPABILITY"):
+    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_URL", "HA_VERIFICATION_CAPABILITY"):
         env.pop(key, None)
     env["CODEX_HOME"] = str(CODEX_HOME)
     env["HOME"] = str(DATA_ROOT)
-    ha_token = str(read_options().get("HA_TOKEN") or "").strip()
-    if ha_token:
-        env["HA_TOKEN"] = ha_token
+    options = read_options()
+    token = str(options.get("HA_TOKEN") or "").strip()
+    if token:
+        env["HA_TOKEN"] = token
+        env["HA_URL"] = codex_ha_url(options)
     return env
 
 
@@ -3010,11 +3029,24 @@ def backup_instructions(backup_dir: Path | None) -> str:
     )
 
 
+def home_assistant_api_instructions(options: dict[str, Any]) -> str:
+    """Tell Codex where its own Home Assistant API calls go; empty when the add-on gives it no token for them."""
+    if not str(options.get("HA_TOKEN") or "").strip():
+        return ""
+    return (
+        "For Home Assistant API calls you make yourself, such as a reload or a restart the user asked for, use the "
+        "HA_URL and HA_TOKEN environment variables: send the request to $HA_URL, for example "
+        '$HA_URL/api/services/automation/reload, with the header "Authorization: Bearer $HA_TOKEN". '
+        "Do not use http://supervisor/core, which does not accept this token, and never print the token.\n\n"
+    )
+
+
 def build_prompt(user_prompt: str, task_id: str, reply: str | None = None, backup_dir: Path | None = None) -> str:
     """Write the instructions Codex gets for one message, including where to save its backups."""
     current_request = reply if reply is not None else user_prompt
     attached = attached_image_note(task_id)
     backups = backup_instructions(backup_dir)
+    api = home_assistant_api_instructions(read_options())
     return f"""You are Codex running as a Home Assistant add-on worker.
 
 Workspace: /config
@@ -3036,7 +3068,7 @@ The MCP tool runs through the worker outside the shell network sandbox. Do not a
 Use fresh entity readback after any user-authorized reload or change. These tools do not perform reloads or device actions. Only perform those when authorized by the user. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
 After an authorized storage-dashboard edit, add "save_pending":true to the dashboard request to have the worker save that turn's pending dashboard edit and verify API readback before capturing it. This requires auto_save_lovelace to be enabled. Without save_pending, the browser inspects only the dashboard currently loaded in Home Assistant.
 
-At the end, return only an object matching the provided JSON schema:
+{api}At the end, return only an object matching the provided JSON schema:
 - status: "completed", "needs_input", or "failed"
 - summary: concise result
 - question: use an empty string unless status is "needs_input"

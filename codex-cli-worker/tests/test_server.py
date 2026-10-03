@@ -643,6 +643,20 @@ class ModelSelectionTests(unittest.TestCase):
             "list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
         )
 
+    def test_home_assistant_api_url_defaults_to_core(self) -> None:
+        """config.yaml and the worker default the API URL to Home Assistant's own address, where HA_TOKEN works."""
+        config = server.yaml.safe_load(
+            (SERVER_PATH.parent / "config.yaml").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(config["options"]["ha_url"], "http://homeassistant:8123")
+        self.assertEqual(server.DEFAULT_OPTIONS["ha_url"], "http://homeassistant:8123")
+        self.assertEqual(server.codex_ha_url(config["options"]), "http://homeassistant:8123")
+        translations = server.yaml.safe_load(
+            (SERVER_PATH.parent / "translations" / "en.yaml").read_text(encoding="utf-8")
+        )
+        self.assertIn("HA_URL", translations["configuration"]["ha_url"]["description"])
+
     def test_default_model_omits_model_argument(self) -> None:
         """The default option passes no --model to Codex, and the model the chat names meanwhile is one on offer."""
         args = self.build_args_for_model("default")

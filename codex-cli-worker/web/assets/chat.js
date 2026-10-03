@@ -257,7 +257,9 @@ let refreshTimer;
 let activityTimer = null;
 let usageTimer;
 let usageLoading = false;
-function renderUsage(usage = {}) {
+function renderUsage(usage) {
+  // An account can lack either limit, and the worker may have no quota data at all.
+  usage = usage || {};
   // The worker's percentages already represent quota left, not quota used.
   for (const [id, key] of [
     ["usage-five-hour", "five_hour"],
@@ -297,7 +299,8 @@ async function loadUsage() {
       const data = await api("status");
       renderUsage(data.codex_usage);
       // The quota check also tells the worker which model Codex picks when the add-on names none.
-      if (state.catalog) await loadChatOptions(true);
+      // Not awaited: the quota shown must not depend on it.
+      if (state.catalog) loadChatOptions(true);
     }
   } catch (_) {
     renderUsage();

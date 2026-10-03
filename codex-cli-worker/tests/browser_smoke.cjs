@@ -93,16 +93,43 @@ function pngBuffer(width = 8, height = 6) {
         ],
       ],
     );
-    // Without a value the bar is an empty outline, not an empty quota.
-    await page.evaluate(() => renderUsage({}));
-    assert.equal(
-      await page.locator("#usage .usage-bar.unknown").count(),
-      2,
+    // An account can lack either limit, or both. A missing one reads Unavailable
+    // with an empty outline instead of an empty quota, and the other keeps its bar.
+    const quotaRows = (usage) =>
+      page.evaluate((value) => {
+        renderUsage(value);
+        return ["usage-five-hour", "usage-weekly"].map((id) => {
+          const fill = document.getElementById(`${id}-bar`);
+          return [
+            document.getElementById(id).textContent,
+            fill.style.width,
+            fill.parentElement.className,
+          ];
+        });
+      }, usage);
+    const missing = ["Unavailable", "0px", "usage-bar unknown"];
+    assert.deepEqual(await quotaRows({ status: "ok", weekly_percent: "87" }), [
+      missing,
+      ["87% left", "87%", "usage-bar"],
+    ]);
+    assert.equal(await page.locator("#usage-note").isHidden(), true);
+    assert.deepEqual(
+      await quotaRows({ status: "ok", five_hour_percent: "2", weekly_percent: "" }),
+      [["2% left", "2%", "usage-bar low"], missing],
     );
-    assert.equal(
-      await page.locator("#usage-five-hour").textContent(),
-      "Unavailable",
-    );
+    // Neither limit, values that are not percentages, and no quota data at all.
+    for (const usage of [
+      {},
+      { status: "error", five_hour_percent: "n/a", weekly_percent: 140 },
+      { status: "ok", five_hour_percent: null, weekly_percent: -1 },
+      null,
+    ]) {
+      assert.deepEqual(await quotaRows(usage), [missing, missing]);
+      assert.equal(
+        await page.locator("#usage-note").textContent(),
+        usage?.status === "ok" ? "" : "Quota is currently unavailable.",
+      );
+    }
     await page.evaluate(() => loadUsage());
     await page.waitForFunction(
       () => document.querySelector("#usage-weekly").textContent === "3% left",

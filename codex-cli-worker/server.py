@@ -2408,15 +2408,33 @@ def assess_changes(
     }
 
 
+def code_span(text: str) -> str:
+    """Return text as Markdown inline code, so the chat shows a path with its underscores and asterisks."""
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def code_spans(paths: list[str]) -> str:
+    """Return paths as a comma-separated list of Markdown inline code."""
+    return ", ".join(code_span(path) for path in paths)
+
+
+def validation_message(message: str) -> str:
+    """Return a validation message with the file it starts with, if any, as Markdown inline code."""
+    rel, sep, rest = message.partition(": ")
+    return f"{code_span(rel)}: {rest}" if sep and not rel.startswith("Home Assistant") else message
+
+
 def unsaved_note(paths: list[str]) -> str:
     """Tell the user which changed files have no copy of their previous version."""
-    shown = ", ".join(paths[:10]) + (f", and {len(paths) - 10} more" if len(paths) > 10 else "")
+    shown = code_spans(paths[:10]) + (f", and {len(paths) - 10} more" if len(paths) > 10 else "")
     return f"No copy of the previous version was saved for: {shown}. Use a Home Assistant backup to restore such a file."
 
 
 def validation_details(validation_errors: list[str], config_check: dict[str, str], recovery_files: list[dict[str, str]]) -> str:
     """The details text for a failed validation, with how to recover."""
-    lines = ["Validation errors: " + "; ".join(validation_errors[:5])]
+    lines = ["Validation errors: " + "; ".join(validation_message(message) for message in validation_errors[:5])]
     copies = [entry for entry in recovery_files if entry.get("copy")]
     added = [entry["path"] for entry in recovery_files if not entry.get("copy") and not entry.get("reason")]
     excluded = [entry["path"] for entry in recovery_files if entry.get("reason") == "excluded_credentials"]
@@ -2424,12 +2442,12 @@ def validation_details(validation_errors: list[str], config_check: dict[str, str
     if copies:
         lines.append(
             f"Pre-change copies of the affected files are kept for {backup_retention_days()} days at: "
-            + ", ".join(entry["copy"] for entry in copies)
+            + code_spans([entry["copy"] for entry in copies])
         )
     if added:
-        lines.append("New files that did not exist before: " + ", ".join(added))
+        lines.append("New files that did not exist before: " + code_spans(added))
     if excluded:
-        lines.append("Credential files excluded from recovery copies; use a Home Assistant backup: " + ", ".join(excluded))
+        lines.append("Credential files excluded from recovery copies; use a Home Assistant backup: " + code_spans(excluded))
     if unsaved:
         lines.append(unsaved_note(unsaved))
     if config_check.get("warnings"):

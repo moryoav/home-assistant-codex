@@ -162,9 +162,11 @@ class SavedCopyTests(unittest.TestCase):
         ])
         with patch.object(server, "read_options", return_value={"backup_retention_days": 3}):
             details = server.validation_details(["scripts.yaml: bad"], {}, result)
-        self.assertIn("are kept for 3 days at: " + str(saved.resolve()), details)
-        self.assertIn("New files that did not exist before: packages/new.yaml", details)
-        self.assertIn("No copy of the previous version was saved for: scripts.yaml.", details)
+        # Each path is inline code, so the chat's Markdown leaves its underscores alone.
+        self.assertIn("Validation errors: `scripts.yaml`: bad", details)
+        self.assertIn(f"are kept for 3 days at: `{saved.resolve()}`", details)
+        self.assertIn("New files that did not exist before: `packages/new.yaml`", details)
+        self.assertIn("No copy of the previous version was saved for: `scripts.yaml`.", details)
         self.assertIn("excluded from recovery copies", details)
 
 
@@ -396,7 +398,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(task["backups"], expected)
         self.assertEqual(task["turns"][0]["backups"], expected)
         self.assertEqual(self.events[-1]["backups"], expected)
-        self.assertEqual(task["details"], "Notes\n\nNo copy of the previous version was saved for: scripts.yaml. "
+        self.assertEqual(task["details"], "Notes\n\nNo copy of the previous version was saved for: `scripts.yaml`. "
                                           "Use a Home Assistant backup to restore such a file.")
         self.assertFalse((self.run_dir / server.SNAPSHOT_FILE).exists())
         self.assertNotIn("snapshot", task)

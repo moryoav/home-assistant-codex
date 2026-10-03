@@ -208,7 +208,7 @@ def main():
                                turns=[turn], current_turn_id=turn["turn_id"],
                                status="failed" if index == 3 else "completed",
                                session_id=task_session, summary=summary, question="",
-                               details="Validation errors: Home Assistant configuration check failed. Pre-change copies of the affected files are kept for 7 days at: /config/codex_tasks/preview-03/turns/x/backups/automations.yaml" if index == 3 else details,
+                               details="Validation errors: Home Assistant configuration check failed. Pre-change copies of the affected files are kept for 7 days at: `/config/codex_tasks/preview-03/turns/x/backups/automations.yaml`" if index == 3 else details,
                                attachments=attachments, **extra)
             server.tasks[f"preview-{index:02}"]["updated_at"] = f"2026-09-{20 - index % 19:02}T10:00:00+00:00"
             if index == 0:

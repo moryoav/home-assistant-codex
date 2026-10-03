@@ -1320,5 +1320,27 @@ class TaskCancellationTests(unittest.TestCase):
         self.assertEqual(server.active_task_count(), 1)
 
 
+class WorkerNoteTests(unittest.TestCase):
+    """The notes the worker adds to a task's details."""
+
+    def test_notes_keep_file_names_as_inline_code(self) -> None:
+        """Paths in the worker's notes are Markdown inline code, so the chat shows their underscores and asterisks."""
+        self.assertEqual(server.code_span("custom_components/foo/__init__.py"), "`custom_components/foo/__init__.py`")
+        # A backtick in a name gets a longer fence, and padding when it is at an end.
+        self.assertEqual(server.code_span("odd`name.yaml"), "``odd`name.yaml``")
+        self.assertEqual(server.code_span("`quoted`"), "`` `quoted` ``")
+        self.assertEqual(
+            server.unsaved_note(["__pycache__/a.yaml", "b.yaml"]),
+            "No copy of the previous version was saved for: `__pycache__/a.yaml`, `b.yaml`. "
+            "Use a Home Assistant backup to restore such a file.",
+        )
+        self.assertIn(", and 2 more", server.unsaved_note([f"file_{n}.yaml" for n in range(12)]))
+        # A message from the configuration check names no file and is left as it is.
+        self.assertEqual(
+            server.validation_details(["packages/__init__.yaml: bad", "Home Assistant configuration check failed: x"], {}, []),
+            "Validation errors: `packages/__init__.yaml`: bad; Home Assistant configuration check failed: x",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

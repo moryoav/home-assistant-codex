@@ -1,4 +1,4 @@
-"""The integration's 5-hour and weekly usage sensors, with and without each limit reported."""
+"""The integration's usage sensors, with and without each limit reported, and its last-task sensor."""
 
 from __future__ import annotations
 
@@ -224,6 +224,25 @@ class UsageSensorTests(unittest.TestCase):
             datetime.fromisoformat("2026-08-08T12:00:00+03:00"),
         )
         self.assertIs(weekly_reset.extra_state_attributes["reported"], True)
+
+
+class LastTaskSensorTests(unittest.TestCase):
+    """State and attributes of the last-task sensor."""
+
+    def test_attributes_come_from_the_latest_task(self) -> None:
+        """The sensor shows the latest task's status, and its error is that task's own, not a field of the status."""
+        latest = {"task_id": "chat", "status": "failed", "title": "Review", "summary": "Codex could not start", "error": "boom"}
+        coordinator = SimpleNamespace(data={"latest_task": latest, "active_task_id": None, "error": "not the task's"})
+        entry = SimpleNamespace(entry_id="test-entry", data={"base_url": "http://codex-worker.test"})
+        last_task = sensor.CodexLastTaskSensor(coordinator, entry)
+
+        self.assertEqual(last_task.native_value, "failed")
+        self.assertEqual(last_task.extra_state_attributes["error"], "boom")
+        self.assertEqual(last_task.extra_state_attributes["summary"], "Codex could not start")
+        # Without any task the sensor is unknown and has no error.
+        coordinator.data = {}
+        self.assertEqual(last_task.native_value, "unknown")
+        self.assertIsNone(last_task.extra_state_attributes["error"])
 
 
 if __name__ == "__main__":

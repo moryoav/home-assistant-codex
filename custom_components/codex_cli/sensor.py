@@ -77,7 +77,7 @@ class CodexLastTaskSensor(_CodexSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the latest task's details, plus the active task ID and error from the worker status."""
+        """Return the latest task's details and error, plus the active task ID from the worker status."""
         latest = (self.coordinator.data or {}).get("latest_task") or {}
         return {
             "task_id": latest.get("task_id"),
@@ -86,7 +86,7 @@ class CodexLastTaskSensor(_CodexSensor):
             "question": latest.get("question"),
             "updated_at": latest.get("updated_at"),
             "active_task_id": (self.coordinator.data or {}).get("active_task_id"),
-            "error": (self.coordinator.data or {}).get("error"),
+            "error": latest.get("error"),
         }
 
 

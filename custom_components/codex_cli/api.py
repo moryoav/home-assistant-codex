@@ -36,8 +36,8 @@ class CodexCliApiClient:
         return self._base_url
 
     async def health(self) -> dict[str, Any]:
-        """Fetch unauthenticated worker health."""
-        return await self._request("GET", "/health", auth=False)
+        """Fetch worker health: the Codex binary, version and login, and sandbox readiness."""
+        return await self._request("GET", "/health")
 
     async def status(self) -> dict[str, Any]:
         """Fetch authenticated worker status."""
@@ -85,16 +85,15 @@ class CodexCliApiClient:
         method: str,
         path: str,
         *,
-        auth: bool = True,
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Send one request to the worker, with the API token unless auth is false, and return its JSON object.
+        """Send one request to the worker, with the API token, and return its JSON object.
 
         Raises CodexCliAuthError for HTTP 401 and 403, and CodexCliApiError for any other failure,
         using the worker's own error text when it sent one.
         """
         headers = {}
-        if auth and self._api_token:
+        if self._api_token:
             headers["Authorization"] = f"Bearer {self._api_token}"
         url = f"{self._base_url}{path}"
         try:

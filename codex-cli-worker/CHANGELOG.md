@@ -2,14 +2,17 @@
 
 ## 0.1.67
 
-- **The remaining quota is shown as bars.** Below **Home Assistant workspace** in the sidebar, the 5h and 7d quotas each have a bar next to the percentage. The filled part is the quota left: green, and red when less than 5% is left. Hover over a bar to see when the quota resets. Until the worker has a value, the bar is an empty outline.
+- **The remaining quota is shown as bars.** Below **Home Assistant workspace** in the sidebar, the 5h and 7d quotas each have a bar next to the percentage. The filled part is the quota left: green, and red when less than 5% is left. Hover over a bar to see when the quota resets. A limit the worker has no value for, such as the 5h limit on a plan without one, keeps reading **Unavailable** and its bar is an empty outline.
 - **The model button names the model.** A chat without a model of its own used to show **Default**. It now shows the model it runs on: the one set in the app's **Codex model** option or, when that option is `default`, the one Codex picks for your account. The worker reads that from Codex's own status report when it checks the quota, and shows the model the bundled CLI recommends, GPT-6.1 Sol, until the first report.
 - The model menu no longer has a separate **Default** entry. The list marks the model the chat runs on, and choosing the model the app is set to makes the chat follow the app setting again.
 - With the **Codex model** option on `default`, such a chat can use every reasoning level of the model Codex picks, including Max and Ultra where the model has them, instead of only Low through Extra High.
 - When the model such a chat follows changes to one without the chat's saved reasoning level, the chat runs Medium, as it already showed, instead of answering with an error.
 - `GET /chat-options` returns that model as `default_model`. Runs start as before: with the option on `default`, the worker names no model and Codex chooses it.
+- The task log route, `GET /tasks/<task_id>/log`, answers only for a saved task. It used to return the `codex.log` of any folder name it was given, which included the sign-in log under `auth`.
+- The **Last task** sensor's `error` attribute comes from the latest task. It was read from a field the worker status does not have.
+- A worker that has no API token says so in its 503 answer, instead of pointing to the add-on options, where the token is no longer set.
 
-Update the **Codex CLI Worker** app to **0.1.67** for the quota bars and the model name. The **Codex** integration is also released as **0.1.67** so that both carry the same version; its code is unchanged.
+Update the **Codex CLI Worker** app to **0.1.67** for the quota bars and the model name. Update the **Codex** integration to **0.1.67** as well, then restart Home Assistant, for the sensor attribute.
 
 ## 0.1.66
 

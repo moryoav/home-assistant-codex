@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.63
+
+- **Messages start faster.** The worker used to archive the whole configuration folder before every message, which on a large configuration took longer than Codex needed to start answering. It now only records which files exist, and reads a file again only when its size or timestamps changed since the last scan.
+- **Codex saves the previous version of each file it changes.** Before changing, moving, or deleting a file, Codex copies it to the exchange's `backups` folder. When the run ends, the worker checks that each copy matches the file as it was before the run, lists the saved copies under the answer, and names changed files that have none. Credential files are never copied.
+- **New option: Full snapshot before every message** (`full_snapshot`), off by default. Turn it on to keep archiving the whole configuration folder before every message. The worker then fills in the previous version of any file Codex did not copy.
+- **New option: Keep backups for (days)** (`backup_retention_days`), 7 by default. Per-file copies and full snapshots are deleted this many days after their exchange ended. The cleanup runs when the app starts, after every exchange, and once an hour, and also removes the archives earlier versions left behind once they are older than the setting.
+- **The chat shows that work has started.** The waiting dot pulses from the moment a message is sent, a timer next to it counts how long the exchange has been running, and the worker's own steps (recording the state of the configuration, starting Codex, waiting for its first response, checking the changes) appear in the activity list before Codex reports its first step.
+- Recovery copies for a failed configuration check are now read from the `backups` folder instead of a separate `recovery` folder. The task details say how long they are kept, and name affected files that have no saved copy.
+- Worker API and the `codex_cli_task_result` event carry `backups` (`path`, `status`, and `copy`) on the task result and on each turn. `GET /tasks/<task_id>/activity` reports `elapsed_ms` while an exchange runs.
+
+Update the **Codex CLI Worker** app to **0.1.63**. The **Codex** integration remains at **0.1.62** and does not need an update. If you want the previous behavior, turn on **Full snapshot before every message** in the app's **Configuration** tab.
+
 ## 0.1.62
 
 - Fix discovery of individual static files on Home Assistant Core 2026.9.4 so Browser Mod, Custom Icons, and WebRTC scripts can load during dashboard captures.

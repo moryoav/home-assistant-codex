@@ -13,7 +13,7 @@ configuration:
     description: read-only allows inspection only; workspace-write allows Codex to edit the /config workspace but keeps generated shell commands sandboxed; danger-full-access removes Codex sandboxing inside the add-on container and should only be used if workspace-write blocks required commands.
   task_root:
     name: Task root
-    description: Folder where prompts, logs, snapshots, status files, and change manifests are saved.
+    description: Folder where prompts, logs, backups, status files, and change lists are saved. Keep it inside /config so Codex can save a copy of each file before changing it.
   notify_service:
     name: Notification service
     description: Optional Home Assistant notify service for task completion, failures, and questions. Leave unset or blank to use persistent notifications. The app configuration page does not support Home Assistant service autocomplete, so this is a plain text field.
@@ -25,7 +25,13 @@ configuration:
     description: After Codex edits storage-mode Lovelace files, save changed dashboards through the Home Assistant WebSocket API so the UI updates in memory.
   config_check:
     name: Home Assistant configuration check
-    description: After a task changes YAML files, ask Home Assistant to check its configuration, as Developer Tools does. A failing check marks the task as failed and keeps pre-change copies of the affected files. Turn off to skip the check on slow systems.
+    description: After a task changes YAML files, ask Home Assistant to check its configuration, as Developer Tools does. A failing check marks the task as failed and points to the saved previous version of the affected files. Turn off to skip the check on slow systems.
+  full_snapshot:
+    name: Full snapshot before every message
+    description: Also archive the whole configuration folder before every message. Codex still saves a copy of each file before changing it, and the archive supplies the previous version of any file it did not copy. Off by default. On a large configuration this adds a wait before every message and uses a lot of disk space.
+  backup_retention_days:
+    name: Keep backups for (days)
+    description: How many days after an exchange its backups are kept, from 1 to 365. Applies to the copies Codex saves before changing a file and to full snapshots. Default is 7 days.
   ha_url:
     name: Home Assistant API URL
     description: API base URL used by the app for Home Assistant calls. The default Supervisor Core proxy is recommended.

@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-hacs:
+    uses: ./.github/workflows/validate.yml
+
+  hassfest:
+    uses: ./.github/workflows/hassfest.yml
+
+  github-release:
+    needs: [validate-hacs, hassfest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check tag and build HACS ZIP
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="$(python scripts/build_hacs_release.py "$GITHUB_REF_NAME" "$RUNNER_TEMP")"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release with HACS ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.package.outputs.asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            asset_name="$(basename "$ASSET")"
+            release_api="repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
+            stored_digest="$(gh api "$release_api" --jq ".assets[] | select(.name == \"$asset_name\") | .digest")"
+            if [ -z "$stored_digest" ]; then
+              gh release upload "$GITHUB_REF_NAME" "$ASSET"
+            else
+              local_digest="sha256:$(sha256sum "$ASSET" | cut -d ' ' -f 1)"
+              if [ "$stored_digest" != "$local_digest" ]; then
+                echo "Existing $asset_name does not match this tag's ZIP" >&2
+                exit 1
+              fi
+            fi
+            if [ "$(gh api "$release_api" --jq '.draft')" = "true" ]; then
+              gh release edit "$GITHUB_REF_NAME" --draft=false
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" "$ASSET" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/release_notes.md" \
+              --verify-tag
+          fi
+
+  build-worker-image:
+    needs: github-release
+    uses: ./.github/workflows/build.yaml
+    with:
+      publish_latest: true
+    permissions:
+      contents: read
+      id-token: write
+      packages: write

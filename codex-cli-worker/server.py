@@ -78,18 +78,23 @@ BACKUP_RETENTION_DAYS_RANGE = (1, 365)
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 # Codex only emits reasoning items when summaries are requested; "auto" produced none.
 REASONING_SUMMARIES = {"concise", "detailed", "none"}
-# Supported choices in the bundled CLI 0.157.1 model catalog. Availability still
+# Supported choices in the bundled CLI 0.160.0 model catalog. Availability still
 # depends on the signed-in account; the CLI reports unavailable models normally.
 CHAT_MODELS = (
     ("gpt-6-astra", "GPT-6 Astra", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-6.1-sol", "GPT-6.1 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6-sol", "GPT-6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6-luna", "GPT-6 Luna", ("low", "medium", "high", "xhigh", "max")),
     ("gpt-5.6-sol", "GPT-5.6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-terra", "GPT-5.6 Terra", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-luna", "GPT-5.6 Luna", ("low", "medium", "high", "xhigh", "max")),
-    ("gpt-5.5", "GPT-5.5", ("low", "medium", "high", "xhigh")),
 )
 CHAT_MODEL_EFFORTS = {model: efforts for model, _, efforts in CHAT_MODELS}
+# Models that are no longer offered, each with the next model up. An add-on option
+# or a chat that still has one selected runs on the first model in that chain
+# that is still offered. The option schema keeps accepting them: Home Assistant
+# does not start an app whose saved option is missing from the list.
+RETIRED_MODELS = {"gpt-5.5": "gpt-5.6-sol"}
 DEFAULT_CHAT_SETTINGS = {"model": None, "reasoning_effort": None}
 
 AGENTS_MAX_BYTES = 256 * 1024
@@ -336,9 +341,29 @@ def backup_retention_days(options: dict[str, Any] | None = None) -> int:
     return min(high, max(low, days))
 
 
+def current_model(model: Any) -> Any:
+    """Return the model that replaces one that is no longer offered."""
+    while isinstance(model, str) and model in RETIRED_MODELS:
+        model = RETIRED_MODELS[model]
+    return model
+
+
+def current_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Return chat selections with a model that is no longer offered replaced by the next one up."""
+    settings = copy.deepcopy(settings)
+    model = current_model(settings.get("model"))
+    if model != settings.get("model"):
+        settings["model"] = model
+        # The replacement may not support a level the retired model did.
+        if settings.get("reasoning_effort") not in CHAT_MODEL_EFFORTS.get(model, ()):
+            settings["reasoning_effort"] = None
+    return settings
+
+
 def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
     """Resolve inheritance once per turn, without changing shared options."""
-    model = settings.get("model") or str(options.get("codex_model") or "default")
+    settings = current_chat_settings(settings)
+    model = settings.get("model") or current_model(str(options.get("codex_model") or "default"))
     if model == "gpt-5.3-codex":
         model = "default"
     efforts = CHAT_MODEL_EFFORTS.get(model, ("low", "medium", "high", "xhigh"))
@@ -347,8 +372,9 @@ def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> 
         raise ValueError("The selected reasoning level is not supported by this model.")
     if effort is None:
         effort = model_reasoning_effort(options)
-        # A legacy global setting may not suit an explicitly selected model.
-        if model in CHAT_MODEL_EFFORTS and effort not in efforts:
+        # The add-on level may not suit the model: none offered supports minimal, and
+        # neither does the model the CLI picks for default, which gets it unchanged.
+        if effort not in efforts:
             effort = "medium"
     return {"model": model, "reasoning_effort": effort}
 
@@ -358,11 +384,13 @@ def parse_chat_settings(payload: dict[str, Any], task: dict[str, Any] | None = N
     if not isinstance(settings, dict) or set(settings) - set(DEFAULT_CHAT_SETTINGS):
         raise ValueError("chat_settings must contain only model and reasoning_effort.")
     settings = {**DEFAULT_CHAT_SETTINGS, **settings}
-    model, effort = settings["model"], settings["reasoning_effort"]
+    model, effort = current_model(settings["model"]), settings["reasoning_effort"]
     if model is not None and (not isinstance(model, str) or model not in CHAT_MODEL_EFFORTS):
         raise ValueError("Select a supported model or use the add-on default.")
     if effort is not None and (not isinstance(effort, str) or effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}):
         raise ValueError("Select a supported reasoning level or use the add-on default.")
+    # Only after the checks: replacing a retired model drops a level its replacement lacks.
+    settings = current_chat_settings(settings)
     resolve_chat_settings(settings, read_options())
     return settings
 
@@ -417,7 +445,7 @@ def _codex_sandbox_probe(mode: str) -> dict[str, Any]:
     if not codex:
         return {"ok": False, "error": "Codex CLI executable is unavailable."}
     try:
-        # The pinned CLI (0.157.1) takes the command directly: `codex sandbox
+        # The pinned CLI (0.160.0) takes the command directly: `codex sandbox
         # [options] -- <command>`. It has no platform subcommand, so any word
         # before `--` that is not an option is executed as the program.
         result = subprocess.run(
@@ -1671,7 +1699,7 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
         result["pinned"] = bool(task.get("pinned"))
     else:
         result = copy.deepcopy(task)
-        result["chat_settings"] = copy.deepcopy(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
+        result["chat_settings"] = current_chat_settings(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
         result["turns"] = task_turns(task)
         result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
     result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES

@@ -122,10 +122,59 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"], {"model": "gpt-5.6-terra", "reasoning_effort": "high"})
             self.assertEqual(options, {"codex_model": "gpt-5.6-terra", "model_reasoning_effort": "high"})
 
+    def test_retired_model_continues_on_the_next_model_up(self):
+        task_id = self.create()
+        self.finish(task_id)
+        server.tasks[task_id]["chat_settings"] = {"model": "gpt-5.5", "reasoning_effort": "xhigh"}
+        bumped = {"model": "gpt-5.6-sol", "reasoning_effort": "xhigh"}
+        task = self.client.get(f"/tasks/{task_id}", headers=self.headers).json["task"]
+        self.assertEqual(task["chat_settings"], bumped)
+        # Home Assistant actions continue a chat without sending its settings.
+        self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "Next"}).status_code, 200)
+        self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"], bumped)
+        self.assertEqual(server.tasks[task_id]["chat_settings"], bumped)
+        args = server.build_codex_args(task_id, self.root / "prompt", self.root / "final", self.session_id)
+        self.assertEqual(args[args.index("--model") + 1], "gpt-5.6-sol")
+        self.finish(task_id)
+        # A page that was open during the update still sends the old model.
+        response = self.post(f"/tasks/{task_id}/continue", {"message": "Again", "chat_settings": {"model": "gpt-5.5"}})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"]["model"], "gpt-5.6-sol")
+        self.finish(task_id)
+        # The add-on option keeps accepting the old model, and new chats run on the next one up.
+        with patch.object(server, "read_options", return_value={"codex_model": "gpt-5.5", "model_reasoning_effort": "high"}):
+            other = self.create("Separate chat")
+            self.assertEqual(server.tasks[other]["turns"][0]["execution_settings"], {"model": "gpt-5.6-sol", "reasoning_effort": "high"})
+            catalog = self.client.get("/chat-options", headers=self.headers).json
+            self.assertEqual(catalog["defaults"]["model"], "gpt-5.6-sol")
+            self.assertEqual(catalog["default_efforts"], ["low", "medium", "high", "xhigh", "max", "ultra"])
+
+    def test_retired_models_follow_the_chain_and_drop_an_unsupported_level(self):
+        with patch.dict(server.RETIRED_MODELS, {"older": "old-sol", "old-sol": "gpt-6-luna"}):
+            self.assertEqual(server.current_model("older"), "gpt-6-luna")
+            self.assertEqual(server.current_chat_settings({"model": "older", "reasoning_effort": "max"}),
+                             {"model": "gpt-6-luna", "reasoning_effort": "max"})
+            # Luna has no Ultra, so the chat inherits the add-on reasoning level.
+            self.assertEqual(server.current_chat_settings({"model": "old-sol", "reasoning_effort": "ultra"}),
+                             {"model": "gpt-6-luna", "reasoning_effort": None})
+        untouched = {"model": "gpt-6-astra", "reasoning_effort": "ultra"}
+        self.assertEqual(server.current_chat_settings(untouched), untouched)
+        self.assertEqual(server.current_chat_settings(server.DEFAULT_CHAT_SETTINGS), server.DEFAULT_CHAT_SETTINGS)
+
+    def test_minimal_add_on_reasoning_runs_medium_for_every_model(self):
+        for model in ("default", "gpt-6.1-sol", "gpt-5.5"):
+            options = {"codex_model": model, "model_reasoning_effort": "minimal"}
+            with self.subTest(model=model), patch.object(server, "read_options", return_value=options):
+                task_id = self.create()
+                self.assertEqual(server.tasks[task_id]["turns"][0]["execution_settings"]["reasoning_effort"], "medium")
+                args = server.build_codex_args(task_id, self.root / "prompt", self.root / "final", None)
+                self.assertIn('model_reasoning_effort="medium"', args)
+                self.finish(task_id)
+
     def test_invalid_settings_are_rejected_without_mutation(self):
         invalid = [None, [], "high", {"model": []}, {"model": "invented"},
                    {"reasoning_effort": {}}, {"reasoning_effort": "minimal"},
-                   {"model": "gpt-5.5", "reasoning_effort": "max"},
+                   {"model": "gpt-5.5", "reasoning_effort": {}}, {"model": "gpt-5.5", "reasoning_effort": "minimal"},
                    {"model": "gpt-5.6-luna", "reasoning_effort": "ultra"},
                    {"model": "gpt-6-luna", "reasoning_effort": "ultra"},
                    {"codex_sandbox": "danger-full-access"}]
@@ -153,13 +202,15 @@ class ConversationTests(unittest.TestCase):
         catalog = self.client.get("/chat-options", headers=self.headers).json
         self.assertEqual(len(catalog["models"]), 7)
         efforts = {model["id"]: model["efforts"] for model in catalog["models"]}
+        self.assertEqual(efforts["gpt-6.1-sol"], ["low", "medium", "high", "xhigh", "max", "ultra"])
         self.assertEqual(efforts["gpt-6-sol"], ["low", "medium", "high", "xhigh", "max", "ultra"])
         self.assertEqual(efforts["gpt-6-luna"], ["low", "medium", "high", "xhigh", "max"])
         self.assertNotIn("HA_TOKEN", json.dumps(catalog))
-        self.assertEqual(catalog["models"][-1]["efforts"], ["low", "medium", "high", "xhigh"])
-        with patch.object(server, "read_options", return_value={"codex_model": "gpt-6-astra", "model_reasoning_effort": "minimal"}):
-            catalog = self.client.get("/chat-options", headers=self.headers).json
-            self.assertEqual(catalog["defaults"]["reasoning_effort"], "medium")
+        self.assertNotIn("gpt-5.5", efforts)
+        for model in ("gpt-6-astra", "default"):
+            with patch.object(server, "read_options", return_value={"codex_model": model, "model_reasoning_effort": "minimal"}):
+                catalog = self.client.get("/chat-options", headers=self.headers).json
+                self.assertEqual(catalog["defaults"]["reasoning_effort"], "medium")
 
     def test_failed_settings_write_keeps_previous_selection(self):
         task_id = self.create()

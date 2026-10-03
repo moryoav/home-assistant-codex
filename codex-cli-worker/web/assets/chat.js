@@ -291,13 +291,17 @@ $("chat-picker").addEventListener("keydown", (event) => {
     options[next].focus();
   }
 });
+let optionsRequest = 0;
 /**
  * Load the models, defaults, and settings the UI needs into state.catalog and
  * update the controls. With quiet, a failed request shows no error.
  */
 async function loadChatOptions(quiet = false) {
+  // A slow answer must not replace the catalog of a request made after it.
+  const request = ++optionsRequest;
   try {
-    state.catalog = await api("chat-options");
+    const catalog = await api("chat-options");
+    if (request === optionsRequest) state.catalog = catalog;
   } catch (error) {
     if (!quiet) showError(error);
   }

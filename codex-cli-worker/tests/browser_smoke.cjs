@@ -140,6 +140,27 @@ function pngBuffer(width = 8, height = 6) {
     await page.waitForFunction(
       () => document.querySelector("#usage-weekly").textContent === "3% left",
     );
+    // The answer to an older chat options request does not replace a newer one.
+    assert.equal(
+      await page.evaluate(async () => {
+        const request = api;
+        const answers = [];
+        api = (path, ...rest) =>
+          path === "chat-options"
+            ? new Promise((resolve) => answers.push(resolve))
+            : request(path, ...rest);
+        const older = loadChatOptions(true);
+        const newer = loadChatOptions(true);
+        answers[1]({ ...state.catalog, default_model: "newer" });
+        answers[0]({ ...state.catalog, default_model: "older" });
+        await Promise.all([older, newer]);
+        const kept = state.catalog.default_model;
+        api = request;
+        await loadChatOptions(true);
+        return kept;
+      }),
+      "newer",
+    );
     // Chat actions: hovering a row reveals its menu button; pin, rename, delete.
     await page.locator('.chat-row:has([data-task-id="preview-05"])').hover();
     await page.locator('[data-menu-for="preview-05"]').click();

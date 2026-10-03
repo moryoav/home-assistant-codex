@@ -452,7 +452,7 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertEqual(server.DEFAULT_OPTIONS["codex_model"], "default")
         self.assertEqual(
             config["schema"]["codex_model"],
-            "list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
+            "list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna)",
         )
 
     def test_default_model_omits_model_argument(self) -> None:

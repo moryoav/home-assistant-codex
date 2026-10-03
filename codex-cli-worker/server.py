@@ -88,9 +88,10 @@ CHAT_MODELS = (
     ("gpt-5.6-sol", "GPT-5.6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-terra", "GPT-5.6 Terra", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-luna", "GPT-5.6 Luna", ("low", "medium", "high", "xhigh", "max")),
-    ("gpt-5.5", "GPT-5.5", ("low", "medium", "high", "xhigh")),
 )
 CHAT_MODEL_EFFORTS = {model: efforts for model, _, efforts in CHAT_MODELS}
+# Levels every model supports; the unspecified default model is limited to these.
+COMMON_EFFORTS = ("low", "medium", "high", "xhigh")
 DEFAULT_CHAT_SETTINGS = {"model": None, "reasoning_effort": None}
 
 AGENTS_MAX_BYTES = 256 * 1024
@@ -342,7 +343,7 @@ def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> 
     model = settings.get("model") or str(options.get("codex_model") or "default")
     if model == "gpt-5.3-codex":
         model = "default"
-    efforts = CHAT_MODEL_EFFORTS.get(model, ("low", "medium", "high", "xhigh"))
+    efforts = CHAT_MODEL_EFFORTS.get(model, COMMON_EFFORTS)
     effort = settings.get("reasoning_effort")
     if effort is not None and effort not in efforts:
         raise ValueError("The selected reasoning level is not supported by this model.")
@@ -354,8 +355,19 @@ def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> 
     return {"model": model, "reasoning_effort": effort}
 
 
+def saved_chat_settings(task: dict[str, Any]) -> dict[str, Any]:
+    """Return a chat's saved selections; a model that is no longer offered inherits the add-on default."""
+    settings = copy.deepcopy(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
+    if isinstance(settings, dict) and isinstance(settings.get("model"), str) and settings["model"] not in CHAT_MODEL_EFFORTS:
+        settings["model"] = None
+        # The inherited model may not support a level the removed one did.
+        if settings.get("reasoning_effort") not in COMMON_EFFORTS:
+            settings["reasoning_effort"] = None
+    return settings
+
+
 def parse_chat_settings(payload: dict[str, Any], task: dict[str, Any] | None = None) -> dict[str, Any]:
-    settings = payload.get("chat_settings", (task or {}).get("chat_settings", DEFAULT_CHAT_SETTINGS))
+    settings = payload.get("chat_settings", saved_chat_settings(task or {}))
     if not isinstance(settings, dict) or set(settings) - set(DEFAULT_CHAT_SETTINGS):
         raise ValueError("chat_settings must contain only model and reasoning_effort.")
     settings = {**DEFAULT_CHAT_SETTINGS, **settings}
@@ -1672,7 +1684,7 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
         result["pinned"] = bool(task.get("pinned"))
     else:
         result = copy.deepcopy(task)
-        result["chat_settings"] = copy.deepcopy(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
+        result["chat_settings"] = saved_chat_settings(task)
         result["turns"] = task_turns(task)
         result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
     result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES
@@ -2866,7 +2878,7 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
         execution = copy.deepcopy(turns[-1].get("execution_settings")) if turns else None
         latest_turn = copy.deepcopy(turns[-1]) if turns else {}
     if execution is None:
-        execution = resolve_chat_settings(task.get("chat_settings", DEFAULT_CHAT_SETTINGS), options)
+        execution = resolve_chat_settings(saved_chat_settings(task), options)
     images = prompt_attachment_paths(task_id, latest_turn)
     args = [CODEX_BINARY, "exec"]
     # `exec --image` is repeatable; keeping each one before another flag stops
@@ -3818,7 +3830,7 @@ def chat_options() -> Response:
         "ok": True,
         "defaults": default,
         "models": [{"id": model, "label": label, "efforts": efforts} for model, label, efforts in CHAT_MODELS],
-        "default_efforts": CHAT_MODEL_EFFORTS.get(default["model"], ("low", "medium", "high", "xhigh")),
+        "default_efforts": CHAT_MODEL_EFFORTS.get(default["model"], COMMON_EFFORTS),
         "backup_retention_days": backup_retention_days(options),
     })
 

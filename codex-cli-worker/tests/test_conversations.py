@@ -122,10 +122,26 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"], {"model": "gpt-5.6-terra", "reasoning_effort": "high"})
             self.assertEqual(options, {"codex_model": "gpt-5.6-terra", "model_reasoning_effort": "high"})
 
+    def test_saved_model_that_is_no_longer_offered_inherits_the_default(self):
+        task_id = self.create()
+        self.finish(task_id)
+        server.tasks[task_id]["chat_settings"] = {"model": "gpt-5.5", "reasoning_effort": "xhigh"}
+        task = self.client.get(f"/tasks/{task_id}", headers=self.headers).json["task"]
+        self.assertEqual(task["chat_settings"], {"model": None, "reasoning_effort": "xhigh"})
+        with patch.object(server, "read_options", return_value={"codex_model": "gpt-6.1-sol"}):
+            # Home Assistant actions continue a chat without sending its settings.
+            self.assertEqual(self.post(f"/tasks/{task_id}/continue", {"message": "Next"}).status_code, 200)
+        self.assertEqual(server.tasks[task_id]["turns"][-1]["execution_settings"], {"model": "gpt-6.1-sol", "reasoning_effort": "xhigh"})
+        self.assertEqual(server.tasks[task_id]["chat_settings"], {"model": None, "reasoning_effort": "xhigh"})
+        self.finish(task_id)
+        # A level only the removed model supported is dropped with it.
+        server.tasks[task_id]["chat_settings"] = {"model": "retired", "reasoning_effort": "ultra"}
+        self.assertEqual(server.saved_chat_settings(server.tasks[task_id]), server.DEFAULT_CHAT_SETTINGS)
+
     def test_invalid_settings_are_rejected_without_mutation(self):
         invalid = [None, [], "high", {"model": []}, {"model": "invented"},
                    {"reasoning_effort": {}}, {"reasoning_effort": "minimal"},
-                   {"model": "gpt-5.5", "reasoning_effort": "max"},
+                   {"model": "gpt-5.5"},
                    {"model": "gpt-5.6-luna", "reasoning_effort": "ultra"},
                    {"model": "gpt-6-luna", "reasoning_effort": "ultra"},
                    {"codex_sandbox": "danger-full-access"}]
@@ -151,13 +167,13 @@ class ConversationTests(unittest.TestCase):
         task_id = self.create()
         self.assertEqual(self.post(f"/tasks/{task_id}/settings", {"chat_settings": {}}).status_code, 409)
         catalog = self.client.get("/chat-options", headers=self.headers).json
-        self.assertEqual(len(catalog["models"]), 8)
+        self.assertEqual(len(catalog["models"]), 7)
         efforts = {model["id"]: model["efforts"] for model in catalog["models"]}
         self.assertEqual(efforts["gpt-6.1-sol"], ["low", "medium", "high", "xhigh", "max", "ultra"])
         self.assertEqual(efforts["gpt-6-sol"], ["low", "medium", "high", "xhigh", "max", "ultra"])
         self.assertEqual(efforts["gpt-6-luna"], ["low", "medium", "high", "xhigh", "max"])
         self.assertNotIn("HA_TOKEN", json.dumps(catalog))
-        self.assertEqual(catalog["models"][-1]["efforts"], ["low", "medium", "high", "xhigh"])
+        self.assertNotIn("gpt-5.5", efforts)
         with patch.object(server, "read_options", return_value={"codex_model": "gpt-6-astra", "model_reasoning_effort": "minimal"}):
             catalog = self.client.get("/chat-options", headers=self.headers).json
             self.assertEqual(catalog["defaults"]["reasoning_effort"], "medium")

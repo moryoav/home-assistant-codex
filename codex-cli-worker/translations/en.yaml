@@ -1,7 +1,7 @@
 configuration:
   codex_model:
     name: Codex model
-    description: Model passed to codex exec. Use default to let Codex CLI choose its recommended model, or select GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, or GPT-6 Luna, GPT-5.6 Sol, Terra, or Luna, or the GPT-5.5 fallback. Model availability depends on your account. Legacy GPT-5.3-Codex selections are treated as default for upgrade compatibility.
+    description: Model passed to codex exec. Use default to let Codex CLI choose its recommended model, or select GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, or GPT-6 Luna, or the older GPT-5.6 Sol, Terra, or Luna. Model availability depends on your account. Legacy GPT-5.3-Codex selections are treated as default for upgrade compatibility.
   model_reasoning_effort:
     name: Model reasoning effort
     description: Reasoning effort passed to codex exec for supported models. minimal is fastest; low is lighter; medium is balanced; high uses more reasoning; xhigh uses extra reasoning. For GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna, select low, medium, high, or xhigh.

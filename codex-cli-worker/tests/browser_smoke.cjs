@@ -368,15 +368,15 @@ function pngBuffer(width = 8, height = 6) {
         !document.querySelector("#effort-button").disabled,
     );
     await page.locator("#model-button").click();
-    await page.getByRole("button", { name: "GPT-5.5", exact: true }).click();
+    await page.getByRole("button", { name: "GPT-6 Luna", exact: true }).click();
     await page.waitForFunction(
       () =>
-        document.querySelector("#model-button").textContent === "GPT-5.5" &&
+        document.querySelector("#model-button").textContent === "GPT-6 Luna" &&
         !document.querySelector("#model-button").disabled,
     );
     assert.equal(await page.locator("#effort-label").textContent(), "Medium");
     await page.locator("#effort-button").click();
-    assert.equal(await page.locator("#effort-slider").getAttribute("max"), "3");
+    assert.equal(await page.locator("#effort-slider").getAttribute("max"), "4");
     await page.locator("#effort-slider").fill("2");
     await page.waitForFunction(
       () =>
@@ -677,7 +677,7 @@ function pngBuffer(width = 8, height = 6) {
         exact: true,
       })
       .waitFor();
-    assert.equal(await page.locator("#model-button").textContent(), "GPT-5.5");
+    assert.equal(await page.locator("#model-button").textContent(), "GPT-6 Luna");
     assert.equal(await page.locator("#effort-label").textContent(), "Medium");
     assert.equal(await page.locator("#scrim").isHidden(), true);
     assert.equal(

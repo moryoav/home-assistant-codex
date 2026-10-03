@@ -269,6 +269,7 @@ usage_state: dict[str, Any] = {
     "_updated_monotonic": 0.0,
     "_refreshing": False,
     "_default_model": "",
+    "_model_generation": 0,
 }
 
 
@@ -906,6 +907,13 @@ def _parse_status_model(text: str) -> str:
     return name.casefold() if name.casefold() in CHAT_MODEL_EFFORTS else name
 
 
+def forget_default_model() -> None:
+    """Forget the model the CLI named, as the account may have changed; a check still running will not restore it."""
+    with usage_lock:
+        usage_state["_model_generation"] += 1
+        usage_state["_default_model"] = ""
+
+
 def _has_rich_status_panel(text: str) -> bool:
     """Return whether the captured CLI output contains the /status panel."""
     compacted = compact_cli_text(text)
@@ -945,6 +953,8 @@ def fetch_codex_usage_status() -> dict[str, Any]:
     and "unavailable" when Codex is missing or not logged in. The model the CLI
     picks by default is remembered from the same panel.
     """
+    with usage_lock:
+        model_generation = usage_state["_model_generation"]
     if active_task_id():
         return {
             "status": "deferred",
@@ -1055,7 +1065,9 @@ def fetch_codex_usage_status() -> dict[str, Any]:
         # The probe names no model, so the panel shows the one the CLI picks itself.
         if model := _parse_status_model(status_text):
             with usage_lock:
-                usage_state["_default_model"] = model
+                # After a sign-out or sign-in during this check, the model is the previous account's.
+                if usage_state["_model_generation"] == model_generation:
+                    usage_state["_default_model"] = model
         if not parsed["five_hour_limit"] and not parsed["weekly_limit"]:
             return {
                 "status": "error",
@@ -2808,6 +2820,7 @@ def run_codex_device_login(login_id: str) -> None:
     if returncode == 0 and codex_login_status().get("status_ok"):
         update_auth_state(status="completed", completed_at=utc_now(), returncode=returncode)
         dismiss_persistent_notification(AUTH_NOTIFY_ID)
+        forget_default_model()
         notify("Codex sign-in complete", "Codex CLI is now authenticated for the Home Assistant worker.")
         refresh_usage_status_async(force=True)
     else:
@@ -2891,6 +2904,7 @@ def logout_codex() -> dict[str, Any]:
             output="",
             error="",
         )
+        forget_default_model()
         notify("Codex signed out", "Codex CLI credentials were removed from the Home Assistant worker.")
         refresh_usage_status_async(force=True)
         return {"ok": True, "message": message, "status": auth_status_payload()}

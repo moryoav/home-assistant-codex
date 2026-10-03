@@ -546,6 +546,36 @@ class UsageProcessCleanupTests(unittest.TestCase):
             self.assertEqual(server.default_model({"codex_model": "gpt-6-sol"}), "gpt-6-sol")
             self.assertEqual(server.default_model({"codex_model": "gpt-5.5"}), "gpt-5.6-sol")
 
+    def test_a_change_of_account_forgets_the_model_the_cli_picked(self) -> None:
+        """Signing out forgets the remembered model, and a usage check that was running meanwhile does not restore it."""
+        options = {"codex_model": "default"}
+        luna_panel = STATUS_PANEL.replace("GPT-6.1-Sol", "GPT-6-Luna")
+        with patch.dict(server.usage_state):
+            self.fetch_usage(return_value=luna_panel)
+            self.assertEqual(server.default_model(options), "gpt-6-luna")
+            with (
+                patch.object(server, "active_task_id", return_value=None),
+                patch.object(server.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")),
+                patch.object(server, "codex_env", return_value={}),
+                patch.object(server, "codex_login_status", return_value={"status_ok": False}),
+                patch.object(server, "dismiss_persistent_notification"),
+                patch.object(server, "notify"),
+                patch.object(server, "refresh_usage_status_async"),
+            ):
+                self.assertTrue(server.logout_codex()["ok"])
+            self.assertEqual(server.default_model(options), server.CLI_DEFAULT_MODEL)
+
+            def sign_out_during_the_check(_fd: int) -> str:
+                """Forget the model while /status is being read, then return the previous account's panel."""
+                server.forget_default_model()
+                return luna_panel
+
+            self.fetch_usage(side_effect=sign_out_during_the_check)
+            self.assertEqual(server.default_model(options), server.CLI_DEFAULT_MODEL)
+            # The next check, with the new account, is remembered again.
+            self.fetch_usage(return_value=STATUS_PANEL.replace("GPT-6.1-Sol", "GPT-6-Astra"))
+            self.assertEqual(server.default_model(options), "gpt-6-astra")
+
     def test_status_probe_answers_both_folder_trust_prompts(self) -> None:
         """The status probe accepts the folder trust prompt of CLI 0.154 and of CLI 0.157 before it sends /status."""
         prompts = {

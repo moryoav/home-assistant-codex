@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.64
+
+- **GPT-6.1 Sol can be selected.** It appears in the add-on model option and in the chat's model menu, between GPT-6 Astra and GPT-6 Sol, and supports reasoning from Low through Ultra. OpenAI describes it as close to Astra for complex work at a lower cost. GPT-6 Sol stays available as the previous version. Model availability depends on your account.
+- Update the bundled Codex CLI from 0.157.1 to 0.160.0. The CLI's built-in model list includes GPT-6.1 Sol from 0.159.1; with 0.157.1, Codex ran it on fallback metadata and ran Ultra as Medium. The `codex exec`, `codex exec resume`, `codex sandbox`, `codex login`, and `codex logout` options the worker uses are unchanged.
+- The new CLI's built-in model list recommends GPT-6.1 Sol instead of GPT-6 Astra, so chats that leave the model on **Default** may now run on GPT-6.1 Sol. Select a model explicitly to keep using a specific one.
+
+Update the **Codex CLI Worker** app to **0.1.64** to use GPT-6.1 Sol. The **Codex** integration remains at **0.1.62** and does not need an update.
+
 ## 0.1.63
 
 - **Messages start faster.** The worker used to archive the whole configuration folder before every message, which on a large configuration took longer than Codex needed to start answering. It now only records which files exist, and reads a file again only when its size or timestamps changed since the last scan.

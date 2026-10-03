@@ -848,6 +848,11 @@ def _read_pty(master_fd: int, timeout_seconds: float) -> str:
     return "".join(chunks)
 
 
+def _last_reset(matches: list[re.Match[str]]) -> str:
+    """Return the reset time of the last limit match on a line that names one, or an empty string."""
+    return next((match.group("reset") for match in reversed(matches) if match.group("reset")), "")
+
+
 def _parse_usage_output(text: str) -> dict[str, str]:
     """Extract the 5-hour and weekly limits, their reset times, and the context left from Codex CLI output."""
     cleaned = clean_cli_text(text)
@@ -862,16 +867,16 @@ def _parse_usage_output(text: str) -> dict[str, str]:
     context_percent = ""
     now = datetime.now().astimezone()
     for line in lines:
+        # The CLI's status line can follow the panel's limit on the same line. It repeats
+        # the percentage without the reset time, so the reset is taken from any match.
         if matches := list(FIVE_HOUR_RE.finditer(line)):
-            match = matches[-1]
-            five_hour_percent = match.group("percent")
-            if reset := match.group("reset"):
+            five_hour_percent = matches[-1].group("percent")
+            if reset := _last_reset(matches):
                 five_hour_reset = reset
             five_hour = f"5h {five_hour_percent}%"
         if matches := list(WEEKLY_RE.finditer(line)):
-            match = matches[-1]
-            weekly_percent = match.group("percent")
-            if reset := match.group("reset"):
+            weekly_percent = matches[-1].group("percent")
+            if reset := _last_reset(matches):
                 weekly_reset = reset
             weekly = f"weekly {weekly_percent}%"
         if matches := list(CONTEXT_RE.finditer(line)):

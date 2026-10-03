@@ -204,6 +204,7 @@ class RunTaskWiringTests(unittest.TestCase):
         self.assertEqual(task["status"], "failed")
         self.assertIn("Validation errors: Home Assistant configuration check failed: bad", task["details"])
         self.assertIn("/tasks/x/backups/automations.yaml", task["details"])
+        self.assertEqual(task["error"], "Validation errors: Home Assistant configuration check failed: bad")
         self.assertEqual(task["config_check"]["result"], "invalid")
         self.assertEqual(events[-1]["config_check"]["result"], "invalid")
         self.assertEqual(events[-1]["recovery_files"][0]["path"], "automations.yaml")

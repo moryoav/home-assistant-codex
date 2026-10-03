@@ -262,6 +262,26 @@ class SessionIdParsingTests(unittest.TestCase):
         self.assertNotEqual(task["question"], old_response["question"])
         self.assertEqual(events[-1]["status"], "failed")
 
+    def test_failed_exchange_names_the_reason_in_the_task_error(self) -> None:
+        """A task that ends as failed names the reason in its error; any other outcome leaves the error empty."""
+        stdout = json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n"
+        answer ={"status": "completed", "summary": "Edited the automation", "question": "", "details": ""}
+        cases = [
+            # Codex reports the failure itself.
+            ({**answer, "status": "failed", "summary": "The entity does not exist"}, 0, "failed", "The entity does not exist"),
+            # Codex answers and then exits with an error.
+            (answer, 1, "failed", "Codex exited with 1."),
+            # Codex exits without an answer.
+            (None, 1, "failed", "Codex exited before writing the final response file (returncode=1)."),
+            (answer, 0, "completed", ""),
+            ({**answer, "status": "needs_input", "question": "Which light?"}, 0, "waiting_for_input", ""),
+        ]
+        for final_payload, returncode, status, error in cases:
+            with self.subTest(status=status, error=error):
+                task, _events = self.run_resumed_task(stdout, final_payload=final_payload, returncode=returncode)
+                self.assertEqual(task["status"], status)
+                self.assertEqual(task["error"], error)
+
     def test_malformed_and_non_json_output_do_not_set_session_id(self) -> None:
         """Plain text, cut-off JSON and a thread id that is not a UUID leave the session id unset."""
         holder, updates = self.read_stdout(

@@ -718,7 +718,7 @@ def load_task_index() -> None:
                 task["task_id"] = task_id
                 if task.get("status") in {"queued", "running"}:
                     task["status"] = "failed"
-                    task["summary"] = "Worker restarted while this task was active."
+                    task["summary"] = task["error"] = "Worker restarted while this task was active."
                     sync_current_turn(task)
                 tasks[task_id] = task
             except Exception as exc:
@@ -731,7 +731,7 @@ def load_task_index() -> None:
             for task_id, task in loaded.items():
                 if task.get("status") in {"queued", "running"}:
                     task["status"] = "failed"
-                    task["summary"] = "Worker restarted while this task was active."
+                    task["summary"] = task["error"] = "Worker restarted while this task was active."
                 tasks.setdefault(task_id, task)
     except Exception as exc:
         print(f"Could not load task index: {exc}", flush=True)
@@ -3592,6 +3592,9 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
     finish_phase(task_id, "review")
 
+    # Why the worker turned a completed answer into a failure. A failure that
+    # already has its own summary, as a timeout or one Codex reports, needs none.
+    reason = ""
     if timed_out:
         final = {
             "status": "failed",
@@ -3600,7 +3603,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         }
     elif returncode != 0 and final.get("status") == "completed":
         final["status"] = "failed"
-        final["details"] = f"Codex exited with {returncode}. {final.get('details', '')}".strip()
+        reason = f"Codex exited with {returncode}."
+        final["details"] = f"{reason} {final.get('details', '')}".strip()
 
     status = str(final.get("status") or "failed")
     # Files the validation details already report as having no saved copy.
@@ -3609,6 +3613,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         status = "failed"
         final["status"] = "failed"
         final["details"] = validation_details(validation_errors, config_check, recovery_files)
+        reason = "Validation errors: " + "; ".join(validation_errors[:5])
         named = {entry["path"] for entry in recovery_files if entry.get("reason") == "no_backup"}
     elif config_check["result"] == "unavailable" and status == "completed":
         note = "Home Assistant could not check the configuration, so the change is applied but unverified: " + config_check["errors"]
@@ -3624,6 +3629,10 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), unsaved_note(unsaved)) if part)
     task_status = "waiting_for_input" if status == "needs_input" else status
     completed_at = utc_now() if status != "needs_input" else ""
+    # The task's error names why it failed, and is empty for every other outcome.
+    error = ""
+    if status == "failed":
+        error = redact(reason or str(final.get("summary") or final.get("details") or "Codex reported a failure."))
     session_id = (
         session_holder.get("session_id")
         or session_id
@@ -3643,6 +3652,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         summary=final.get("summary", ""),
         question=final.get("question", ""),
         details=final.get("details", ""),
+        error=error,
         changes=changes,
         validation_errors=validation_errors,
         config_check=config_check,

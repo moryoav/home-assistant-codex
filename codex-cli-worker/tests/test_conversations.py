@@ -382,7 +382,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(len(server.tasks["old"]["turns"]), 3)
 
     def test_restart_marks_current_exchange_failed(self):
-        """A worker restart marks an active task and its current exchange as failed and says why in the summary."""
+        """A worker restart marks an active task and its current exchange as failed and says why in summary and error."""
         task_id = self.create()
         server.tasks.clear()
         server.active_task_runners.clear()
@@ -390,6 +390,8 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(server.tasks[task_id]["status"], "failed")
         self.assertEqual(server.tasks[task_id]["turns"][0]["status"], "failed")
         self.assertIn("restarted", server.tasks[task_id]["turns"][0]["summary"])
+        self.assertIn("restarted", server.tasks[task_id]["error"])
+        self.assertIn("restarted", server.tasks[task_id]["turns"][0]["error"])
 
     def test_cancellation_updates_only_current_exchange(self):
         """Cancelling a continued chat marks only the current exchange as cancelled."""

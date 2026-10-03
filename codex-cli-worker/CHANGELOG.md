@@ -9,10 +9,10 @@
 - When the model such a chat follows changes to one without the chat's saved reasoning level, the chat runs Medium, as it already showed, instead of answering with an error.
 - `GET /chat-options` returns that model as `default_model`. Runs start as before: with the option on `default`, the worker names no model and Codex chooses it.
 - The task log route, `GET /tasks/<task_id>/log`, answers only for a saved task. It used to return the `codex.log` of any folder name it was given, which included the sign-in log under `auth`.
-- The **Last task** sensor's `error` attribute comes from the latest task. It was read from a field the worker status does not have.
+- **The Last task sensor's `error` attribute says why the latest task failed.** The integration read it from a field the worker status does not have, so it was always empty. It now reads the task's own error, and the worker records one for every failure: Codex reports a failure, exits with an error or times out, the changed files fail validation, or the worker restarts during the task. Before, it recorded one only when Codex could not be started. The attribute is empty when the task did not fail.
 - A worker that has no API token says so in its 503 answer, instead of pointing to the add-on options, where the token is no longer set.
 
-Update the **Codex CLI Worker** app to **0.1.67** for the quota bars and the model name. Update the **Codex** integration to **0.1.67** as well, then restart Home Assistant, for the sensor attribute.
+Update the **Codex CLI Worker** app to **0.1.67** for the quota bars and the model name. Update the **Codex** integration to **0.1.67** as well, then restart Home Assistant, for the sensor's `error` attribute.
 
 ## 0.1.66
 

@@ -8,7 +8,7 @@
 - Update the bundled Codex CLI from 0.157.1 to 0.160.0. The CLI's built-in model list includes GPT-6.1 Sol from 0.159.1; with 0.157.1, Codex ran it on fallback metadata and ran Ultra as Medium. The `codex exec`, `codex exec resume`, `codex sandbox`, `codex login`, and `codex logout` options the worker uses are unchanged.
 - The new CLI's built-in model list recommends GPT-6.1 Sol instead of GPT-6 Astra, so chats that leave the model on **Default** may now run on GPT-6.1 Sol. Select a model explicitly to keep using a specific one.
 
-Update the **Codex CLI Worker** app to **0.1.64** to use GPT-6.1 Sol. The **Codex** integration remains at **0.1.62** and does not need an update.
+Update the **Codex CLI Worker** app to **0.1.65** to use GPT-6.1 Sol. The **Codex** integration is also released as **0.1.65** so that both carry the same version; its code is unchanged.
 
 ## 0.1.64
 

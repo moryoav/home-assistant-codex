@@ -1,15 +1,20 @@
 # Codex for Home Assistant
 
-[![HACS][hacs-badge]][hacs-url] [![release][release-badge]][release-url] [![build][build-badge]][build-url] [![license][license-badge]][license-url]
+[![Release][release-badge]][release-url]
+[![HACS][hacs-badge]][hacs-url]
+[![License][license-badge]][license-url]
 
 ---
 
 ## ❤️ Help support this project
 
-If this project is useful to you, you can support its continued development:
+If this project is useful to you, you can support my work:
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y5B124NZ2L)
-<a href="https://github.com/sponsors/moryoav"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&amp;logo=githubsponsors&amp;logoColor=white" alt="Sponsor on GitHub" height="36"></a>
+<p>
+  <a href="https://ko-fi.com/Y5B124NZ2L"><img src="https://img.shields.io/badge/Support_on_Ko--fi-FF5E5B?style=for-the-badge&amp;logo=kofi&amp;logoColor=white" alt="Support on Ko-fi" height="36"></a>
+  &nbsp;
+  <a href="https://github.com/sponsors/moryoav"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&amp;logo=githubsponsors&amp;logoColor=white" alt="Sponsor on GitHub" height="36"></a>
+</p>
 
 ---
 
@@ -301,13 +306,15 @@ Use the default repository URL for stable releases:
 https://github.com/moryoav/home-assistant-codex
 ```
 
-Development and canary builds are tested on the `dev` branch before being merged to `main`:
+The `dev` branch can be used for optional worker app development and canary builds:
 
 ```text
 https://github.com/moryoav/home-assistant-codex#dev
 ```
 
-Only use the `dev` branch if you want to test changes before they are released to regular users. Stable users should stay on the default repository URL.
+The `#dev` URL applies to the worker app repository. HACS installs the
+integration from the ZIP attached to a release. To test integration changes
+from a development branch, use the manual installation instructions above.
 
 ## Publishing Images
 
@@ -320,6 +327,13 @@ ghcr.io/moryoav/codex-cli-worker
 The app `config.yaml` points at that image. Home Assistant uses the app version as the image tag.
 
 Release builds also publish the `latest` image tag. Manual workflow builds from development branches publish the app version and branch name tags, but do not move `latest`.
+
+To prepare a release, set the same version in `codex-cli-worker/config.yaml`
+and `custom_components/codex_cli/manifest.json`, and add its notes to
+`codex-cli-worker/CHANGELOG.md`. After merging and checking CI, push a
+`vX.Y.Z` tag for that commit. The release workflow validates the repository,
+attaches `codex_cli.zip`, and publishes the worker images. Release packaging
+rejects mismatched versions and missing changelog notes.
 
 ## Development Layout
 
@@ -339,11 +353,9 @@ Release builds also publish the `latest` image tag. Manual workflow builds from 
 
 [assist-screenshot]: https://raw.githubusercontent.com/moryoav/home-assistant-codex/main/examples/codex-1.JPG
 [notification-screenshot]: https://raw.githubusercontent.com/moryoav/home-assistant-codex/main/examples/codex-2.JPG
-[hacs-badge]: https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=flat-square
-[hacs-url]: https://github.com/hacs/integration
+[hacs-badge]: https://img.shields.io/badge/HACS-41BDF5.svg?style=flat-square
+[hacs-url]: #installation
 [release-badge]: https://img.shields.io/github/v/release/moryoav/home-assistant-codex?style=flat-square
-[release-url]: https://github.com/moryoav/home-assistant-codex/releases
-[build-badge]: https://img.shields.io/github/actions/workflow/status/moryoav/home-assistant-codex/build.yaml?branch=main&style=flat-square&label=build
-[build-url]: https://github.com/moryoav/home-assistant-codex/actions/workflows/build.yaml
+[release-url]: https://github.com/moryoav/home-assistant-codex/releases/latest
 [license-badge]: https://img.shields.io/github/license/moryoav/home-assistant-codex?style=flat-square
 [license-url]: https://github.com/moryoav/home-assistant-codex/blob/main/LICENSE

@@ -9,6 +9,9 @@
   --line: #e5e6e1;
   --accent: #316b57;
   --error: #ac3131;
+  --quota-track: #fff;
+  --quota-good: #0ca30c;
+  --quota-low: #d03b3b;
   --sidebar-width: 280px;
   font-family:
     Inter,
@@ -364,18 +367,41 @@ aside {
   gap: 8px;
 }
 .usage {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 18px;
-  padding: 8px 0 0 14px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px 8px;
+  padding: 9px 0 0 14px;
   font-variant-numeric: tabular-nums;
-}
-.usage > span {
-  white-space: nowrap;
 }
 .usage strong {
   color: var(--text);
   font-weight: 500;
+  text-align: right;
+  white-space: nowrap;
+}
+.usage-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--quota-track);
+  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.usage-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--quota-good);
+  transition: width 0.3s;
+}
+.usage-bar.low {
+  background: color-mix(in srgb, var(--quota-low) 22%, var(--quota-track));
+}
+.usage-bar.low span {
+  background: var(--quota-low);
+}
+.usage-bar.unknown {
+  background: transparent;
 }
 .usage-note {
   margin: 6px 0 0 14px;
@@ -1174,20 +1200,11 @@ textarea::placeholder {
 .model-option:focus-visible {
   background: var(--surface);
 }
-.model-option:first-child {
-  background: var(--surface);
-}
 .model-option-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-}
-.model-option small {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  margin-top: 3px;
 }
 .model-check {
   font-size: 15px;
@@ -1470,6 +1487,7 @@ dialog label {
     --line: #363932;
     --accent: #8cbea6;
     --error: #f4a09c;
+    --quota-track: #e7e9e2;
   }
 }
 @media (max-width: 700px) {

@@ -39,7 +39,10 @@ from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification
 
 
 class _VerificationWorker:
+    """Let the verification code reach this module's functions and state by name."""
+
     def __getattr__(self, name):
+        """Return the module global with that name, as it is at the time of the call."""
         return globals()[name]
 
 
@@ -90,6 +93,9 @@ CHAT_MODELS = (
     ("gpt-5.6-luna", "GPT-5.6 Luna", ("low", "medium", "high", "xhigh", "max")),
 )
 CHAT_MODEL_EFFORTS = {model: efforts for model, _, efforts in CHAT_MODELS}
+# The model the bundled CLI picks when none is named. The CLI refreshes its model
+# list per account, so the model its own /status names replaces this once seen.
+CLI_DEFAULT_MODEL = "gpt-6.1-sol"
 # Models that are no longer offered, each with the next model up. An add-on option
 # or a chat that still has one selected runs on the first model in that chain
 # that is still offered. The option schema keeps accepting them: Home Assistant
@@ -159,6 +165,9 @@ WEEKLY_RE = re.compile(
     r"(?P<percent>\d{1,3})%(?:\s+left)?(?:\s+\(resets\s+(?P<reset>[^)]+)\))?"
 )
 CONTEXT_RE = re.compile(r"(?i)(?<!\w)context\s+(?P<percent>\d{1,3})%\s+left\b")
+# The /status panel's own line, as in "Model:   GPT-6.1-Sol (reasoning low, summaries auto)".
+# The startup banner's lowercase "model:" is not it.
+STATUS_MODEL_RE = re.compile(r"(?<![\w.-])Model:[ \t]+(?P<model>[A-Za-z0-9][\w.-]*(?: [\w.-]+)*)(?=[ \t]*[(\n])")
 RESET_TIME_RE = re.compile(
     r"(?i)^\s*(?P<hour>\d{1,2}):(?P<minute>\d{2})"
     r"(?:\s+on\s+(?P<day>\d{1,2})\s+(?P<month>[a-z]{3,9})(?:\s+(?P<year>\d{4}))?)?\s*$"
@@ -259,6 +268,8 @@ usage_state: dict[str, Any] = {
     "error": "",
     "_updated_monotonic": 0.0,
     "_refreshing": False,
+    "_default_model": "",
+    "_model_generation": 0,
 }
 
 
@@ -287,6 +298,7 @@ class HassYamlLoader(yaml.SafeLoader):
 
 
 def _unknown_yaml(loader: yaml.Loader, tag_suffix: str, node: yaml.Node) -> Any:
+    """Load the value under a Home Assistant tag such as !include as plain data, ignoring the tag."""
     if isinstance(node, yaml.ScalarNode):
         return loader.construct_scalar(node)
     if isinstance(node, yaml.SequenceNode):
@@ -300,10 +312,12 @@ HassYamlLoader.add_multi_constructor("!", _unknown_yaml)
 
 
 def utc_now() -> str:
+    """Return the current UTC time as an ISO 8601 string, to the second."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def read_options() -> dict[str, Any]:
+    """Return the add-on options on top of the defaults; an options file that cannot be read leaves only the defaults."""
     options = dict(DEFAULT_OPTIONS)
     if OPTIONS_PATH.exists():
         try:
@@ -314,10 +328,12 @@ def read_options() -> dict[str, Any]:
 
 
 def task_root() -> Path:
+    """Return the folder under which every task keeps its files, as set in the add-on options."""
     return Path(str(read_options().get("task_root") or DEFAULT_OPTIONS["task_root"]))
 
 
 def model_reasoning_effort(options: dict[str, Any]) -> str:
+    """Return the add-on's reasoning effort, falling back to the default."""
     effort = str(options.get("model_reasoning_effort") or DEFAULT_OPTIONS["model_reasoning_effort"]).strip()
     if effort not in REASONING_EFFORTS:
         return DEFAULT_OPTIONS["model_reasoning_effort"]
@@ -348,6 +364,16 @@ def current_model(model: Any) -> Any:
     return model
 
 
+def default_model(options: dict[str, Any]) -> str:
+    """Return the model a chat runs on when it has not selected one."""
+    model = current_model(str(options.get("codex_model") or "default"))
+    if model in {"default", "gpt-5.3-codex"}:
+        # The add-on leaves the choice to the CLI.
+        with usage_lock:
+            return str(usage_state.get("_default_model") or CLI_DEFAULT_MODEL)
+    return model
+
+
 def current_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Return chat selections with a model that is no longer offered replaced by the next one up."""
     settings = copy.deepcopy(settings)
@@ -366,10 +392,17 @@ def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> 
     model = settings.get("model") or current_model(str(options.get("codex_model") or "default"))
     if model == "gpt-5.3-codex":
         model = "default"
-    efforts = CHAT_MODEL_EFFORTS.get(model, ("low", "medium", "high", "xhigh"))
+    # A run on default names no model; its levels are those of the model the CLI picks.
+    efforts = CHAT_MODEL_EFFORTS.get(
+        default_model(options) if model == "default" else model, ("low", "medium", "high", "xhigh")
+    )
     effort = settings.get("reasoning_effort")
     if effort is not None and effort not in efforts:
-        raise ValueError("The selected reasoning level is not supported by this model.")
+        if settings.get("model"):
+            raise ValueError("The selected reasoning level is not supported by this model.")
+        # The chat follows the add-on's model, which can change under a saved level.
+        # The chat then shows Medium, so the run uses it.
+        effort = "medium"
     if effort is None:
         effort = model_reasoning_effort(options)
         # The add-on level may not suit the model: none offered supports minimal, and
@@ -380,6 +413,11 @@ def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> 
 
 
 def parse_chat_settings(payload: dict[str, Any], task: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return the chat settings a request carries, or else the task's saved ones, after checking them.
+
+    A model or level of None follows the add-on default. A model that is no
+    longer offered is replaced, and an unsupported choice raises ValueError.
+    """
     settings = payload.get("chat_settings", (task or {}).get("chat_settings", DEFAULT_CHAT_SETTINGS))
     if not isinstance(settings, dict) or set(settings) - set(DEFAULT_CHAT_SETTINGS):
         raise ValueError("chat_settings must contain only model and reasoning_effort.")
@@ -578,6 +616,7 @@ def sandbox_readiness() -> dict[str, Any]:
 
 
 def api_token() -> str:
+    """Return the worker API token from its file, or from CODEX_WORKER_TOKEN when the file is missing or unreadable."""
     if WORKER_TOKEN_PATH.exists():
         try:
             return WORKER_TOKEN_PATH.read_text(encoding="utf-8").strip()
@@ -596,6 +635,7 @@ def set_api_token(token: str) -> bool:
 
 
 def read_agents_file() -> str:
+    """Return the text of /config/AGENTS.md, empty when there is none; raises ValueError when it is too large."""
     if not AGENTS_PATH.exists():
         return ""
     if AGENTS_PATH.stat().st_size > AGENTS_MAX_BYTES:
@@ -604,6 +644,7 @@ def read_agents_file() -> str:
 
 
 def write_agents_file(content: str) -> None:
+    """Write /config/AGENTS.md with a single trailing newline; raises ValueError when the content is too large."""
     encoded = content.encode("utf-8")
     if len(encoded) > AGENTS_MAX_BYTES:
         raise ValueError(f"{AGENTS_PATH} is larger than {AGENTS_MAX_BYTES} bytes")
@@ -611,6 +652,7 @@ def write_agents_file(content: str) -> None:
 
 
 def ensure_runtime_files() -> None:
+    """Create the worker's folders, make an API token if there is none, and write Codex's output schema and config."""
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     task_root().mkdir(parents=True, exist_ok=True)
@@ -649,6 +691,7 @@ def ensure_runtime_files() -> None:
 
 
 def save_task_index() -> None:
+    """Write every task, without its prompt, reply history, and turns, to the task index file while holding the lock."""
     with lock:
         slim = {
             task_id: {
@@ -662,6 +705,11 @@ def save_task_index() -> None:
 
 
 def load_task_index() -> None:
+    """Load the saved tasks into memory at startup, marking any that were still active as failed.
+
+    Each task's own task.json is read first; the task index only adds the
+    tasks that have none.
+    """
     root = task_root()
     if root.exists():
         for task_file in root.glob("*/task.json"):
@@ -671,7 +719,7 @@ def load_task_index() -> None:
                 task["task_id"] = task_id
                 if task.get("status") in {"queued", "running"}:
                     task["status"] = "failed"
-                    task["summary"] = "Worker restarted while this task was active."
+                    task["summary"] = task["error"] = "Worker restarted while this task was active."
                     sync_current_turn(task)
                 tasks[task_id] = task
             except Exception as exc:
@@ -684,13 +732,14 @@ def load_task_index() -> None:
             for task_id, task in loaded.items():
                 if task.get("status") in {"queued", "running"}:
                     task["status"] = "failed"
-                    task["summary"] = "Worker restarted while this task was active."
+                    task["summary"] = task["error"] = "Worker restarted while this task was active."
                 tasks.setdefault(task_id, task)
     except Exception as exc:
         print(f"Could not load task index: {exc}", flush=True)
 
 
 def redact(text: str) -> str:
+    """Replace Supervisor tokens, verification capabilities, and values that look like keys or tokens with [redacted]."""
     redacted = text
     for value in (os.environ.get("SUPERVISOR_TOKEN"), os.environ.get("HASSIO_TOKEN")):
         if value:
@@ -767,11 +816,13 @@ def parse_codex_reset_at(reset_text: str, now: datetime | None = None) -> str:
 
 
 def usage_status_payload() -> dict[str, Any]:
+    """Return a copy of the Codex usage state without the worker's internal fields."""
     with usage_lock:
         return {k: v for k, v in usage_state.items() if not k.startswith("_")}
 
 
 def _update_usage_state(**updates: Any) -> None:
+    """Store new values in the usage state and note when it was updated."""
     with usage_lock:
         usage_state.update(updates)
         usage_state["updated_at"] = utc_now()
@@ -779,6 +830,7 @@ def _update_usage_state(**updates: Any) -> None:
 
 
 def _read_pty(master_fd: int, timeout_seconds: float) -> str:
+    """Return what the pseudo-terminal prints until the timeout passes or the terminal closes."""
     chunks: list[str] = []
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -797,6 +849,7 @@ def _read_pty(master_fd: int, timeout_seconds: float) -> str:
 
 
 def _parse_usage_output(text: str) -> dict[str, str]:
+    """Extract the 5-hour and weekly limits, their reset times, and the context left from Codex CLI output."""
     cleaned = clean_cli_text(text)
     lines = [" ".join(line.strip().split()) for line in cleaned.splitlines() if line.strip()]
     five_hour = ""
@@ -840,7 +893,29 @@ def _parse_usage_output(text: str) -> dict[str, str]:
     }
 
 
+def _parse_status_model(text: str) -> str:
+    """Return the model the CLI's /status panel names, or an empty string.
+
+    The panel shows a display name such as GPT-6.1-Sol. A model the worker offers
+    is returned as its id, any other as the CLI names it.
+    """
+    names = STATUS_MODEL_RE.findall(clean_cli_text(text))
+    name = names[-1] if names else ""
+    # Until its session is ready the CLI shows the word "loading" there.
+    if name.casefold() == "loading":
+        return ""
+    return name.casefold() if name.casefold() in CHAT_MODEL_EFFORTS else name
+
+
+def forget_default_model() -> None:
+    """Forget the model the CLI named, as the account may have changed; a check still running will not restore it."""
+    with usage_lock:
+        usage_state["_model_generation"] += 1
+        usage_state["_default_model"] = ""
+
+
 def _has_rich_status_panel(text: str) -> bool:
+    """Return whether the captured CLI output contains the /status panel."""
     compacted = compact_cli_text(text)
     return (
         "chatgptcomcodexsettingsusage" in compacted
@@ -850,6 +925,7 @@ def _has_rich_status_panel(text: str) -> bool:
 
 
 def _capture_status_from_tui(master_fd: int) -> str:
+    """Send /status to the Codex TUI and return all it printed, accepting the folder trust prompt first if shown."""
     captured = _read_pty(master_fd, USAGE_READY_TIMEOUT_SECONDS)
 
     # First-run Codex can pause on the trust-directory screen before accepting slash commands.
@@ -871,6 +947,14 @@ def _capture_status_from_tui(master_fd: int) -> str:
 
 
 def fetch_codex_usage_status() -> dict[str, Any]:
+    """Run the Codex TUI in a pseudo-terminal, ask it for /status, and return the quota it reports.
+
+    The result is "deferred" with the last known values while a task is active,
+    and "unavailable" when Codex is missing or not logged in. The model the CLI
+    picks by default is remembered from the same panel.
+    """
+    with usage_lock:
+        model_generation = usage_state["_model_generation"]
     if active_task_id():
         return {
             "status": "deferred",
@@ -978,6 +1062,12 @@ def fetch_codex_usage_status() -> dict[str, Any]:
         except OSError:
             pass
         parsed = _parse_usage_output(status_text)
+        # The probe names no model, so the panel shows the one the CLI picks itself.
+        if model := _parse_status_model(status_text):
+            with usage_lock:
+                # After a sign-out or sign-in during this check, the model is the previous account's.
+                if usage_state["_model_generation"] == model_generation:
+                    usage_state["_default_model"] = model
         if not parsed["five_hour_limit"] and not parsed["weekly_limit"]:
             return {
                 "status": "error",
@@ -1016,6 +1106,7 @@ def fetch_codex_usage_status() -> dict[str, Any]:
 
 
 def _refresh_usage_worker(force: bool = False) -> None:
+    """Fetch and store the usage status, unless a refresh is running or, when not forced, the last one is recent."""
     with usage_lock:
         if usage_state.get("_refreshing"):
             return
@@ -1034,11 +1125,13 @@ def _refresh_usage_worker(force: bool = False) -> None:
 
 
 def refresh_usage_status_async(force: bool = False) -> None:
+    """Start a background thread that refreshes the usage status."""
     thread = threading.Thread(target=_refresh_usage_worker, args=(force,), daemon=True)
     thread.start()
 
 
 def write_task_log(task_id: str, stream: str, text: str) -> None:
+    """Append a redacted, timestamped line to the codex.log in the task's folder."""
     task_dir = get_task_dir(task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
     path = task_dir / "codex.log"
@@ -1048,6 +1141,7 @@ def write_task_log(task_id: str, stream: str, text: str) -> None:
 
 
 def get_task_dir(task_id: str) -> Path:
+    """Return the folder that holds a task's files."""
     return task_root() / task_id
 
 
@@ -1100,6 +1194,7 @@ def edited_paths(task_id: str) -> set[str]:
 
 
 def clip_activity_text(value: Any, limit: int) -> tuple[str, bool]:
+    """Return the redacted text cut to the limit, and whether it was cut."""
     text = redact(str(value or ""))
     if len(text) > limit:
         return text[:limit].rstrip() + "…", True
@@ -1113,6 +1208,7 @@ def display_command(command: str) -> str:
 
 
 def display_config_path(path: Any) -> str:
+    """Show a path under /config relative to it; any other path is returned unchanged."""
     text = str(path or "")
     prefix = CONFIG_ROOT.as_posix() + "/"
     return text[len(prefix):] if text.startswith(prefix) else text
@@ -1286,6 +1382,7 @@ def record_activity_event(task_id: str, event: Any) -> None:
 
 
 def public_activity_step(step: dict[str, Any]) -> dict[str, Any]:
+    """Return a step as the chat gets it, leaving out an empty id."""
     return {key: value for key, value in step.items() if key != "id" or value}
 
 
@@ -1303,6 +1400,7 @@ def activity_payload_locked(record: dict[str, Any], after: int = 0) -> dict[str,
 
 
 def activity_file(task_id: str, turn_id: str) -> Path:
+    """Return where an exchange's steps are saved: its turn folder, or the task folder when it has no turn id."""
     root = get_task_dir(task_id)
     return (root / "turns" / turn_id / ACTIVITY_FILE) if turn_id else (root / ACTIVITY_FILE)
 
@@ -1351,6 +1449,7 @@ def finish_activity(task_id: str) -> None:
 
 
 def load_stored_activity(task_id: str, turn_id: str) -> dict[str, Any] | None:
+    """Return the saved steps of a finished exchange, or None when there are none or the file cannot be read."""
     path = activity_file(task_id, turn_id)
     try:
         if not path.is_file():
@@ -1409,6 +1508,7 @@ def sync_current_turn(task: dict[str, Any]) -> None:
 
 
 def new_turn(message: str) -> dict[str, Any]:
+    """Return a new queued turn for a user message, with its own id."""
     return {"turn_id": uuid.uuid4().hex, "message": message, "created_at": utc_now(), "status": "queued"}
 
 
@@ -1692,6 +1792,7 @@ def find_attachment(task: dict[str, Any], attachment_id: str) -> dict[str, Any] 
 
 
 def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, Any]:
+    """Return a task as the API sends it: a short summary for lists, or the full record with its turns."""
     if summary:
         fields = ("task_id", "title", "status", "created_at", "updated_at", "summary", "question")
         result = {key: task.get(key, "") for key in fields}
@@ -1707,6 +1808,11 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
 
 
 def update_task(task_id: str, **updates: Any) -> bool:
+    """Apply changes to a task, creating it if needed, and save it to task.json and the task index.
+
+    Once cancellation was requested, nothing is changed and False is returned,
+    unless the update sets the cancelled status or clears the request.
+    """
     with lock:
         task = tasks.setdefault(task_id, {"task_id": task_id})
         if task.get("cancellation_requested") and updates.get("status") != "cancelled" and updates.get("cancellation_requested") is not False:
@@ -1790,13 +1896,15 @@ def task_cancellation_requested(task_id: str) -> bool:
 
 
 def require_auth(func):
+    """Make a route require the worker API token, except for requests that come through Home Assistant Ingress."""
     @wraps(func)
     def wrapper(*args, **kwargs):
+        """Run the route only for an Ingress request or one that carries the worker API token."""
         if is_ingress_request():
             return func(*args, **kwargs)
         expected = api_token()
         if not expected:
-            return jsonify({"ok": False, "error": "api_token is not configured in add-on options"}), 503
+            return jsonify({"ok": False, "error": "worker API token is not available"}), 503
         supplied = request.headers.get("X-Codex-Worker-Token", "")
         auth = request.headers.get("Authorization", "")
         if auth.lower().startswith("bearer "):
@@ -1840,6 +1948,7 @@ def stdin_reader() -> None:
 
 
 def _active_task_ids_locked() -> set[str]:
+    """Return the ids of tasks that are queued or running or still hold a runner or process; call with the lock held."""
     active = set(active_task_runners)
     active.update(running_processes)
     active.update(
@@ -1851,6 +1960,7 @@ def _active_task_ids_locked() -> set[str]:
 
 
 def _active_task_id_locked() -> str | None:
+    """Return the id of an active task, the first in the task list if any, or None when idle; call with the lock held."""
     active = _active_task_ids_locked()
     for task_id in tasks:
         if task_id in active:
@@ -1859,16 +1969,23 @@ def _active_task_id_locked() -> str | None:
 
 
 def active_task_id() -> str | None:
+    """Return the id of the active task, or None when the worker is idle."""
     with lock:
         return _active_task_id_locked()
 
 
 def active_task_count() -> int:
+    """Return how many tasks are active."""
     with lock:
         return len(_active_task_ids_locked())
 
 
 def should_include_file(path: Path) -> bool:
+    """Return whether a file under /config is watched for changes and may go into a snapshot.
+
+    Links, excluded folders and file types, the recorder database, and files
+    over the size limit are left out.
+    """
     try:
         rel = path.relative_to(CONFIG_ROOT)
     except ValueError:
@@ -1896,6 +2013,7 @@ def should_include_file(path: Path) -> bool:
 
 
 def file_hash(path: Path) -> str:
+    """Return the SHA-256 hex digest of a file's content."""
     hasher = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -1947,6 +2065,7 @@ def build_manifest() -> dict[str, dict[str, Any]]:
 
 
 def diff_manifests(before: dict[str, Any], after: dict[str, Any]) -> dict[str, list[str]]:
+    """Return the paths added, changed, and deleted between two manifests; changed means the hash differs."""
     before_keys = set(before)
     after_keys = set(after)
     changed = [
@@ -1996,6 +2115,7 @@ def snapshot_secret_path(relative: str) -> bool:
 
 
 def validate_changed_files(changes: dict[str, list[str]]) -> list[str]:
+    """Check that added and changed JSON, YAML, and .storage files still parse; return a message for each that fails."""
     errors: list[str] = []
     for rel in sorted(set(changes.get("added", []) + changes.get("changed", []))):
         path = CONFIG_ROOT / rel
@@ -2313,6 +2433,7 @@ def validation_details(validation_errors: list[str], config_check: dict[str, str
 
 
 def find_lovelace_dashboard_refs(changes: dict[str, list[str]]) -> list[dict[str, str]]:
+    """Return the storage dashboards among the added and changed files, with their id, URL path, and storage file."""
     refs: list[dict[str, str]] = []
     changed_paths = sorted(set(changes.get("added", []) + changes.get("changed", [])))
     registry = read_lovelace_registry()
@@ -2335,6 +2456,7 @@ def find_lovelace_dashboard_refs(changes: dict[str, list[str]]) -> list[dict[str
 
 
 def read_lovelace_registry() -> dict[str, dict[str, Any]]:
+    """Return the dashboards Home Assistant has registered, by id, or an empty dict when they cannot be read."""
     registry_path = CONFIG_ROOT / ".storage" / "lovelace_dashboards"
     if not registry_path.exists():
         return {}
@@ -2347,16 +2469,19 @@ def read_lovelace_registry() -> dict[str, dict[str, Any]]:
 
 
 def ha_token() -> str:
+    """Return the Supervisor token the worker uses for Home Assistant, or an empty string when there is none."""
     return str(os.environ.get("SUPERVISOR_TOKEN") or "")
 
 
 def ha_token_source() -> str:
+    """Return where the Home Assistant token comes from: "supervisor", or "none" when there is no token."""
     if os.environ.get("SUPERVISOR_TOKEN"):
         return "supervisor"
     return "none"
 
 
 def create_persistent_notification(title: str, message: str, notification_id: str) -> None:
+    """Create or replace a persistent notification in Home Assistant, logging a failure."""
     ok, detail = call_ha_service(
         "persistent_notification.create",
         {"title": title, "message": message, "notification_id": notification_id},
@@ -2366,16 +2491,19 @@ def create_persistent_notification(title: str, message: str, notification_id: st
 
 
 def dismiss_persistent_notification(notification_id: str) -> None:
+    """Dismiss a persistent notification in Home Assistant."""
     call_ha_service("persistent_notification.dismiss", {"notification_id": notification_id})
 
 
 def ha_base_url() -> str:
+    """Return Home Assistant's base URL: the Supervisor proxy when its token is used, otherwise the ha_url option."""
     if ha_token_source() == "supervisor":
         return "http://supervisor/core"
     return str(read_options().get("ha_url") or DEFAULT_OPTIONS["ha_url"]).rstrip("/")
 
 
 def ha_api_url(path: str) -> str:
+    """Return the Home Assistant REST API URL for a path, given with or without a leading slash or api/ prefix."""
     base = ha_base_url().rstrip("/")
     if path.startswith("/"):
         path = path[1:]
@@ -2385,6 +2513,7 @@ def ha_api_url(path: str) -> str:
 
 
 def ha_ws_url() -> str:
+    """Return the URL of Home Assistant's WebSocket API."""
     if ha_token_source() == "supervisor":
         return "ws://supervisor/core/websocket"
     parsed = urlparse(ha_api_url("websocket"))
@@ -2393,6 +2522,7 @@ def ha_ws_url() -> str:
 
 
 def call_ha_service(service: str, data: dict[str, Any]) -> tuple[bool, str]:
+    """Call a Home Assistant service, named as domain.service, and return whether it worked and the error text if not."""
     token = ha_token()
     if not token:
         return False, "No Home Assistant token available"
@@ -2423,6 +2553,7 @@ def call_ha_service(service: str, data: dict[str, Any]) -> tuple[bool, str]:
 
 
 def fire_ha_event(event_type: str, data: dict[str, Any]) -> tuple[bool, str]:
+    """Fire an event on Home Assistant's event bus and return whether it worked and the error text if not."""
     token = ha_token()
     if not token:
         return False, "No Home Assistant token available"
@@ -2445,6 +2576,7 @@ def fire_ha_event(event_type: str, data: dict[str, Any]) -> tuple[bool, str]:
 
 
 def notify(title: str, message: str) -> None:
+    """Send a notification through the configured notify service; without one, or when it fails, show a persistent one."""
     service = str(read_options().get("notify_service") or "")
     if service:
         ok, detail = call_ha_service(service, {"title": title, "message": message})
@@ -2458,6 +2590,7 @@ def notify(title: str, message: str) -> None:
 
 
 def save_lovelace_dashboard(ref: dict[str, str]) -> tuple[bool, str]:
+    """Save the config from a dashboard's storage file through Home Assistant's WebSocket API; return (ok, message)."""
     token = ha_token()
     if not token:
         return False, "No Home Assistant token available"
@@ -2501,6 +2634,7 @@ def save_lovelace_dashboard(ref: dict[str, str]) -> tuple[bool, str]:
 
 
 def codex_login_status() -> dict[str, Any]:
+    """Ask the Codex CLI whether it is logged in; return that, whether auth.json exists, and the CLI's message."""
     auth_file = CODEX_HOME / "auth.json"
     result = {"has_auth_file": auth_file.exists(), "status_ok": False, "message": ""}
     codex = codex_binary_path()
@@ -2524,6 +2658,7 @@ def codex_login_status() -> dict[str, Any]:
 
 
 def auth_status_payload() -> dict[str, Any]:
+    """Return the sign-in flow's state for the API, with whether its process is running and the Codex login status."""
     with auth_lock:
         state = dict(auth_state)
         proc = auth_process
@@ -2542,6 +2677,7 @@ def auth_status_payload() -> dict[str, Any]:
 
 
 def parse_login_output(text: str) -> dict[str, str]:
+    """Return the first URL and the first device code in `codex login` output, each empty when not found."""
     cleaned = clean_cli_text(text)
     urls = [url.rstrip(".,;") for url in URL_RE.findall(cleaned)]
     codes = DEVICE_CODE_RE.findall(cleaned)
@@ -2552,6 +2688,7 @@ def parse_login_output(text: str) -> dict[str, str]:
 
 
 def write_login_qr(login_id: str, url: str) -> str:
+    """Write a QR code for the sign-in URL as an SVG on a white background under /config/www and return its /local URL."""
     from qrcode import QRCode
     from qrcode.image.svg import SvgImage
 
@@ -2576,12 +2713,14 @@ def write_login_qr(login_id: str, url: str) -> str:
 
 
 def update_auth_state(**updates: Any) -> None:
+    """Store new values in the sign-in flow's state and note when it was updated."""
     with auth_lock:
         auth_state.update(updates)
         auth_state["updated_at"] = utc_now()
 
 
 def notify_codex_login_ready(login_id: str, url: str, code: str) -> str:
+    """Show a persistent notification with the sign-in link, its QR code, and the code if known; return the QR URL."""
     qr_url = write_login_qr(login_id, url)
     code_line = (
         f"\n\nOpenAI will ask for this code:\n\n**`{code}`**"
@@ -2602,6 +2741,7 @@ def notify_codex_login_ready(login_id: str, url: str, code: str) -> str:
 
 
 def auth_reader_thread(handle) -> None:
+    """Follow `codex login` output: log it, update the sign-in state, and notify the user when the link or code appears."""
     buffer = ""
     notified = False
     notified_code = ""
@@ -2638,6 +2778,7 @@ def auth_reader_thread(handle) -> None:
 
 
 def run_codex_device_login(login_id: str) -> None:
+    """Run `codex login --device-auth` until it exits, then record and announce whether the sign-in worked."""
     global auth_process
     codex = CODEX_BINARY
     update_auth_state(
@@ -2679,6 +2820,7 @@ def run_codex_device_login(login_id: str) -> None:
     if returncode == 0 and codex_login_status().get("status_ok"):
         update_auth_state(status="completed", completed_at=utc_now(), returncode=returncode)
         dismiss_persistent_notification(AUTH_NOTIFY_ID)
+        forget_default_model()
         notify("Codex sign-in complete", "Codex CLI is now authenticated for the Home Assistant worker.")
         refresh_usage_status_async(force=True)
     else:
@@ -2687,6 +2829,11 @@ def run_codex_device_login(login_id: str) -> None:
 
 
 def start_codex_login_flow(force: bool = False) -> dict[str, Any]:
+    """Start the device-code sign-in in a background thread and return the sign-in state.
+
+    Nothing is started when Codex is already logged in, unless forced, or when
+    a sign-in is already running.
+    """
     global auth_process
     current = codex_login_status()
     if current.get("status_ok") and not force:
@@ -2714,6 +2861,7 @@ def start_codex_login_flow(force: bool = False) -> dict[str, Any]:
 
 
 def logout_codex() -> dict[str, Any]:
+    """Stop any running sign-in, run `codex logout`, and return the outcome; refused while a task is active."""
     global auth_process
     if active_task_id():
         return {"ok": False, "error": "cannot log out while a Codex task is running", "status": auth_status_payload()}
@@ -2756,6 +2904,7 @@ def logout_codex() -> dict[str, Any]:
             output="",
             error="",
         )
+        forget_default_model()
         notify("Codex signed out", "Codex CLI credentials were removed from the Home Assistant worker.")
         refresh_usage_status_async(force=True)
         return {"ok": True, "message": message, "status": auth_status_payload()}
@@ -2764,6 +2913,7 @@ def logout_codex() -> dict[str, Any]:
 
 
 def auto_start_login_if_needed() -> None:
+    """Start the sign-in flow when Codex is not logged in; otherwise refresh the usage status if it is due."""
     status = codex_login_status()
     if status.get("status_ok"):
         update_auth_state(status="authenticated", message=status.get("message", ""))
@@ -2774,6 +2924,12 @@ def auto_start_login_if_needed() -> None:
 
 
 def codex_env() -> dict[str, str]:
+    """Return the environment Codex processes run in.
+
+    The Supervisor tokens and the verification capability are removed, HOME and
+    CODEX_HOME point into the add-on's data folder, and HA_TOKEN is set only
+    from the add-on option.
+    """
     env = dict(os.environ)
     for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_VERIFICATION_CAPABILITY"):
         env.pop(key, None)
@@ -2886,6 +3042,12 @@ def verification_mcp_args() -> list[str]:
 
 
 def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_id: str | None) -> list[str]:
+    """Return the `codex exec` command line for the task's latest turn, resuming the session when one is given.
+
+    It carries the turn's model and reasoning level, the sandbox, the output
+    files, the verification tool, and the attached images; the prompt itself
+    is read from stdin.
+    """
     options = read_options()
     with lock:
         task = tasks.get(task_id, {})
@@ -2933,6 +3095,7 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
 
 
 def reader_thread(task_id: str, stream_name: str, handle, session_holder: dict[str, str]) -> None:
+    """Copy one Codex output stream to the task log; from stdout also record the steps and the session id."""
     for line in iter(handle.readline, ""):
         if not line:
             break
@@ -2951,6 +3114,7 @@ def reader_thread(task_id: str, stream_name: str, handle, session_holder: dict[s
 
 
 def parse_final(final_file: Path, returncode: int) -> dict[str, Any]:
+    """Return Codex's final answer from its output file, or a stand-in when the file is missing or holds no JSON object."""
     if not final_file.exists():
         log_tail = ""
         log_file = final_file.parent / "codex.log"
@@ -3442,6 +3606,9 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
     finish_phase(task_id, "review")
 
+    # Why the worker turned a completed answer into a failure. A failure that
+    # already has its own summary, as a timeout or one Codex reports, needs none.
+    reason = ""
     if timed_out:
         final = {
             "status": "failed",
@@ -3450,7 +3617,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         }
     elif returncode != 0 and final.get("status") == "completed":
         final["status"] = "failed"
-        final["details"] = f"Codex exited with {returncode}. {final.get('details', '')}".strip()
+        reason = f"Codex exited with {returncode}."
+        final["details"] = f"{reason} {final.get('details', '')}".strip()
 
     status = str(final.get("status") or "failed")
     # Files the validation details already report as having no saved copy.
@@ -3459,6 +3627,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         status = "failed"
         final["status"] = "failed"
         final["details"] = validation_details(validation_errors, config_check, recovery_files)
+        reason = "Validation errors: " + "; ".join(validation_errors[:5])
         named = {entry["path"] for entry in recovery_files if entry.get("reason") == "no_backup"}
     elif config_check["result"] == "unavailable" and status == "completed":
         note = "Home Assistant could not check the configuration, so the change is applied but unverified: " + config_check["errors"]
@@ -3474,6 +3643,10 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), unsaved_note(unsaved)) if part)
     task_status = "waiting_for_input" if status == "needs_input" else status
     completed_at = utc_now() if status != "needs_input" else ""
+    # The task's error names why it failed, and is empty for every other outcome.
+    error = ""
+    if status == "failed":
+        error = redact(reason or str(final.get("summary") or final.get("details") or "Codex reported a failure."))
     session_id = (
         session_holder.get("session_id")
         or session_id
@@ -3493,6 +3666,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         summary=final.get("summary", ""),
         question=final.get("question", ""),
         details=final.get("details", ""),
+        error=error,
         changes=changes,
         validation_errors=validation_errors,
         config_check=config_check,
@@ -3681,6 +3855,10 @@ def start_background_task(
     session_id: str | None = None,
     reply: str | None = None,
 ) -> threading.Thread:
+    """Reserve the worker for a task and start the thread that runs its exchange.
+
+    Raises RuntimeError when another task is active.
+    """
     with lock:
         other_active = _active_task_ids_locked() - {task_id}
         if other_active:
@@ -3703,12 +3881,14 @@ def start_background_task(
 
 @app.get("/")
 def index() -> Response:
+    """Serve the page of the chat web UI."""
     return Response((WEB_ROOT / "index.html").read_text(encoding="utf-8"), mimetype="text/html")
 
 
 @app.get("/health")
 @require_auth
 def health() -> Response:
+    """Report whether the worker can run Codex: binary, version, login, sign-in flow, and sandbox readiness."""
     version = codex_version_status()
     sandbox = sandbox_readiness()
     return jsonify(
@@ -3729,6 +3909,7 @@ def health() -> Response:
 @app.get("/status")
 @require_auth
 def status() -> Response:
+    """Return the active and latest task, the login state, and the Codex usage; also starts a usage refresh if due."""
     refresh_usage_status_async(force=False)
     with lock:
         task_values = sorted(tasks.values(), key=lambda task: task.get("updated_at") or task.get("created_at", ""))
@@ -3751,6 +3932,7 @@ def status() -> Response:
 @app.get("/agents")
 @require_auth
 def get_agents() -> Response:
+    """Return the content of /config/AGENTS.md."""
     try:
         content = read_agents_file()
     except Exception as exc:
@@ -3768,6 +3950,7 @@ def get_agents() -> Response:
 @app.post("/agents")
 @require_auth
 def save_agents() -> Response:
+    """Replace the content of /config/AGENTS.md."""
     payload = request.get_json(silent=True) or {}
     if "content" not in payload:
         return jsonify({"ok": False, "error": "content is required"}), 400
@@ -3783,6 +3966,7 @@ def save_agents() -> Response:
 @app.post("/auth/start")
 @require_auth
 def start_auth() -> Response:
+    """Start the Codex sign-in flow and return its state; with "force" also when Codex is already logged in."""
     payload = request.get_json(silent=True) or {}
     return jsonify({"ok": True, "auth": start_codex_login_flow(bool(payload.get("force")))})
 
@@ -3790,12 +3974,14 @@ def start_auth() -> Response:
 @app.get("/auth/status")
 @require_auth
 def get_auth_status() -> Response:
+    """Return the state of the Codex sign-in flow."""
     return jsonify({"ok": True, "auth": auth_status_payload()})
 
 
 @app.post("/auth/logout")
 @require_auth
 def logout_auth() -> Response:
+    """Sign Codex out; refused with 409 while a task is active."""
     result = logout_codex()
     status_code = 200 if result.get("ok") else 409 if active_task_id() else 500
     return jsonify(result), status_code
@@ -3804,6 +3990,7 @@ def logout_auth() -> Response:
 @app.get("/tasks")
 @require_auth
 def list_tasks() -> Response:
+    """List the tasks, optionally filtered by status, in the requested order, one page at a time, or as summaries."""
     try:
         limit = int(request.args["limit"]) if "limit" in request.args else None
         offset = int(request.args.get("offset", "0"))
@@ -3841,11 +4028,14 @@ def chat_options() -> Response:
     """Return the models, defaults, and settings the web UI needs."""
     options = read_options()
     default = resolve_chat_settings(DEFAULT_CHAT_SETTINGS, options)
+    default_id = default_model(options)
     return jsonify({
         "ok": True,
         "defaults": default,
+        # The defaults' model by name, also when the add-on leaves the choice to the CLI.
+        "default_model": default_id,
         "models": [{"id": model, "label": label, "efforts": efforts} for model, label, efforts in CHAT_MODELS],
-        "default_efforts": CHAT_MODEL_EFFORTS.get(default["model"], ("low", "medium", "high", "xhigh")),
+        "default_efforts": CHAT_MODEL_EFFORTS.get(default_id, ("low", "medium", "high", "xhigh")),
         "backup_retention_days": backup_retention_days(options),
     })
 
@@ -3853,6 +4043,7 @@ def chat_options() -> Response:
 @app.post("/tasks/<task_id>/settings")
 @require_auth
 def save_chat_settings(task_id: str) -> Response:
+    """Save the model and reasoning level a chat uses for its next message; refused while its task is active."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or "chat_settings" not in payload:
         return jsonify({"ok": False, "error": "chat_settings is required"}), 400
@@ -3938,6 +4129,7 @@ def delete_task(task_id: str) -> Response:
 @app.post("/tasks")
 @require_auth
 def create_task() -> Response:
+    """Start a new chat from a prompt, with its settings and attached images; refused while another task is active."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), str):
         return jsonify({"ok": False, "error": "prompt must be text"}), 400
@@ -4000,6 +4192,7 @@ def create_task() -> Response:
 @app.get("/tasks/<task_id>")
 @require_auth
 def get_task(task_id: str) -> Response:
+    """Return one task in full, with its turns."""
     with lock:
         task = tasks.get(task_id)
         result = task_payload(task) if task else None
@@ -4011,6 +4204,14 @@ def get_task(task_id: str) -> Response:
 @app.get("/tasks/<task_id>/log")
 @require_auth
 def get_log(task_id: str) -> Response:
+    """Return the end of a task's codex.log as plain text."""
+    # Only a saved task has a log to give out: the sign-in log and any other
+    # folder that holds a codex.log are not tasks.
+    if TASK_ID_RE.fullmatch(task_id) is None:
+        return jsonify({"ok": False, "error": "task not found"}), 404
+    with lock:
+        if task_id not in tasks:
+            return jsonify({"ok": False, "error": "task not found"}), 404
     path = get_task_dir(task_id) / "codex.log"
     if not path.exists():
         return Response("", mimetype="text/plain")
@@ -4104,6 +4305,7 @@ def get_attachment(task_id: str, attachment_id: str) -> Response:
 @app.post("/tasks/<task_id>/cancel")
 @require_auth
 def cancel_task(task_id: str) -> Response:
+    """Cancel a queued or running task, stop its Codex process, and publish the cancelled result."""
     accepted, proc, error = request_task_cancellation(task_id)
     if not accepted:
         status_code = 404 if error == "task not found" else 409
@@ -4117,12 +4319,14 @@ def cancel_task(task_id: str) -> Response:
 @app.post("/tasks/<task_id>/reply")
 @require_auth
 def reply_task(task_id: str) -> Response:
+    """Answer the question of a task that is waiting for input, as a new exchange."""
     return continue_task_request(task_id, "reply", waiting_only=True)
 
 
 @app.post("/tasks/<task_id>/continue")
 @require_auth
 def continue_task(task_id: str) -> Response:
+    """Send a new message to a chat whose last exchange has ended, as a new exchange."""
     return continue_task_request(task_id, "message")
 
 

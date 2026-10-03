@@ -11,6 +11,12 @@ const dns = require('node:dns').promises;
 const {EventEmitter} = require('node:events');
 const { inspect, allowMessage, allowRequest } = require('../browser.cjs');
 
+/**
+ * Check the message and request rules, then run inspect against a fake Home
+ * Assistant: a clean dashboard over loopback and LAN HTTP, the worker's own
+ * capture, external modules, blocked writes and redirects, error cards, and
+ * failed authentication and browser launch.
+ */
 async function main() {
   assert(!allowMessage({ type: 'call_service' }));
   assert(!allowMessage({ type: 'lovelace/config/save' }));
@@ -166,10 +172,15 @@ async function main() {
     const moduleRequests = [];
     external = true;
     try {
+      /** Resolve the two fixture hosts, and no others, to a public address. */
       dns.lookup = async host => {
         assert(['registered.example.test', 'cdn.jsdelivr.net'].includes(host));
         return [{address: '8.8.8.8', family: 4}];
       };
+      /**
+       * Stand in for https.request: serve the fixture modules and fail when a
+       * request carries an Authorization or Cookie header.
+       */
       https.request = (url, options, callback) => {
         assert(modules.has(url.href), url.href);
         moduleRequests.push(url.href);

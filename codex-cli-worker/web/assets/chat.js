@@ -1,4 +1,5 @@
 "use strict";
+/** Return the page element with the given id. */
 const $ = (id) => document.getElementById(id);
 const labels = {
   queued: "Queued",
@@ -49,21 +50,46 @@ const effortDescriptions = {
   max: "Maximum reasoning for the hardest problems.",
   ultra: "Maximum reasoning with automatic task delegation.",
 };
+/**
+ * Return the model and reasoning level selected for the open chat. A null
+ * value means the chat follows the add-on setting.
+ */
 function selectedSettings() {
   return (
     state.chatSettings.get(state.id) || { model: null, reasoning_effort: null }
   );
 }
+/** The models a chat can run on, with the add-on's own model when it is not one of the usual choices. */
+function chatModels() {
+  const { models = [], default_model: id, default_efforts: efforts } =
+    state.catalog || {};
+  return !id || models.some((model) => model.id === id)
+    ? models
+    : [{ id, label: id, efforts }, ...models];
+}
+/**
+ * Return the entry of the model a chat runs on: the one it selected, or else
+ * the add-on's own model. Undefined when that model is not among the choices.
+ */
 function selectedModel(settings = selectedSettings()) {
-  return state.catalog?.models.find(
-    (model) => model.id === (settings.model || state.catalog.defaults.model),
+  return chatModels().find(
+    (model) => model.id === (settings.model || state.catalog?.default_model),
   );
 }
+/**
+ * Return the reasoning levels a chat can choose from: those of its model, or
+ * those of the add-on's model, or none before the chat options are loaded.
+ */
 function selectedEfforts(settings = selectedSettings()) {
   return (
     selectedModel(settings)?.efforts || state.catalog?.default_efforts || []
   );
 }
+/**
+ * Return the reasoning level that applies to a chat: its own selection, or
+ * else the add-on default. Falls back to medium when neither is known or the
+ * chat's model does not offer that level.
+ */
 function effectiveEffort(settings = selectedSettings()) {
   const effort =
     settings.reasoning_effort ||
@@ -73,6 +99,10 @@ function effectiveEffort(settings = selectedSettings()) {
     ? "medium"
     : effort;
 }
+/**
+ * Close the model and reasoning popovers. With focus, the button of the one
+ * that was open gets the focus back.
+ */
 function closePicker(focus = false) {
   for (const name of ["model", "effort"]) {
     if (focus && !$(name + "-popover").hidden) $(name + "-button").focus();
@@ -80,11 +110,16 @@ function closePicker(focus = false) {
     $(name + "-button").setAttribute("aria-expanded", "false");
   }
 }
+/**
+ * Fill the reasoning popover for a level, by default the one that applies to
+ * the open chat: its name and description, the model name, and the slider
+ * with one dot per level.
+ */
 function renderEffort(effort = effectiveEffort()) {
   const efforts = selectedEfforts();
   const index = Math.max(0, efforts.indexOf(effort));
   $("effort-title").textContent = effortLabels[effort] || effort;
-  $("effort-model").textContent = selectedModel()?.label || "Default model";
+  $("effort-model").textContent = modelLabel();
   $("effort-slider").max = Math.max(0, efforts.length - 1);
   $("effort-slider").value = index;
   $("effort-slider").setAttribute(
@@ -99,15 +134,20 @@ function renderEffort(effort = effectiveEffort()) {
   $("effort-description").textContent =
     effortDescriptions[effort] || "Using the add-on default reasoning level.";
 }
+/** The name of the model a chat runs on, whether it selected one or follows the add-on setting. */
+function modelLabel(settings = selectedSettings()) {
+  return selectedModel(settings)?.label || settings.model || "Model";
+}
+/**
+ * Show the open chat's model and reasoning level on the picker buttons. The
+ * picker is disabled and closed until the chat options are loaded, while the
+ * chat loads or its task is queued or running, and while a message, a stop
+ * request, or a selection is being sent.
+ */
 function renderPicker() {
   const settings = selectedSettings();
   const effort = effectiveEffort(settings);
-  $("model-button").textContent = settings.model
-    ? selectedModel(settings)?.label || settings.model
-    : "Default";
-  $("model-button").title = settings.model
-    ? "Select model"
-    : `Use add-on default: ${selectedModel(settings)?.label || "recommended model"}`;
+  $("model-button").textContent = modelLabel(settings);
   $("effort-label").textContent = effortLabels[effort] || effort;
   $("effort-button").title = settings.reasoning_effort
     ? "Select reasoning level"
@@ -128,6 +168,11 @@ function renderPicker() {
   if (disabled) closePicker();
   if (!$("effort-popover").hidden) renderEffort();
 }
+/**
+ * Store a model and reasoning selection for the open chat. A saved chat sends
+ * it to the worker and keeps what the worker returns; a new chat only holds it
+ * in state until its first message is sent. Errors show above the composer.
+ */
 async function saveSelection(settings) {
   const id = state.id;
   state.settingsBusy = true;
@@ -149,6 +194,11 @@ async function saveSelection(settings) {
     controls();
   }
 }
+/**
+ * Open the model or reasoning popover, or close it when it is already open.
+ * The model popover gets one button per model that saves the choice; the
+ * reasoning popover is filled and its slider focused.
+ */
 function openPicker(name) {
   const wasOpen = !$(name + "-popover").hidden;
   closePicker();
@@ -158,13 +208,10 @@ function openPicker(name) {
   if (name === "model") {
     const options = $("model-options");
     options.replaceChildren();
-    for (const model of [
-      { id: null, label: "Default" },
-      ...state.catalog.models,
-    ]) {
+    for (const model of chatModels()) {
       const button = textNode("button", "", "model-option");
       button.type = "button";
-      const selected = model.id === selectedSettings().model;
+      const selected = model.id === selectedModel()?.id;
       button.setAttribute("aria-pressed", String(selected));
       const title = textNode("span", "", "model-option-title");
       title.append(
@@ -172,9 +219,12 @@ function openPicker(name) {
         textNode("span", selected ? "✓" : "", "model-check"),
       );
       button.append(title);
-      if (!model.id) button.append(textNode("small", "Use add-on default"));
       button.onclick = async () => {
-        const settings = { ...selectedSettings(), model: model.id };
+        // The add-on's own model is saved as no selection, so the chat keeps following the add-on setting.
+        const settings = {
+          ...selectedSettings(),
+          model: model.id === state.catalog.default_model ? null : model.id,
+        };
         if (
           settings.reasoning_effort &&
           !selectedEfforts(settings).includes(settings.reasoning_effort)
@@ -186,7 +236,11 @@ function openPicker(name) {
       };
       options.append(button);
     }
-    options.querySelector('[aria-pressed="true"]').focus();
+    // A chat can hold a model that is no longer in the list; then none is marked.
+    (
+      options.querySelector('[aria-pressed="true"]') ||
+      options.firstElementChild
+    )?.focus();
   } else {
     renderEffort();
     $("effort-slider").focus();
@@ -237,11 +291,19 @@ $("chat-picker").addEventListener("keydown", (event) => {
     options[next].focus();
   }
 });
-async function loadChatOptions() {
+let optionsRequest = 0;
+/**
+ * Load the models, defaults, and settings the UI needs into state.catalog and
+ * update the controls. With quiet, a failed request shows no error.
+ */
+async function loadChatOptions(quiet = false) {
+  // A slow answer must not replace the catalog of a request made after it.
+  const request = ++optionsRequest;
   try {
-    state.catalog = await api("chat-options");
+    const catalog = await api("chat-options");
+    if (request === optionsRequest) state.catalog = catalog;
   } catch (error) {
-    showError(error);
+    if (!quiet) showError(error);
   }
   controls();
 }
@@ -250,7 +312,14 @@ let refreshTimer;
 let activityTimer = null;
 let usageTimer;
 let usageLoading = false;
-function renderUsage(usage = {}) {
+/**
+ * Show the quota left for the five-hour and weekly limits as a figure and a
+ * bar, with the reset time as a tooltip. A limit without a valid percentage
+ * reads Unavailable, and a note says when the quota is stale or missing.
+ */
+function renderUsage(usage) {
+  // An account can lack either limit, and the worker may have no quota data at all.
+  usage = usage || {};
   // The worker's percentages already represent quota left, not quota used.
   for (const [id, key] of [
     ["usage-five-hour", "five_hour"],
@@ -263,9 +332,15 @@ function renderUsage(usage = {}) {
         : NaN;
     const valid = Number.isFinite(percent) && percent >= 0 && percent <= 100;
     $(id).textContent = valid ? `${percent}% left` : "Unavailable";
+    // The bar is as long as the quota left, turns red below 5%, and is an outline without a value.
+    const bar = $(`${id}-bar`);
+    bar.style.width = valid ? `${percent}%` : "0";
+    bar.parentElement.classList.toggle("low", valid && percent < 5);
+    bar.parentElement.classList.toggle("unknown", !valid);
     const reset =
       dateLabel(usage[`${key}_reset_at`], true) || usage[`${key}_reset`];
-    $(id).title = valid && reset ? `Resets ${reset}` : "";
+    $(id).title = bar.parentElement.title =
+      valid && reset ? `Resets ${reset}` : "";
   }
   $("usage-note").textContent =
     usage.status === "deferred"
@@ -275,6 +350,11 @@ function renderUsage(usage = {}) {
         : "Quota is currently unavailable.";
   $("usage-note").hidden = !$("usage-note").textContent;
 }
+/**
+ * Fetch the worker status, show its quota, and reload the chat options, then
+ * schedule the next check in a minute. Nothing is fetched while the page is
+ * hidden, and a failed check shows the quota as unavailable.
+ */
 async function loadUsage() {
   if (usageLoading) return;
   usageLoading = true;
@@ -283,6 +363,9 @@ async function loadUsage() {
     if (!document.hidden) {
       const data = await api("status");
       renderUsage(data.codex_usage);
+      // The quota check also tells the worker which model Codex picks when the add-on names none.
+      // Not awaited: the quota shown must not depend on it.
+      if (state.catalog) loadChatOptions(true);
     }
   } catch (_) {
     renderUsage();
@@ -317,16 +400,22 @@ function workerError(message, status) {
   error.status = status;
   return error;
 }
+/** Create an element with the given text and optional class name. */
 function textNode(tag, text, className) {
   const node = document.createElement(tag);
   node.textContent = text || "";
   if (className) node.className = className;
   return node;
 }
+/** Show or clear the error line above the composer. */
 function showError(error) {
   $("error").textContent = error ? String(error.message || error) : "";
   $("error").hidden = !error;
 }
+/**
+ * Format a timestamp in the browser's locale as a day and month, or as a full
+ * date and time when full is set. Returns "" for a value that is not a date.
+ */
 function dateLabel(value, full = false) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -334,6 +423,11 @@ function dateLabel(value, full = false) {
     ? date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
     : date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
+/**
+ * Open or close the sidebar, which slides over the chat on narrow screens.
+ * There, whichever of the two is out of reach is made inert. Closing also
+ * closes the chat actions menu; opening moves focus to New chat.
+ */
 function sidebar(open) {
   if (!open) closeChatMenu();
   document.body.classList.toggle("sidebar-open", open);
@@ -344,10 +438,16 @@ function sidebar(open) {
     matchMedia("(max-width:700px)").matches && open;
   if (open) $("new-chat").focus();
 }
+/** Fit the height of the message box to its text, up to 180 pixels. */
 function resizeInput() {
   $("message").style.height = "auto";
   $("message").style.height = Math.min(180, $("message").scrollHeight) + "px";
 }
+/**
+ * Update the controls around the open chat from state: whether Send, Stop
+ * task, New chat, and Attach can be used, the notice above the composer, the
+ * hint below it, and the picker.
+ */
 function controls() {
   const task = state.task;
   const active =
@@ -461,6 +561,11 @@ function renderRow(chat) {
   row.append(main, actions);
   return row;
 }
+/**
+ * Redraw the sidebar chat list, under Pinned and Recent headings when any chat
+ * is pinned. Does nothing when the list is unchanged; otherwise keeps the
+ * focus and an open chat actions menu on the rows that replace the old ones.
+ */
 function renderList() {
   const signature = JSON.stringify([state.chats, state.id, menu.id]);
   if (signature === state.listSignature) return;
@@ -502,6 +607,11 @@ function renderList() {
   $("list-empty").hidden = state.chats.length > 0;
   $("load-more").hidden = state.next === null;
 }
+/**
+ * Fetch the chat list from the worker: a refresh of the chats already loaded,
+ * or the next 20 when older is set. Updates state.chats and state.active,
+ * redraws the list, and opens a new chat when the open one is gone.
+ */
 async function loadList(older = false) {
   const count = older ? 20 : Math.max(20, Math.min(500, state.chats.length));
   const offset = older ? state.chats.length : 0;
@@ -600,6 +710,10 @@ const checkLabels = {
   invalid: "Home Assistant configuration check failed",
   unavailable: "Home Assistant could not check the configuration",
 };
+/**
+ * Build the line that says how Home Assistant's configuration check went, with
+ * any errors and warnings. Returns null when there is no known result.
+ */
 function renderConfigCheck(check) {
   if (!check || !checkLabels[check.result]) return null;
   const node = textNode("div", "", `check check-${check.result}`);
@@ -627,6 +741,7 @@ function renderBackups(turn) {
   const unsaved = entries.filter((entry) =>
     ["missing", "unverified"].includes(entry.status),
   );
+  /** Word a number of files: "1 file" or "3 files". */
   const count = (list) =>
     list.length === 1 ? "1 file" : `${list.length} files`;
   const nodes = [];
@@ -689,6 +804,11 @@ function tickElapsed() {
       ? ` · ${elapsedLabel(Date.now() - activity.startedAt)}`
       : "";
 }
+/**
+ * Build the Verification section of an answer: one expandable row per check
+ * with its result, details, and findings, then the screenshots that have not
+ * expired. Returns null when the turn has no checks.
+ */
 function renderVerification(turn, taskId) {
   const checks = turn.verification || [];
   if (!checks.length) return null;
@@ -856,6 +976,7 @@ const stepIcons = {
   phase: "◦",
   other: "•",
 };
+/** Return whether the open chat's task is queued or running. */
 function taskActive() {
   return Boolean(
     state.task && ["queued", "running"].includes(state.task.status),
@@ -880,6 +1001,7 @@ function resetActivity(id) {
       }
     : null;
 }
+/** Build the empty, hidden container that renderActivity fills with steps. */
 function activityBlock() {
   const block = textNode("div", "", "activity");
   block.id = "activity";
@@ -997,6 +1119,11 @@ function renderActivity() {
   tickElapsed();
   if (nearBottom) area.scrollTop = area.scrollHeight;
 }
+/**
+ * Build one row of the step list: icon, text, and a line with a failed
+ * command's exit code, the duration, and the running state. A step with
+ * output gets a button that shows or hides it.
+ */
 function renderStep(step, activity) {
   const row = textNode("div", "", `step step-${step.kind} is-${step.status}`);
   row.append(textNode("span", stepIcons[step.kind] || "•", "step-icon"));
@@ -1036,6 +1163,11 @@ function renderStep(step, activity) {
   row.append(body);
   return row;
 }
+/**
+ * Fetch the open chat from the worker into state.task and draw it; force
+ * redraws it even when nothing changed. A response that arrives after another
+ * chat was opened is dropped.
+ */
 async function fetchSelected(force = false) {
   const id = state.id;
   const generation = state.generation;
@@ -1572,6 +1704,7 @@ async function addUploads(fileList) {
   // The batch belongs to the draft it was picked in. Switching chats swaps
   // state.files for another list, so every step below works on this one.
   const target = state.files;
+  /** Redraw the pending images and controls if this draft is still open. */
   const sync = () => {
     if (target !== state.files) return;
     renderPending();
@@ -1760,6 +1893,10 @@ $("cancel").onclick = async () => {
     controls();
   }
 };
+/**
+ * Set the sidebar width in pixels, kept between 220 and 440 and leaving 360
+ * for the chat when the window allows, and remember it for the next visit.
+ */
 function setWidth(value) {
   const width = Math.max(
     220,
@@ -1805,6 +1942,11 @@ window.addEventListener("resize", () => {
   if (innerWidth > 700) setWidth($("divider").getAttribute("aria-valuenow"));
 });
 let loginTimer;
+/**
+ * Show the ChatGPT sign-in status in the settings dialog, with the sign-in
+ * code, link, and QR code when the worker provides them. Checks again every
+ * three seconds as long as the dialog is open and the sign-in is pending.
+ */
 async function loadLogin() {
   clearTimeout(loginTimer);
   const { auth } = await api("auth/status");
@@ -1835,6 +1977,7 @@ async function loadLogin() {
   )
     loginTimer = setTimeout(() => loadLogin().catch(settingsError), 3000);
 }
+/** Show an error in the result line of the settings dialog. */
 function settingsError(error) {
   $("settings-result").textContent = String(error.message || error);
 }

@@ -34,6 +34,11 @@ def normalize_proc_error(stderr: bytes) -> bytes:
 
 
 def main() -> int:
+    """Run the real bwrap with all capabilities dropped and return its exit status, normalizing stderr only on failure.
+
+    SIGHUP, SIGINT, SIGQUIT and SIGTERM are passed on to the child while it runs, and a child killed by a
+    signal makes this helper die by the same signal.
+    """
     # Keep inherited descriptors: Codex can pass descriptor-backed mounts.
     # stdout/stdin stay inherited; only the known probe's stderr is captured.
     with subprocess.Popen(
@@ -44,6 +49,7 @@ def main() -> int:
         previous_handlers = {}
 
         def forward_signal(signum: int, _frame: object) -> None:
+            """Pass a signal this helper received on to the bwrap child."""
             child.send_signal(signum)
 
         for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):

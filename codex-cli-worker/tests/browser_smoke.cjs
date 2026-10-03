@@ -13,11 +13,13 @@ function pngBuffer(width = 8, height = 6) {
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     return c >>> 0;
   });
+  /** Return the CRC-32 checksum that a PNG chunk carries. */
   const crc = (buf) => {
     let c = 0xffffffff;
     for (const b of buf) c = table[(c ^ b) & 0xff] ^ (c >>> 8);
     return (c ^ 0xffffffff) >>> 0;
   };
+  /** Build one PNG chunk: length, tag, data, and checksum. */
   const chunk = (tag, data) => {
     const len = Buffer.alloc(4);
     len.writeUInt32BE(data.length);
@@ -64,6 +66,100 @@ function pngBuffer(width = 8, height = 6) {
     await page.getByRole("button", { name: "Load older chats" }).click();
     await page.waitForFunction(
       () => document.querySelectorAll(".chat-row").length === 25,
+    );
+    // The quota left is a bar next to its figure: green, and red below 5%.
+    await page.waitForFunction(
+      () => document.querySelector("#usage-weekly").textContent === "3% left",
+    );
+    assert.deepEqual(
+      await page.evaluate(() =>
+        ["usage-five-hour", "usage-weekly"].map((id) => {
+          const fill = document.getElementById(`${id}-bar`);
+          return [
+            document.getElementById(id).textContent,
+            fill.style.width,
+            fill.parentElement.className,
+            getComputedStyle(fill).backgroundColor,
+            fill.parentElement.title,
+          ];
+        }),
+      ),
+      [
+        ["64% left", "64%", "usage-bar", "rgb(12, 163, 12)", "Resets 19:20"],
+        [
+          "3% left",
+          "3%",
+          "usage-bar low",
+          "rgb(208, 59, 59)",
+          "Resets 12:00 on 8 Oct",
+        ],
+      ],
+    );
+    // An account can lack either limit, or both. A missing one reads Unavailable
+    // with an empty outline instead of an empty quota, and the other keeps its bar.
+    /**
+     * Render a quota payload in the page and return, for each limit, the text
+     * shown, the bar width, and the bar's classes.
+     */
+    const quotaRows = (usage) =>
+      page.evaluate((value) => {
+        renderUsage(value);
+        return ["usage-five-hour", "usage-weekly"].map((id) => {
+          const fill = document.getElementById(`${id}-bar`);
+          return [
+            document.getElementById(id).textContent,
+            fill.style.width,
+            fill.parentElement.className,
+          ];
+        });
+      }, usage);
+    const missing = ["Unavailable", "0px", "usage-bar unknown"];
+    assert.deepEqual(await quotaRows({ status: "ok", weekly_percent: "87" }), [
+      missing,
+      ["87% left", "87%", "usage-bar"],
+    ]);
+    assert.equal(await page.locator("#usage-note").isHidden(), true);
+    assert.deepEqual(
+      await quotaRows({ status: "ok", five_hour_percent: "2", weekly_percent: "" }),
+      [["2% left", "2%", "usage-bar low"], missing],
+    );
+    // Neither limit, values that are not percentages, and no quota data at all.
+    for (const usage of [
+      {},
+      { status: "error", five_hour_percent: "n/a", weekly_percent: 140 },
+      { status: "ok", five_hour_percent: null, weekly_percent: -1 },
+      null,
+    ]) {
+      assert.deepEqual(await quotaRows(usage), [missing, missing]);
+      assert.equal(
+        await page.locator("#usage-note").textContent(),
+        usage?.status === "ok" ? "" : "Quota is currently unavailable.",
+      );
+    }
+    await page.evaluate(() => loadUsage());
+    await page.waitForFunction(
+      () => document.querySelector("#usage-weekly").textContent === "3% left",
+    );
+    // The answer to an older chat options request does not replace a newer one.
+    assert.equal(
+      await page.evaluate(async () => {
+        const request = api;
+        const answers = [];
+        api = (path, ...rest) =>
+          path === "chat-options"
+            ? new Promise((resolve) => answers.push(resolve))
+            : request(path, ...rest);
+        const older = loadChatOptions(true);
+        const newer = loadChatOptions(true);
+        answers[1]({ ...state.catalog, default_model: "newer" });
+        answers[0]({ ...state.catalog, default_model: "older" });
+        await Promise.all([older, newer]);
+        const kept = state.catalog.default_model;
+        api = request;
+        await loadChatOptions(true);
+        return kept;
+      }),
+      "newer",
     );
     // Chat actions: hovering a row reveals its menu button; pin, rename, delete.
     await page.locator('.chat-row:has([data-task-id="preview-05"])').hover();
@@ -364,6 +460,7 @@ function pngBuffer(width = 8, height = 6) {
       await page.locator("#activity .step-phase .step-text").first().textContent(),
       "Noting the current state of your configuration files",
     );
+    /** Return the seconds on the step list timer, checking its format. */
     const elapsedSeconds = async () => {
       const text = await page
         .locator("#activity .activity-toggle .elapsed")
@@ -452,6 +549,23 @@ function pngBuffer(width = 8, height = 6) {
         document.querySelector("#effort-label").textContent === "Ultra" &&
         !document.querySelector("#effort-button").disabled,
     );
+    // Choosing the model the add-on runs anyway clears the chat's own selection.
+    await page.locator("#model-button").click();
+    await page
+      .getByRole("button", { name: "GPT-6.1 Sol", exact: true })
+      .click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#model-button").textContent === "GPT-6.1 Sol" &&
+        !document.querySelector("#model-button").disabled,
+    );
+    assert.deepEqual(
+      await page.evaluate(
+        async () =>
+          (await (await fetch("tasks/preview-00")).json()).task.chat_settings,
+      ),
+      { model: null, reasoning_effort: "ultra" },
+    );
     await page.locator("#model-button").click();
     await page.getByRole("button", { name: "GPT-6 Luna", exact: true }).click();
     await page.waitForFunction(
@@ -503,8 +617,44 @@ function pngBuffer(width = 8, height = 6) {
     });
     await page.getByRole("button", { name: "New chat", exact: false }).click();
     assert.equal(await page.locator(".answer").count(), 0);
-    assert.equal(await page.locator("#model-button").textContent(), "Default");
+    // A chat that holds a model no longer in the list can still open the menu:
+    // the button shows the id, no row is marked, and the first row has the focus.
+    await page.evaluate(() => {
+      state.chatSettings.set(null, { model: "gone", reasoning_effort: null });
+      controls();
+    });
+    assert.equal(await page.locator("#model-button").textContent(), "gone");
     await page.locator("#model-button").click();
+    assert.equal(
+      await page.locator('#model-options [aria-pressed="true"]').count(),
+      0,
+    );
+    assert.equal(
+      await page.evaluate(() => document.activeElement.textContent),
+      "GPT-6 Astra",
+    );
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => {
+      state.chatSettings.delete(null);
+      controls();
+    });
+    // A new chat names the model it runs on, and the menu marks that model.
+    assert.equal(
+      await page.locator("#model-button").textContent(),
+      "GPT-6.1 Sol",
+    );
+    await page.locator("#model-button").click();
+    assert.deepEqual(
+      await page
+        .locator("#model-options .model-option")
+        .evaluateAll((options) =>
+          options
+            .filter((option) => option.getAttribute("aria-pressed") === "true")
+            .map((option) => option.textContent),
+        ),
+      ["GPT-6.1 Sol✓"],
+    );
+    assert.equal(await page.locator("#model-options .model-option").count(), 7);
     await page
       .getByRole("button", { name: "GPT-5.6 Luna", exact: true })
       .click();
@@ -684,11 +834,13 @@ function pngBuffer(width = 8, height = 6) {
       window.__restoreBitmap = () => {
         window.createImageBitmap = original;
       };
+      /** Hold each decode back until the test releases it. */
       window.createImageBitmap = (...args) =>
         new Promise((resolve) => {
           window.__bitmapGates.push(() => resolve(original(...args)));
         });
     });
+    /** Wait for a held-back image decode and let it go ahead. */
     const releaseDecode = async () => {
       await page.waitForFunction(() => window.__bitmapGates.length > 0);
       await page.evaluate(() => window.__bitmapGates.shift()());
@@ -933,6 +1085,7 @@ function pngBuffer(width = 8, height = 6) {
       () => document.querySelector("#sidebar").getBoundingClientRect().x >= 0,
     );
     const input = await touch.newCDPSession(phone);
+    /** Touch the middle of the preview-01 chat row for hold milliseconds. */
     const press = async (hold) => {
       const row = phone.locator('[data-task-id="preview-01"]');
       await row.scrollIntoViewIfNeeded();
@@ -1001,7 +1154,7 @@ function pngBuffer(width = 8, height = 6) {
     await webview.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, the model a chat runs on by name, quota bars, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

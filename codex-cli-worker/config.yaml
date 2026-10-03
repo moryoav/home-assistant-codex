@@ -35,6 +35,7 @@ options:
   backup_retention_days: 7
   browser_verification: true
   browser_memory_limit_mib: 1536
+  ha_actions: reload_and_automations
   ha_url: http://supervisor/core
 schema:
   codex_model: list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)
@@ -50,5 +51,6 @@ schema:
   backup_retention_days: int(1,365)
   browser_verification: bool
   browser_memory_limit_mib: int(512,8192)
+  ha_actions: list(off|reload_and_automations|all_services)
   ha_url: str
   HA_TOKEN: password?

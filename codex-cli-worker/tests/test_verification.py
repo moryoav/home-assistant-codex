@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from test_server import server
-from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, MAX_BROWSERS, Verification
+from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, MAX_ACTIONS, MAX_BROWSERS, Verification
 from verification import browser_memory_limit, browser_process_memory, kill_tracked_processes, track_browser_processes
 
 
@@ -45,7 +45,7 @@ class VerificationTests(unittest.TestCase):
         """Reject a wrong or ended capability and refuse operations outside the supported set."""
         with self.assertRaises(ValueError):
             self.engine.dispatch({"capability": "wrong", "operation": "entity"})
-        result = self.engine.dispatch({"capability": self.capability, "operation": "call_service"})
+        result = self.engine.dispatch({"capability": self.capability, "operation": "restart_host"})
         self.assertEqual(result["status"], "unavailable")
         self.engine.end("chat")
         with self.assertRaises(ValueError):
@@ -96,6 +96,156 @@ class VerificationTests(unittest.TestCase):
             result = self.engine.run("chat", {"operation": "logs", "target": "core_mosquitto"})
         self.assertEqual(result["status"], "unavailable")
         core.assert_not_called()
+
+    def act(self, **request):
+        """Run one act request for the chat's turn and return its result."""
+        return self.engine.run("chat", request)
+
+    def test_default_level_reloads_and_switches_automations_only(self):
+        """At the default level reloads and automation.turn_on/turn_off reach Home Assistant; anything else is refused."""
+        with patch.object(self.engine, "call_service", return_value="") as call:
+            allowed = [
+                self.act(operation="reload"),
+                self.act(operation="reload", domain="automation"),
+                self.act(operation="call_service", service="automation.turn_off", entity_id=["automation.locker"]),
+                self.act(operation="call_service", service="automation.turn_on", entity_id="automation.school"),
+                self.act(operation="call_service", service="script.reload"),
+            ]
+            refused = [
+                self.act(operation="call_service", service="light.turn_on", entity_id=["light.kitchen"]),
+                self.act(operation="call_service", service="automation.trigger", entity_id=["automation.locker"]),
+                # Only automations, and nothing but their entity ids.
+                self.act(operation="call_service", service="automation.turn_off", entity_id=["light.kitchen"]),
+                self.act(operation="call_service", service="automation.turn_off"),
+                self.act(operation="call_service", service="automation.turn_off", entity_id=["automation.locker"],
+                         data='{"stop_actions": false}'),
+                self.act(operation="call_service", service="automation.reload", data='{"entity_id": "all"}'),
+            ]
+        self.assertEqual([result["status"] for result in allowed], ["done"] * 5)
+        self.assertEqual([result["status"] for result in refused], ["refused"] * 6)
+        self.assertEqual([call_.args for call_ in call.call_args_list], [
+            ("homeassistant.reload_all", {}),
+            ("automation.reload", {}),
+            ("automation.turn_off", {"entity_id": ["automation.locker"]}),
+            ("automation.turn_on", {"entity_id": ["automation.school"]}),
+            ("script.reload", {}),
+        ])
+        self.assertIn("all_services", refused[0]["message"])
+        # Every action, also a refused one, is recorded on the turn with what it targeted.
+        recorded = server.tasks["chat"]["turns"][0]["verification"]
+        self.assertEqual(len(recorded), 11)
+        self.assertEqual({key: recorded[2][key] for key in ("operation", "service", "entity_id", "status")},
+                         {"operation": "call_service", "service": "automation.turn_off",
+                          "entity_id": ["automation.locker"], "status": "done"})
+        self.assertEqual(recorded[5]["status"], "refused")
+
+    def test_all_services_level_calls_any_service_with_its_data(self):
+        """At the all_services level any service is called, with its data and entity ids merged."""
+        self.options["ha_actions"] = "all_services"
+        with patch.object(self.engine, "call_service", return_value="") as call:
+            light = self.act(operation="call_service", service="light.turn_on", entity_id=["light.kitchen"],
+                             data='{"brightness_pct": 40}')
+            restart = self.act(operation="call_service", service="homeassistant.restart")
+        self.assertEqual([light["status"], restart["status"]], ["done", "done"])
+        self.assertEqual([call_.args for call_ in call.call_args_list], [
+            ("light.turn_on", {"brightness_pct": 40, "entity_id": ["light.kitchen"]}),
+            ("homeassistant.restart", {}),
+        ])
+        # The service data itself is not kept with the result.
+        self.assertNotIn("brightness_pct", json.dumps(server.tasks["chat"]["verification"]))
+
+    def test_actions_are_refused_when_turned_off_or_read_only(self):
+        """With the option off, and in read-only mode at any level, no action reaches Home Assistant."""
+        cases = ({"ha_actions": "off"}, {"ha_actions": "all_services", "codex_sandbox": "read-only"},
+                 {"codex_sandbox": "read-only"})
+        for options in cases:
+            with self.subTest(options=options), patch.dict(self.options, options), \
+                 patch.object(self.engine, "call_service") as call:
+                self.assertEqual(self.act(operation="reload", domain="automation")["status"], "refused")
+                self.assertEqual(self.act(operation="call_service", service="automation.turn_off",
+                                          entity_id=["automation.locker"])["status"], "refused")
+                call.assert_not_called()
+        # An unknown value in the option counts as the default level, not as everything.
+        with patch.dict(self.options, {"ha_actions": "everything"}), patch.object(self.engine, "call_service", return_value=""):
+            self.assertEqual(self.act(operation="reload")["status"], "done")
+            self.assertEqual(self.act(operation="call_service", service="light.turn_on",
+                                      entity_id=["light.kitchen"])["status"], "refused")
+
+    def test_rejected_and_malformed_actions_are_reported_not_retried(self):
+        """A call Home Assistant rejects is a failed action with its reason; a malformed request never reaches it."""
+        self.options["ha_actions"] = "all_services"
+        with patch.object(self.engine, "call_service", return_value="Home Assistant returned HTTP 400: Service not found") as call:
+            result = self.act(operation="reload", domain="nonsense")
+        self.assertEqual((result["status"], result["message"]), ("failed", "Home Assistant returned HTTP 400: Service not found"))
+        call.assert_called_once_with("nonsense.reload", {})
+        malformed = (
+            {"operation": "reload", "domain": "automation.reload"},
+            {"operation": "reload", "domain": "automation", "entity_id": ["automation.x"]},
+            {"operation": "call_service"},
+            {"operation": "call_service", "service": "light"},
+            {"operation": "call_service", "service": "light.turn_on", "url": "http://example.test"},
+            {"operation": "call_service", "service": "light.turn_on", "entity_id": ["Light.Kitchen"]},
+            {"operation": "call_service", "service": "light.turn_on", "entity_id": [f"light.l{n}" for n in range(21)]},
+            {"operation": "call_service", "service": "light.turn_on", "data": "[1, 2]"},
+            {"operation": "call_service", "service": "light.turn_on", "data": "not json"},
+            {"operation": "call_service", "service": "notify.notify", "data": json.dumps({"message": "x" * 9000})},
+        )
+        with patch.object(self.engine, "call_service") as call:
+            for request in malformed:
+                with self.subTest(request=request):
+                    result = self.engine.run("chat", request)
+                    self.assertEqual(result["status"], "unavailable")
+                    self.assertTrue(result["message"].startswith("Action could not finish: "))
+            call.assert_not_called()
+
+    def test_actions_are_limited_per_turn(self):
+        """A turn gets a bounded number of actions; the next one is not sent to Home Assistant."""
+        with patch.object(self.engine, "call_service", return_value="") as call:
+            for _ in range(MAX_ACTIONS):
+                self.assertEqual(self.act(operation="reload", domain="automation")["status"], "done")
+            extra = self.act(operation="reload", domain="automation")
+        self.assertEqual(extra["status"], "unavailable")
+        self.assertIn("Action limit", extra["message"])
+        self.assertEqual(call.call_count, MAX_ACTIONS)
+
+    def test_service_calls_go_through_the_supervisor_proxy_with_the_worker_token(self):
+        """A service call is posted to the Supervisor's Core proxy with the worker's token, and Core's reason is kept."""
+        class Response:
+            """A canned HTTP answer that works as a context manager, like a streamed requests response."""
+
+            def __init__(self, status_code, body=b""):
+                """Hold the status code and body the answer carries."""
+                self.status_code, self.body = status_code, body
+
+            def __enter__(self):
+                """Return the answer itself."""
+                return self
+
+            def __exit__(self, *_exc):
+                """Close nothing; there is no connection."""
+                return False
+
+            def iter_content(self, _size):
+                """Yield the body in one piece."""
+                yield self.body
+
+        answers = [Response(200, b"[]"), Response(400, b'{"message": "Service light.fly not found."}'), Response(502, b"<html>")]
+        with patch.object(server, "ha_token", return_value="supervisor-token"), \
+             patch("verification.requests.post", side_effect=answers) as post:
+            self.assertEqual(self.engine.call_service("automation.reload", {}), "")
+            self.assertEqual(self.engine.call_service("light.fly", {"entity_id": ["light.kitchen"]}),
+                             "Home Assistant returned HTTP 400: Service light.fly not found.")
+            self.assertEqual(self.engine.call_service("light.turn_on", {}), "Home Assistant returned HTTP 502")
+        first = post.call_args_list[0]
+        self.assertEqual(first.args, ("http://supervisor/core/api/services/automation/reload",))
+        self.assertEqual(first.kwargs["headers"], {"Authorization": "Bearer supervisor-token"})
+        self.assertIs(first.kwargs["allow_redirects"], False)
+        self.assertEqual(post.call_args_list[1].kwargs["json"], {"entity_id": ["light.kitchen"]})
+        # Without a token nothing is sent, and the action is reported as not done.
+        with patch.object(server, "ha_token", return_value=""), patch("verification.requests.post") as post:
+            result = self.act(operation="reload")
+        self.assertEqual(result["status"], "unavailable")
+        post.assert_not_called()
 
     def test_dashboard_readback_compares_configuration_not_save_ack(self):
         """Fail the readback when the dashboard Home Assistant returns differs from the expected configuration."""

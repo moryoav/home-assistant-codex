@@ -409,6 +409,24 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("CURRENT_MESSAGE", prompt)
         self.assertNotIn("ORIGINAL_REQUEST", prompt)
 
+    def test_prompt_tells_codex_how_to_act_and_what_the_app_allows(self):
+        """The prompt explains the act tool and states what the app's Home Assistant actions option allows."""
+        prompt = server.build_prompt("Disable the locker automation", "task")
+        self.assertIn('{"operation":"reload","domain":"automation"}', prompt)
+        self.assertIn('{"operation":"call_service","service":"automation.turn_off","entity_id":["automation.kitchen_lights"]}', prompt)
+        self.assertIn("needs no token, URL, or network access", prompt)
+        self.assertIn("The app allows reloads, and automation.turn_on and automation.turn_off", prompt)
+        expected = {
+            ("off", "workspace-write"): "option is off, so the worker refuses every act request",
+            ("all_services", "workspace-write"): "The app allows reloads and any service call",
+            ("all_services", "read-only"): "read-only mode, so the worker refuses every act request",
+            ("not a level", "danger-full-access"): "The app allows reloads, and automation.turn_on and automation.turn_off",
+        }
+        for (level, sandbox), sentence in expected.items():
+            with self.subTest(level=level, sandbox=sandbox), \
+                 patch.object(server, "read_options", return_value={"ha_actions": level, "codex_sandbox": sandbox}):
+                self.assertIn(sentence, server.build_prompt("Reload", "task"))
+
     def test_runs_keep_separate_artifacts_and_changes(self):
         """Each exchange keeps Codex's output in its own folder and records only its own file changes."""
         task_id = self.create()

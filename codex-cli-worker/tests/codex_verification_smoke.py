@@ -16,15 +16,21 @@ from server import verification_mcp_args
 
 
 def main():
-    """Run the pinned CLI in both sandbox modes: the shell cannot reach the verification socket, the MCP tool can."""
+    """Run the pinned CLI in both sandbox modes: the shell cannot reach the verification socket, the MCP tools can.
+
+    The verify tool reads an entity in both modes. The act tool reloads in workspace-write and is refused in read-only.
+    """
     binary = os.environ.get("HA_TEST_CODEX", "/usr/local/bin/codex")
     assert "0.160.0" in subprocess.check_output([binary, "--version"], text=True)
     with tempfile.TemporaryDirectory(prefix="ha-mcp-test-") as root:
         root = Path(root)
         checks = []
+        calls = []
+        sandbox = {"mode": ""}
         worker = SimpleNamespace(
             lock=threading.RLock(), tasks={"task": {"status": "running", "current_turn_id": "turn"}},
             task_cancellation_requested=lambda _: False, utc_now=lambda: "fixture", redact=lambda value: value,
+            read_options=lambda: {"codex_sandbox": sandbox["mode"]},
         )
         def update(task_id, **fields):
             """Apply the fields to the fixture task and collect the verification checks among them."""
@@ -34,20 +40,22 @@ def main():
         engine = Verification(worker)
         engine.capabilities["task"] = "fixture-capability"
         engine.core = lambda *_args, **_kwargs: {"state": "on", "attributes": {}}
+        engine.call_service = lambda service, data: calls.append((service, data)) or ""
         path = str(root / "verification.sock")
         service = engine.serve(path)
         received = []
 
         class Provider(BaseHTTPRequestHandler):
-            """Fixture model provider that requests one verify call and then gives the final answer."""
+            """Fixture model provider that requests one tool call and then gives the final answer."""
 
             def log_message(self, *_args):
                 """Keep request logging out of the smoke test's output."""
                 pass
 
             def do_POST(self):
-                """Stream a verify tool call for each odd model request and the final message for each even one.
+                """Stream a tool call for each odd model request and the final message for each even one.
 
+                The call is to act when the prompt carries the ACT_FIXTURE marker, otherwise to verify.
                 Prewarm requests get an empty completion and are not counted.
                 """
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -60,11 +68,16 @@ def main():
                 received.append(request)
                 if len(received) % 2:
                     namespace = next((tool for tool in request["tools"] if tool.get("name") == "mcp__home_assistant"), None)
-                    if not namespace or not any(tool.get("name") == "verify" for tool in namespace["tools"]):
-                        self.send_error(400, "Verification tool missing")
+                    names = {tool.get("name") for tool in namespace["tools"]} if namespace else set()
+                    if not {"verify", "act"} <= names:
+                        self.send_error(400, "Home Assistant tools missing")
                         return
-                    item = {"type": "function_call", "call_id": "call_fixture", "namespace": namespace["name"], "name": "verify",
-                            "arguments": json.dumps({"operation": "entity", "entity_id": "light.kitchen", "expected_state": "on"})}
+                    if "ACT_FIXTURE" in json.dumps(request["input"]):
+                        name, arguments = "act", {"operation": "reload", "domain": "automation"}
+                    else:
+                        name, arguments = "verify", {"operation": "entity", "entity_id": "light.kitchen", "expected_state": "on"}
+                    item = {"type": "function_call", "call_id": "call_fixture", "namespace": namespace["name"], "name": name,
+                            "arguments": json.dumps(arguments)}
                 else:
                     item = {"type": "message", "role": "assistant", "status": "completed",
                             "content": [{"type": "output_text", "text": "Verified", "annotations": []}]}
@@ -84,6 +97,7 @@ def main():
         threading.Thread(target=provider.serve_forever, daemon=True).start()
         try:
             for mode in ("workspace-write", "read-only"):
+                sandbox["mode"] = mode
                 home = root / mode
                 home.mkdir()
                 environment = {key: os.environ[key] for key in ("PATH", "LD_LIBRARY_PATH") if key in os.environ}
@@ -101,15 +115,28 @@ def main():
                         "-c", 'model_providers.fixture.requires_openai_auth=false',
                         "-c", 'check_for_update_on_startup=false',
                         *verification_mcp_args(),
-                        "-c", 'mcp_servers.home_assistant.env.HA_VERIFICATION_SOCKET=' + json.dumps(path),
-                        "Check the kitchen light with the verification tool."]
-                result = subprocess.run(args, cwd=root, env=environment, capture_output=True, text=True, timeout=90)
+                        "-c", 'mcp_servers.home_assistant.env.HA_VERIFICATION_SOCKET=' + json.dumps(path)]
+                result = subprocess.run([*args, "Check the kitchen light with the verification tool."],
+                                        cwd=root, env=environment, capture_output=True, text=True, timeout=90)
                 assert result.returncode == 0, (result.stdout, result.stderr)
                 assert "Fresh entity state" in json.dumps(received[-1]["input"]), (result.stdout, result.stderr)
                 assert checks and checks[-1]["status"] == "passed", (result.stdout, result.stderr)
                 assert len(received) % 2 == 0, received
-            assert len(received) == 4
-            print("Pinned CLI verification passed: shell sockets denied, MCP checks work in workspace-write and read-only.")
+                # The act tool is approved for the non-interactive run too; the worker decides what it does.
+                before = len(calls)
+                result = subprocess.run([*args, "ACT_FIXTURE Reload the automations with the act tool."],
+                                        cwd=root, env=environment, capture_output=True, text=True, timeout=90)
+                assert result.returncode == 0, (result.stdout, result.stderr)
+                assert len(received) % 2 == 0, received
+                if mode == "read-only":
+                    assert checks[-1]["status"] == "refused" and len(calls) == before, (checks[-1], calls)
+                    assert "read-only mode" in json.dumps(received[-1]["input"]), (result.stdout, result.stderr)
+                else:
+                    assert checks[-1]["status"] == "done" and calls[before:] == [("automation.reload", {})], (checks[-1], calls)
+                    assert "accepted the call" in json.dumps(received[-1]["input"]), (result.stdout, result.stderr)
+            assert len(received) == 8
+            print("Pinned CLI verification passed: shell sockets denied, MCP checks work in workspace-write and "
+                  "read-only, and the act tool reloads in workspace-write and is refused in read-only.")
         finally:
             service.shutdown()
             service.server_close()

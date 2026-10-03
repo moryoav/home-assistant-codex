@@ -1,4 +1,4 @@
-"""Stdio MCP bridge for task-scoped checks outside the shell network sandbox."""
+"""Stdio MCP bridge for task-scoped checks and actions outside the shell network sandbox."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ import os
 import socket
 import sys
 
-TOOL = {
+VERIFY_TOOL = {
     "name": "verify",
     "description": (
         "Check Home Assistant configuration, fresh entity state, Core logs, or dashboard configuration. "
@@ -26,18 +26,42 @@ TOOL = {
         "required": ["operation"],
     },
 }
+ACT_TOOL = {
+    "name": "act",
+    "description": (
+        "Make Home Assistant reload YAML configuration or call a service, through the worker. "
+        "The app's Home Assistant actions option decides what is allowed; a refused or failed action "
+        "says why in its result. Act only on what the user asked for, then verify with a fresh readback. "
+        "No arbitrary URLs and no access to other apps."
+    ),
+    "inputSchema": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "operation": {"type": "string", "enum": ["reload", "call_service"]},
+            "domain": {"type": "string", "description": "For reload: the domain to reload, for example automation. "
+                                                         "Omit it to reload all YAML configuration."},
+            "service": {"type": "string", "description": "For call_service: domain.service, for example automation.turn_off"},
+            "entity_id": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+            "data": {"type": "string", "description": "For call_service: other service data as a JSON object in text, "
+                                                       "for example {\"brightness_pct\": 40}"},
+        },
+        "required": ["operation"],
+    },
+}
+TOOLS = {tool["name"]: tool for tool in (VERIFY_TOOL, ACT_TOOL)}
 
 
-def verify(arguments):
-    """Forward only the supported fields and the process's temporary capability."""
-    if not isinstance(arguments, dict) or set(arguments) - set(TOOL["inputSchema"]["properties"]):
-        raise ValueError("Unsupported verification arguments")
-    if arguments.get("operation") not in TOOL["inputSchema"]["properties"]["operation"]["enum"]:
-        raise ValueError("Unsupported verification operation")
+def forward(tool, arguments):
+    """Send a tool's supported fields and the process's temporary capability to the worker, and return its answer."""
+    schema = tool["inputSchema"]["properties"]
+    if not isinstance(arguments, dict) or set(arguments) - set(schema):
+        raise ValueError("Unsupported arguments")
+    if arguments.get("operation") not in schema["operation"]["enum"]:
+        raise ValueError("Unsupported operation")
     payload = {**arguments, "capability": os.environ.get("HA_VERIFICATION_CAPABILITY", "")}
     encoded = json.dumps(payload).encode() + b"\n"
     if len(encoded) > 16384:
-        raise ValueError("Verification request is too large")
+        raise ValueError("Request is too large")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(230)
         client.connect(os.environ.get("HA_VERIFICATION_SOCKET", "/data/verification.sock"))
@@ -45,12 +69,12 @@ def verify(arguments):
         with client.makefile("rb") as response:
             raw = response.readline(128 * 1024 + 1)
     if not raw or len(raw) > 128 * 1024:
-        raise ValueError("Invalid verification response")
+        raise ValueError("Invalid response")
     return json.loads(raw)
 
 
 def respond(request):
-    """Implement the MCP initialization, discovery and single-tool request surface."""
+    """Implement the MCP initialization, discovery and tool request surface."""
     method = request.get("method")
     if method == "initialize":
         return {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
@@ -58,15 +82,16 @@ def respond(request):
     if method == "ping":
         return {}
     if method == "tools/list":
-        return {"tools": [TOOL]}
+        return {"tools": list(TOOLS.values())}
     if method == "tools/call":
         params = request.get("params", {})
         try:
-            if params.get("name") != TOOL["name"]:
-                raise ValueError("Unknown verification tool")
-            result = verify(params.get("arguments", {}))
+            tool = TOOLS.get(params.get("name"))
+            if tool is None:
+                raise ValueError("Unknown tool")
+            result = forward(tool, params.get("arguments", {}))
         except (OSError, ValueError, TypeError):
-            result = {"status": "unavailable", "message": "Verification request failed or the task has ended"}
+            result = {"status": "unavailable", "message": "The request failed or the task has ended"}
         return {"content": [{"type": "text", "text": json.dumps(result)}],
                 "isError": result.get("status") == "unavailable"}
     raise ValueError("Method not found")

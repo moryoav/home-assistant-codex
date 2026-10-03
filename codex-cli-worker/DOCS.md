@@ -102,6 +102,22 @@ Dashboard auto-save skips storage files that failed validation and reports the s
 
 The chat shows the outcome under the answer: a passing check as a short confirmation, a failing check with Home Assistant's error, and an unavailable check as a note. `GET /tasks/<task_id>`, `codex_cli.get_task`, and the `codex_cli_task_result` event carry `config_check` with `result` (`valid`, `invalid`, `unavailable`, `skipped` when no YAML changed or syntax already failed, or `disabled`), `errors`, and `warnings`, and `recovery_files` with `path` and `copy` per affected file. An entry without a copy has a `reason` of `no_backup` or `excluded_credentials`, unless the task created the file. A configuration check does not prove that an automation behaves as intended; it only confirms Home Assistant would load the configuration.
 
+## Home Assistant actions
+
+From **0.1.68**, Codex can make Home Assistant load and apply a change you asked for, without a token and in every sandbox mode except `read-only`. The worker makes the call itself, through the Core API access the app already has. Codex only asks for it, with the `act` tool of the worker's `home_assistant` tool server. Before this, a YAML edit stayed unloaded until you reloaded it, unless you had set `HA_TOKEN` and Codex's shell had network access.
+
+The **Home Assistant actions** option (`ha_actions`) sets what is allowed:
+
+- `reload_and_automations` (default): reload YAML configuration, either one domain such as `automation` or everything Home Assistant can reload without a restart, and turn automations on or off (`automation.turn_on` and `automation.turn_off`, for automation entities only).
+- `all_services`: also any other service call, with its service data. This lets Codex operate lights, locks, covers, and scripts, and restart Home Assistant, so choose it only if you want that. Text in a file or on a web page that Codex reads could then lead to a real action.
+- `off`: no action. Codex only changes files, as before 0.1.68.
+
+A turn can make at most 12 actions, one at a time. Every action, also a refused or a failed one, is listed under the answer as **Home Assistant actions**, with the service, the entities it named, and what happened. It is also in the turn's `verification` list in the task API, `codex_cli.get_task`, and the `codex_cli_task_result` event, with `operation` `reload` or `call_service`, the `service`, any `entity_id`, and a `status` of `done`, `refused`, `failed`, or `unavailable`. The service data itself is not stored. An accepted call is not a verified outcome, so Codex is told to read the affected state back.
+
+When changed YAML passes Home Assistant's configuration check but no reload went through the worker in that exchange, the details say so, and you can reload or restart yourself. When an action was refused, failed, or could not run, the details point to it.
+
+`HA_TOKEN` is not needed for any of this. It still works as before for tasks that call Home Assistant APIs directly.
+
 ## Backups
 
 From **0.1.63**, the worker no longer archives the whole configuration folder before every message. On a large configuration that archive took longer than Codex needed to start answering, and one archive was kept per message forever.

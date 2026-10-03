@@ -35,7 +35,8 @@ from flask import Flask, Response, jsonify, request, send_file
 
 # Also support the existing importlib-based test harness.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification
+from verification import ACTION_OPERATIONS, DEFAULT_ACTION_LEVEL, DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification
+from verification import action_level, is_reload_service
 
 
 class _VerificationWorker:
@@ -74,6 +75,7 @@ DEFAULT_OPTIONS = {
     "backup_retention_days": 7,
     "browser_verification": True,
     "browser_memory_limit_mib": DEFAULT_BROWSER_MEMORY_LIMIT_MIB,
+    "ha_actions": DEFAULT_ACTION_LEVEL,
     "ha_url": "http://supervisor/core",
     "HA_TOKEN": "",
 }
@@ -3010,11 +3012,33 @@ def backup_instructions(backup_dir: Path | None) -> str:
     )
 
 
+def action_instructions(options: dict[str, Any]) -> str:
+    """Tell Codex how to reload and switch things in Home Assistant through the worker, and what the app allows."""
+    level = action_level(options)
+    if options.get("codex_sandbox") == "read-only":
+        allowed = "This task runs in read-only mode, so the worker refuses every act request."
+    elif level == "off":
+        allowed = "The app's Home Assistant actions option is off, so the worker refuses every act request."
+    elif level == "all_services":
+        allowed = 'The app allows reloads and any service call; pass other service data as JSON text in "data".'
+    else:
+        allowed = ("The app allows reloads, and automation.turn_on and automation.turn_off for automation entities. "
+                   "The worker refuses any other service.")
+    return f"""Use the home_assistant MCP act tool to make Home Assistant load or apply what the user asked for, with these argument examples:
+  {{"operation":"reload","domain":"automation"}}
+  {{"operation":"reload"}}
+  {{"operation":"call_service","service":"automation.turn_off","entity_id":["automation.kitchen_lights"]}}
+A reload without a domain reloads all YAML configuration that Home Assistant can reload without a restart. The act tool runs through the worker, so it needs no token, URL, or network access; prefer it over calling the Home Assistant API from the shell. {allowed}
+Act only on what the user asked for. After a YAML change that the user wants to take effect, reload the affected domain, then confirm with a fresh entity readback; an accepted call is not a verified outcome. When an action is refused or fails, or a change needs a Home Assistant restart, say so in the summary and name what the user still has to do. Every action is shown to the user with this exchange.
+"""
+
+
 def build_prompt(user_prompt: str, task_id: str, reply: str | None = None, backup_dir: Path | None = None) -> str:
     """Write the instructions Codex gets for one message, including where to save its backups."""
     current_request = reply if reply is not None else user_prompt
     attached = attached_image_note(task_id)
     backups = backup_instructions(backup_dir)
+    actions = action_instructions(read_options())
     return f"""You are Codex running as a Home Assistant add-on worker.
 
 Workspace: /config
@@ -3032,10 +3056,11 @@ Use the home_assistant MCP verify tool for authenticated Home Assistant checks, 
   {{"operation":"logs"}}
   {{"operation":"dashboard","path":"/lovelace/0"}}
   {{"operation":"dashboard_readback","path":"/lovelace/0"}}
-The MCP tool runs through the worker outside the shell network sandbox. Do not attempt verification through a shell socket command or enable network access. Logs are limited to Core.
-Use fresh entity readback after any user-authorized reload or change. These tools do not perform reloads or device actions. Only perform those when authorized by the user. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
+The MCP tools run through the worker outside the shell network sandbox. Do not attempt verification through a shell socket command or enable network access. Logs are limited to Core.
+Use fresh entity readback after any user-authorized reload or change. The verify tool does not perform reloads or device actions; the act tool below does. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
 After an authorized storage-dashboard edit, add "save_pending":true to the dashboard request to have the worker save that turn's pending dashboard edit and verify API readback before capturing it. This requires auto_save_lovelace to be enabled. Without save_pending, the browser inspects only the dashboard currently loaded in Home Assistant.
 
+{actions}
 At the end, return only an object matching the provided JSON schema:
 - status: "completed", "needs_input", or "failed"
 - summary: concise result
@@ -3057,6 +3082,7 @@ def verification_mcp_args() -> list[str]:
         "startup_timeout_sec": 10,
         "tool_timeout_sec": 240,
         "tools.verify.approval_mode": "approve",
+        "tools.act.approval_mode": "approve",
     }
     args = []
     for name, value in settings.items():
@@ -3423,6 +3449,12 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
         )
 
 
+NOT_RELOADED_NOTE = (
+    "The changed YAML files are saved and valid, but were not reloaded through the worker in this exchange. "
+    "If Home Assistant has not picked the change up yet, reload its YAML configuration or restart it."
+)
+
+
 def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: str | None = None) -> None:
     """Run one exchange: record the configuration, launch Codex, then check and report what it changed."""
     if task_cancellation_requested(task_id):
@@ -3656,11 +3688,21 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         note = "Home Assistant could not check the configuration, so the change is applied but unverified: " + config_check["errors"]
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
 
-    checks = tasks.get(task_id, {}).get("verification") or []
+    evidence = tasks.get(task_id, {}).get("verification") or []
+    checks = [entry for entry in evidence if entry.get("operation") not in ACTION_OPERATIONS]
+    actions = [entry for entry in evidence if entry.get("operation") in ACTION_OPERATIONS]
     incomplete = sum(check.get("status") in {"failed", "issues", "unavailable"} for check in checks)
     if incomplete:
         note = f"Verification needs review: {incomplete} check(s) failed, found issues, or could not run. See the evidence below."
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
+    undone = sum(action.get("status") != "done" for action in actions)
+    if undone:
+        note = f"Home Assistant actions need review: {undone} action(s) were refused, failed, or could not run. See the evidence below."
+        final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
+    reloaded = any(action.get("status") == "done" and is_reload_service(str(action.get("service"))) for action in actions)
+    if status == "completed" and config_check["result"] == "valid" and not reloaded and yaml_config_changes(changes):
+        # The files are valid but nothing made Home Assistant read them again through the worker.
+        final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), NOT_RELOADED_NOTE) if part)
     unsaved =[entry["path"] for entry in backups if entry["status"] in {"missing", "unverified"} and entry["path"] not in named]
     if unsaved:
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), unsaved_note(unsaved)) if part)

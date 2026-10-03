@@ -16,6 +16,15 @@ External servers still see the host's public IP and resource URL. Installed cust
 cards remain trusted code with access to dashboard data. Service calls and writes
 stay blocked during verification. See [resource policy and limits](codex-cli-worker/VERIFICATION.md#dashboard-resources).
 
+Codex can ask the worker to act on the running Home Assistant. By default the
+worker accepts reloads of YAML configuration and turning automations on or off;
+the `ha_actions` option widens this to any service call or turns it off. The
+worker makes the call with its own Supervisor token, which never enters the
+Codex process, and records every request on the exchange, including refused
+ones. With `all_services`, text that Codex reads in a file or on a web page can
+lead to a real action, so choose that level deliberately. Actions are refused in
+read-only mode. See [actions](codex-cli-worker/VERIFICATION.md#actions).
+
 ## Supported Versions
 
 Security fixes are intended for the latest published release and the current `main` branch.

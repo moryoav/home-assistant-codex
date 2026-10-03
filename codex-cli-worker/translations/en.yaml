@@ -41,6 +41,9 @@ configuration:
   browser_memory_limit_mib:
     name: Browser memory limit (MiB)
     description: Memory budget for dashboard screenshots, from 512 to 8192 MiB. Default is 1536 MiB (1.5 GiB). Increase it for larger dashboards if your system has enough free memory for Home Assistant and other apps. This sets a limit for browser captures; it does not reserve RAM or limit the whole app.
+  ha_actions:
+    name: Home Assistant actions
+    description: What Codex may do in the running Home Assistant through the app, without a token. reload_and_automations (default) lets it reload YAML configuration and turn automations on or off, so a change you asked for takes effect. all_services also lets it call any other service, such as lights, locks, covers, scripts, and restarts; choose it only if you want Codex to operate your home. off allows none of this, and Codex only changes files. Every action is listed with the answer. Actions are always refused in read-only mode.
   HA_TOKEN:
     name: HA_TOKEN
     description: Optional Home Assistant token exposed to Codex subprocesses as the HA_TOKEN environment variable.

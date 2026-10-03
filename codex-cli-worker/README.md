@@ -12,6 +12,10 @@ Browser sign-in is automatic and uses a temporary, local, read-only identity. Up
 
 For setup, security notes, and action examples, see the [repository README](https://github.com/moryoav/home-assistant-codex/blob/main/README.md) and [app documentation](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md).
 
+## Applying changes
+
+After a change you asked for, Codex can reload the YAML configuration and turn automations on or off, so the change takes effect without a manual reload. The app makes these calls itself, so no token is needed. The **Home Assistant actions** option can widen this to any service call or turn it off, and every action is listed under the answer. See [Home Assistant actions](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#home-assistant-actions).
+
 ## Conversations
 
 Open an existing chat to continue with its saved Codex context, or choose **New chat** for a separate conversation. Account controls and workspace instructions are under **Settings**.

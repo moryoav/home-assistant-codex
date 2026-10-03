@@ -176,6 +176,12 @@ def main():
             if index == 1:
                 extra["config_check"] = {"result": "valid", "errors": "", "warnings": ""}
                 extra["verification"] = [
+                    # What the worker did in Home Assistant for Codex: a reload it made and a service call it refused.
+                    {"operation": "reload", "status": "done", "service": "automation.reload", "checked_at": "2026-09-19T10:00:00+00:00",
+                     "message": "Home Assistant accepted the call. This does not verify the outcome; read the affected state back."},
+                    {"operation": "call_service", "status": "refused", "service": "light.turn_on", "entity_id": ["light.kitchen"],
+                     "message": "The app's Home Assistant actions option allows reloads and turning automations on or off. "
+                                "Anything else needs the all_services level."},
                     {"operation": "entity", "status": "passed", "entity_id": "sensor.energy", "state": "42", "expected_state": "42",
                      "message": "Fresh entity state readback.", "attributes": {"unit_of_measurement": "kWh"}},
                     {"operation": "dashboard", "status": "issues", "path": "/lovelace/energy",

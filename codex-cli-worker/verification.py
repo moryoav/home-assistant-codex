@@ -1,4 +1,4 @@
-"""Bounded HA diagnostics and browser evidence, owned by the worker, not the model."""
+"""Bounded HA diagnostics, browser evidence and actions, owned by the worker, not the model."""
 from __future__ import annotations
 
 import hmac
@@ -21,15 +21,30 @@ import websocket
 
 MAX_CHECKS = 24
 MAX_BROWSERS = 4
+MAX_ACTIONS = 12
+MAX_ACTION_ENTITIES = 20
+ACTION_DATA_MAX_BYTES = 8000
+ACTION_OPERATIONS = ("reload", "call_service")
+# The levels of the app's ha_actions option, from nothing to everything.
+ACTION_LEVELS = ("off", "reload_and_automations", "all_services")
+DEFAULT_ACTION_LEVEL = "reload_and_automations"
+# Services that only make Home Assistant read its YAML configuration again.
+RELOAD_SERVICES = frozenset({
+    "homeassistant.reload_all", "homeassistant.reload_core_config",
+    "homeassistant.reload_custom_templates", "frontend.reload_themes",
+})
+# What the default level allows besides reloads: turning automations on and off.
+AUTOMATION_SWITCH_SERVICES = frozenset({"automation.turn_on", "automation.turn_off"})
 DEFAULT_BROWSER_MEMORY_LIMIT_MIB = 1536
 SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024
 RETENTION_SECONDS = 7 * 24 * 3600
 ENTITY_RE = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
+DOMAIN_RE = re.compile(r"[a-z0-9_]+")
 PATH_RE = re.compile(r"/[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?/?")
 
 
 class Verification:
-    """Run the bounded checks a running task may request with its capability, and record them on its current turn."""
+    """Run the bounded checks and actions a running task may request with its capability, and record them on its turn."""
 
     def __init__(self, worker):
         """Keep the worker that provides tasks, options and Home Assistant access; no capability is issued yet."""
@@ -130,10 +145,10 @@ class Verification:
         raise ValueError("Home Assistant did not return a result")
 
     def run(self, task_id, payload, capability=None):
-        """Run one check for the task's current turn and add its redacted result to the turn's verification list.
+        """Run one check or action for the task's current turn and add its redacted result to the turn's verification list.
 
         Returns an "unavailable" result instead of raising when another check is running, the capability
-        has expired, the turn's check limit is reached, or the operation fails.
+        has expired, the turn's check or action limit is reached, or the operation fails.
         """
         # One inspection at a time, even if the agent launches parallel commands.
         if not self.execution_lock.acquire(blocking=False):
@@ -169,12 +184,18 @@ class Verification:
                     entry.update(self.browser(task_id, payload, turn_id, capability))
                 elif operation == "dashboard_readback":
                     entry.update(self.dashboard_readback(payload))
+                elif operation in ACTION_OPERATIONS:
+                    if sum(item.get("operation") in ACTION_OPERATIONS for item in entries) >= MAX_ACTIONS:
+                        raise ValueError("Action limit reached for this turn")
+                    entry.update(self.action(payload))
                 else:
-                    raise ValueError("Supported operations: entity, config_check, logs, dashboard, dashboard_readback")
+                    raise ValueError("Supported operations: entity, config_check, logs, dashboard, "
+                                     "dashboard_readback, reload, call_service")
             except Exception as exc:
                 # Do not persist network exception URLs, tokens, or response bodies.
                 detail = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else type(exc).__name__
-                entry.update(status="unavailable", message=f"Verification could not finish: {detail[:200]}")
+                kind = "Action" if operation in ACTION_OPERATIONS else "Verification"
+                entry.update(status="unavailable", message=f"{kind} could not finish: {detail[:200]}")
             entry = json.loads(self.worker.redact(json.dumps(entry)))
             with self.worker.lock:
                 if self.active(task_id, turn_id, capability):
@@ -205,6 +226,53 @@ class Verification:
                 "entity_id": entity_id, "state": state.get("state"), "expected_state": expected,
                 "attributes": attributes, "last_updated": state.get("last_updated"),
                 "message": "Fresh entity state readback. This does not verify automation triggers, conditions, or actions."}
+
+    def action(self, payload):
+        """Reload YAML configuration or call a service in Home Assistant, within the app's ha_actions option.
+
+        The result has status "done" when Home Assistant accepted the call, "failed" when it rejected it,
+        and "refused" when the option, read-only mode or the request itself rules the call out. A request
+        that is not well formed raises ValueError.
+        """
+        service, data = action_request(payload)
+        entry = {"service": service}
+        if data.get("entity_id"):
+            entry["entity_id"] = data["entity_id"]
+        options = self.worker.read_options()
+        refusal = action_refusal(service, data, action_level(options), options.get("codex_sandbox") == "read-only")
+        if refusal:
+            return {**entry, "status": "refused", "message": refusal}
+        rejection = self.call_service(service, data)
+        if rejection:
+            return {**entry, "status": "failed", "message": rejection}
+        return {**entry, "status": "done", "message":
+                "Home Assistant accepted the call. This does not verify the outcome; read the affected state back."}
+
+    def call_service(self, service, data):
+        """Post one service call to Core through the Supervisor proxy.
+
+        Returns an empty string when Core accepted it, otherwise the HTTP status with Core's own reason.
+        Raises ValueError when no token is available.
+        """
+        token = self.worker.ha_token()
+        if not token:
+            raise ValueError("Home Assistant authentication is unavailable")
+        domain, name = service.split(".", 1)
+        # The automatic token belongs to the Supervisor proxy, never a supplied URL.
+        url = f"http://supervisor/core/api/services/{domain}/{name}"
+        with requests.post(url, headers={"Authorization": f"Bearer {token}"}, json=data, timeout=60,
+                           allow_redirects=False, stream=True) as response:
+            if response.status_code == 200:
+                # The answer lists every state the call changed; none of it is needed.
+                return ""
+            reason = ""
+            try:
+                body = json.loads(next(response.iter_content(4096), b""))
+                if isinstance(body, dict) and isinstance(body.get("message"), str):
+                    reason = ": " + body["message"][:200]
+            except (ValueError, requests.RequestException):
+                pass
+            return f"Home Assistant returned HTTP {response.status_code}{reason}"
 
     def dashboard_readback(self, payload):
         """Read a dashboard's configuration from Core and compare it with expected_config when one is given."""
@@ -419,6 +487,79 @@ class Verification:
         os.chmod(path, 0o600)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server
+
+
+def action_level(options):
+    """Return the app's ha_actions level, or the default when the option is missing or not a known level."""
+    level = options.get("ha_actions", DEFAULT_ACTION_LEVEL)
+    return level if level in ACTION_LEVELS else DEFAULT_ACTION_LEVEL
+
+
+def is_reload_service(service):
+    """Whether a service only makes Home Assistant read its YAML configuration again."""
+    return service in RELOAD_SERVICES or service.endswith(".reload")
+
+
+def action_request(payload):
+    """Return the service and the service data an act request asks for; raise ValueError when it is not well formed.
+
+    A reload names a domain, or none for all YAML configuration. A service call names a service, and may
+    carry entity ids and a data object, which the tool sends as JSON text.
+    """
+    if payload.get("operation") == "reload":
+        if set(payload) - {"operation", "domain"}:
+            raise ValueError("A reload accepts only a domain")
+        domain = payload.get("domain")
+        if domain is None:
+            return "homeassistant.reload_all", {}
+        if not isinstance(domain, str) or not DOMAIN_RE.fullmatch(domain):
+            raise ValueError("Invalid domain")
+        return f"{domain}.reload", {}
+    if set(payload) - {"operation", "service", "entity_id", "data"}:
+        raise ValueError("A service call accepts a service, entity_id and data")
+    service = payload.get("service", "")
+    if not isinstance(service, str) or not ENTITY_RE.fullmatch(service):
+        raise ValueError("Name the service as domain.service")
+    data = payload.get("data") or {}
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            data = None
+    if not isinstance(data, dict):
+        raise ValueError("data must be a JSON object")
+    entities = payload.get("entity_id")
+    if entities is not None:
+        entities = [entities] if isinstance(entities, str) else entities
+        if (not isinstance(entities, list) or not 0 < len(entities) <= MAX_ACTION_ENTITIES
+                or any(not isinstance(item, str) or not ENTITY_RE.fullmatch(item) for item in entities)):
+            raise ValueError(f"entity_id must name one to {MAX_ACTION_ENTITIES} entities")
+        data = {**data, "entity_id": entities}
+    if len(json.dumps(data)) > ACTION_DATA_MAX_BYTES:
+        raise ValueError("Service data exceeds the action limit")
+    return service, data
+
+
+def action_refusal(service, data, level, read_only):
+    """Return why the app does not allow a service call, or an empty string when it does."""
+    if read_only:
+        return "Home Assistant actions are disabled in read-only mode."
+    if level == "off":
+        return "Home Assistant actions are turned off in the app options."
+    if level == "all_services":
+        return ""
+    if is_reload_service(service):
+        return "" if not data else "A reload takes no service data at this level."
+    allowed = ("The app's Home Assistant actions option allows reloads and turning automations on or off. "
+               "Anything else needs the all_services level.")
+    if service not in AUTOMATION_SWITCH_SERVICES or set(data) != {"entity_id"}:
+        return allowed
+    targets = data["entity_id"]
+    targets = [targets] if isinstance(targets, str) else targets
+    if not isinstance(targets, list) or not targets or any(
+            not isinstance(item, str) or not item.startswith("automation.") for item in targets):
+        return allowed
+    return ""
 
 
 def browser_memory_limit(options):

@@ -1589,10 +1589,13 @@ dialog label {
   }
 }
 /* Keep verification evidence readable in narrow Ingress panels. */
-.verification { margin: 18px 0; min-width: 0; }
-.verification h3 { font-size: 14px; margin-bottom: 8px; }
-.verification-result { border: 1px solid var(--border, #8885); border-radius: 8px; margin: 6px 0; padding: 10px; overflow-wrap: anywhere; }
-.verification-result summary { cursor: pointer; font-size: 13px; }
+.verification, .actions { margin: 18px 0; min-width: 0; }
+.verification h3, .actions h3 { font-size: 14px; margin-bottom: 8px; }
+.verification-result, .action-result { border: 1px solid var(--border, #8885); border-radius: 8px; margin: 6px 0; padding: 10px; overflow-wrap: anywhere; }
+.verification-result summary, .action-result summary { cursor: pointer; font-size: 13px; }
+.action-result p { font-size: 12px; margin: 8px 0 4px; }
+/* An action that did not happen stands out like a failed check. */
+.action-result:not(.is-done) { border-color: #d18a48; }
 .verification-result pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 260px; overflow: auto; }
 .verification-result.is-failed, .verification-result.is-issues { border-color: #d18a48; }
 .verification-note { font-size: 12px; opacity: .7; }

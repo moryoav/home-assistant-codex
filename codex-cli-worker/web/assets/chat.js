@@ -804,13 +804,48 @@ function tickElapsed() {
       ? ` · ${elapsedLabel(Date.now() - activity.startedAt)}`
       : "";
 }
+/** Whether an entry of a turn's verification list is something the worker did in Home Assistant, not a check. */
+function isAction(entry) {
+  return ["reload", "call_service"].includes(entry.operation);
+}
+/**
+ * Build the Home Assistant actions section of an answer: one expandable row
+ * per reload or service call the worker made or refused, with the service, the
+ * entities it named, and what happened. Returns null when the turn has none.
+ */
+function renderActions(turn) {
+  const actions = (turn.verification || []).filter(isAction);
+  if (!actions.length) return null;
+  const section = textNode("section", "", "actions");
+  section.append(textNode("h3", "Home Assistant actions"));
+  for (const action of actions) {
+    const row = textNode("details", "", `action-result is-${action.status}`);
+    const label =
+      { done: "Done", refused: "Refused", failed: "Failed" }[action.status] ||
+      "Not done";
+    const targets = [].concat(action.entity_id || []).join(", ");
+    row.append(
+      textNode(
+        "summary",
+        [label, action.service || action.operation, targets]
+          .filter(Boolean)
+          .join(" · "),
+      ),
+    );
+    if (action.message) row.append(textNode("p", action.message));
+    if (action.checked_at)
+      row.append(textNode("small", dateLabel(action.checked_at, true)));
+    section.append(row);
+  }
+  return section;
+}
 /**
  * Build the Verification section of an answer: one expandable row per check
  * with its result, details, and findings, then the screenshots that have not
  * expired. Returns null when the turn has no checks.
  */
 function renderVerification(turn, taskId) {
-  const checks = turn.verification || [];
+  const checks = (turn.verification || []).filter((entry) => !isAction(entry));
   if (!checks.length) return null;
   const section = textNode("section", "", "verification");
   section.append(textNode("h3", "Verification"));
@@ -916,6 +951,8 @@ function renderTask(force = false) {
       const check = renderConfigCheck(turn.config_check);
       if (check) answer.append(check);
       answer.append(...renderBackups(turn));
+      const actions = renderActions(turn);
+      if (actions) answer.append(actions);
       const evidence = renderVerification(turn, task.task_id);
       if (evidence) answer.append(evidence);
       if (attachments.length)

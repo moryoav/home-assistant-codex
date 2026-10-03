@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import tarfile
 import tempfile
 import time
@@ -381,6 +382,60 @@ class RunTests(unittest.TestCase):
         """The kind, text, and status of the steps recorded for the exchange."""
         with server.lock:
             return [(step["kind"], step["text"], step["status"]) for step in server.task_activity[self.task_id]["steps"]]
+
+    def run_with_evidence(self, evidence, check=True):
+        """Run an exchange that changes YAML, with the given checks and actions on its turn.
+
+        Home Assistant's configuration check passes, unless `check` is false and the caller patches it.
+        """
+        self.options["config_check"] = True
+        valid = {"result": "valid", "errors": "", "warnings": ""}
+        # Start every run from the same files and a queued turn, so each one changes the YAML again.
+        (self.config / "automations.yaml").write_text("- alias: old\n", encoding="utf-8")
+        (self.config / "scripts.yaml").write_text("a: 1\n", encoding="utf-8")
+        (self.config / "packages" / "new.yaml").unlink(missing_ok=True)
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        server.tasks[self.task_id].update(status="queued", details="")
+
+        def record(task_id, _lovelace_results):
+            """Put the evidence on the turn at the point where the worker's own checks would add theirs."""
+            server.update_task(task_id, verification=evidence)
+
+        with ExitStack() as stack:
+            stack.enter_context(self.codex(keep_copy=True))
+            stack.enter_context(patch.object(server.verification, "after_changes", side_effect=record))
+            if check:
+                stack.enter_context(patch.object(server, "check_home_assistant_config", return_value=valid))
+            server.run_task(self.task_id, "Rename the automation")
+        task = server.tasks[self.task_id]
+        self.assertEqual(task["status"], "completed")
+        return task["details"]
+
+    def test_valid_yaml_that_was_not_reloaded_is_pointed_out(self):
+        """Changed YAML that passed the check but was not reloaded through the worker is pointed out in the details."""
+        self.assertIn(server.NOT_RELOADED_NOTE, self.run_with_evidence([]))
+        # A reload that Home Assistant refused or rejected does not count.
+        failed = {"operation": "reload", "service": "automation.reload", "status": "failed"}
+        self.assertIn(server.NOT_RELOADED_NOTE, self.run_with_evidence([failed]))
+        for service in ("automation.reload", "homeassistant.reload_all"):
+            with self.subTest(service=service):
+                done = {"operation": "reload", "service": service, "status": "done"}
+                self.assertNotIn(server.NOT_RELOADED_NOTE, self.run_with_evidence([done]))
+        # Without a passed check there is nothing to say about reloading.
+        unavailable = {"result": "unavailable", "errors": "HTTP 502", "warnings": ""}
+        with patch.object(server, "check_home_assistant_config", return_value=unavailable):
+            self.assertNotIn(server.NOT_RELOADED_NOTE, self.run_with_evidence([], check=False))
+
+    def test_actions_that_did_not_happen_are_pointed_out_apart_from_checks(self):
+        """Refused and failed actions get their own note in the details and are not counted as failed checks."""
+        details = self.run_with_evidence([
+            {"operation": "reload", "service": "automation.reload", "status": "done"},
+            {"operation": "call_service", "service": "light.turn_on", "status": "refused"},
+            {"operation": "call_service", "service": "automation.turn_off", "status": "failed"},
+            {"operation": "entity", "entity_id": "automation.locker", "status": "failed"},
+        ])
+        self.assertIn("Home Assistant actions need review: 2 action(s) were refused, failed, or could not run.", details)
+        self.assertIn("Verification needs review: 1 check(s) failed", details)
 
     def test_per_file_copies_are_reviewed_without_a_snapshot(self):
         """By default no archive is made and Codex's copies are checked and reported."""

@@ -58,6 +58,7 @@ to the private worker socket outside the shell sandbox, so `workspace-write` and
 forwarded to this process through an environment variable, never stored in config.
 This bounded tool is approved for non-interactive calls; it does not grant general
 shell network access, service calls, reloads, arbitrary URLs, clicks, or evaluation.
+Reloads and service calls have their own tool, described under [Actions](#actions).
 
 ```json
 {"operation":"entity","entity_id":"light.kitchen","expected_state":"on","attributes":["brightness"]}
@@ -70,6 +71,44 @@ shell network access, service calls, reloads, arbitrary URLs, clicks, or evaluat
 Omit `save_pending` for an existing
 dashboard. Perform reloads/device actions only with the user's authorization,
 then use a fresh readback. Do not equate an accepted command with a verified outcome.
+
+### Actions
+
+From **0.1.68**, the same server has an `act` tool for the reloads and service
+calls that `verify` does not make. The worker posts the call to Core through the
+Supervisor proxy with its own token; the token, the address, and the service
+response never reach the task. The app's **Home Assistant actions** option
+(`ha_actions`) decides what the worker accepts:
+
+- `reload_and_automations` (default): `<domain>.reload`, `homeassistant.reload_all`,
+  `homeassistant.reload_core_config`, `homeassistant.reload_custom_templates`,
+  and `frontend.reload_themes`, without service data, plus `automation.turn_on`
+  and `automation.turn_off` with nothing but `automation.*` entity ids.
+- `all_services`: any `domain.service`, with up to 20 entity ids and up to 8000
+  bytes of service data.
+- `off`: nothing.
+
+```json
+{"operation":"reload","domain":"automation"}
+{"operation":"reload"}
+{"operation":"call_service","service":"automation.turn_off","entity_id":["automation.kitchen_lights"]}
+{"operation":"call_service","service":"light.turn_on","entity_id":["light.kitchen"],"data":"{\"brightness_pct\": 40}"}
+```
+
+A reload without a domain calls `homeassistant.reload_all`. `data` is a JSON
+object passed as text. Every request is refused in `read-only` mode. A turn can
+make at most 12 actions, within the same limit of 24 results per turn as the
+checks, and one request runs at a time. Results have a `status` of `done` (Core
+accepted the call), `refused` (the option, read-only mode, or the request rules
+it out), `failed` (Core rejected it; its HTTP status and message are kept, up to
+200 characters), or `unavailable`. They are recorded on the turn like checks,
+with the service and entity ids but without the service data, and the chat lists
+them under **Home Assistant actions**.
+
+With `all_services`, anything Codex reads can influence what it calls: a note in
+a configuration file or a web page could ask for an action the user did not.
+The default level limits the effect of that to making saved configuration live
+and switching automations.
 
 ## Automatic authentication
 

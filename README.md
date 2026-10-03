@@ -71,6 +71,7 @@ This repository contains two pieces:
 - Shows what Codex is doing while it works: reasoning headlines, commands, file edits, searches, and tool calls appear live under your message, with a timer from the moment you send it.
 - Formats Markdown in the chat, in your messages and in Codex's answers: code blocks, inline code, headings, lists, tables, and links.
 - Asks Home Assistant to check the configuration after YAML edits and fails the task on errors.
+- Reloads YAML configuration and turns automations on or off when a change you asked for needs it, through the worker and without a token. An option widens this to any service call or turns it off, and every action is listed with the answer.
 - Has Codex save the previous version of each file before changing it, reports changed files that have no saved copy, and removes the copies after a number of days you choose.
 - Mounts the Home Assistant config folder as `/config` inside the worker app.
 - Runs tasks non-interactively and stores task logs/results under `/config/codex_tasks`.
@@ -160,7 +161,9 @@ The app's web UI is available through Home Assistant Ingress. Do not try to open
 
 The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model; the chat shows that model by name. You can also select GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, or GPT-6 Luna, or the older GPT-5.6 Sol, Terra, or Luna explicitly. The retired GPT-5.5 choice stays in the list so that existing setups keep starting, and runs GPT-5.6 Sol. Model availability depends on your account. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota. For GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna, select `low`, `medium`, `high`, or `xhigh`. `minimal` is not supported by the current models and runs `medium`. The `reasoning_summary` option controls whether Codex reports its reasoning in the chat's activity list: `concise` headlines by default, `detailed`, or `none`. The `config_check` option, on by default, has Home Assistant check its configuration after a task changes YAML files; a failing check fails the task and points to the saved previous version of the affected files. Codex saves a copy of each file before changing it; the `backup_retention_days` option, 7 by default, sets how long these copies are kept, and the `full_snapshot` option, off by default, also archives the whole configuration folder before every message and supplies the previous version of any file Codex did not copy.
 
-The app web UI can view and save `/config/AGENTS.md`. You can also set the masked `HA_TOKEN` option when Codex tasks need a Home Assistant token in their environment.
+The `ha_actions` option sets what Codex may do in the running Home Assistant through the worker: `reload_and_automations` by default (reload YAML configuration, turn automations on or off), `all_services` for any service call, or `off`. See [Home Assistant actions](codex-cli-worker/DOCS.md#home-assistant-actions).
+
+The app web UI can view and save `/config/AGENTS.md`. You can also set the masked `HA_TOKEN` option when Codex tasks need a Home Assistant token in their environment; reloads and the other actions above do not need it.
 
 ### 3. Sign In to Codex
 

@@ -643,6 +643,26 @@ class ModelSelectionTests(unittest.TestCase):
             "list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
         )
 
+    def test_home_assistant_actions_option_matches_the_worker_levels(self) -> None:
+        """config.yaml offers exactly the worker's action levels and defaults to reloads and automations."""
+        config = server.yaml.safe_load(
+            (SERVER_PATH.parent / "config.yaml").read_text(encoding="utf-8")
+        )
+        from verification import ACTION_LEVELS as levels
+
+        self.assertEqual(levels, ("off", "reload_and_automations", "all_services"))
+        self.assertEqual(config["schema"]["ha_actions"], "list(" + "|".join(levels) + ")")
+        self.assertEqual(config["options"]["ha_actions"], "reload_and_automations")
+        self.assertEqual(server.DEFAULT_OPTIONS["ha_actions"], "reload_and_automations")
+        # An installation from before the option, or a value that is not a level, gets the default.
+        self.assertEqual(server.action_level({}), "reload_and_automations")
+        self.assertEqual(server.action_level({"ha_actions": "everything"}), "reload_and_automations")
+        self.assertEqual(server.action_level({"ha_actions": "off"}), "off")
+        # The act tool is approved for the non-interactive run, like the verify tool.
+        arguments = server.verification_mcp_args()
+        self.assertIn('mcp_servers.home_assistant.tools.act.approval_mode="approve"', arguments)
+        self.assertIn('mcp_servers.home_assistant.tools.verify.approval_mode="approve"', arguments)
+
     def test_default_model_omits_model_argument(self) -> None:
         """The default option passes no --model to Codex, and the model the chat names meanwhile is one on offer."""
         args = self.build_args_for_model("default")

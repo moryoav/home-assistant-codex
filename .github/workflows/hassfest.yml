@@ -1,16 +1,20 @@
-name: Validate with hassfest
+name: Hassfest
 
 on:
   push:
+    branches:
+      - main
   pull_request:
-  schedule:
-    - cron: "0 0 * * *"
+    branches:
+      - main
   workflow_dispatch:
+  workflow_call:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
-  validate:
+  hassfest:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

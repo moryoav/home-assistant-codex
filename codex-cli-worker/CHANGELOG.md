@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.64
+
+- Added an automatically packaged `codex_cli.zip` to GitHub releases for HACS installs and updates.
+- Aligned the worker and integration versions with the release tag and added a packaging check that rejects version mismatches.
+- Kept worker image publishing in the release workflow, including `amd64`, `aarch64`, and `latest` image tags.
+- Standardized HACS and Hassfest validation triggers, README badges, and support buttons.
+- Worker and integration runtime behavior is unchanged.
+
+Update both the **Codex CLI Worker** app and the **Codex** integration to **0.1.64**, then restart Home Assistant.
+
 ## 0.1.63
 
 - **Messages start faster.** The worker used to archive the whole configuration folder before every message, which on a large configuration took longer than Codex needed to start answering. It now only records which files exist, and reads a file again only when its size or timestamps changed since the last scan.

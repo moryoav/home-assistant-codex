@@ -5,6 +5,12 @@ on:
     types:
       - published
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      publish_latest:
+        description: Also publish the latest image tag
+        type: boolean
+        default: false
 
 env:
   ADDON_PATH: codex-cli-worker
@@ -18,6 +24,8 @@ jobs:
   version:
     name: Read app version
     runs-on: ubuntu-latest
+    env:
+      PUBLISH_LATEST: ${{ inputs.publish_latest }}
     outputs:
       version: ${{ steps.version.outputs.version }}
       image_tags: ${{ steps.version.outputs.image_tags }}
@@ -32,11 +40,17 @@ jobs:
             echo "Could not read version from ${ADDON_PATH}/config.yaml" >&2
             exit 1
           fi
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]] && \
+             [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "Worker version ${version} does not match ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           {
             echo "image_tags<<EOF"
             echo "${version}"
-            if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            if [ "${GITHUB_EVENT_NAME}" = "release" ] || \
+               [ "${PUBLISH_LATEST}" = "true" ]; then
               echo "latest"
             else
               echo "${GITHUB_REF_NAME}"

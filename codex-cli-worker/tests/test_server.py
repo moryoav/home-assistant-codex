@@ -459,6 +459,28 @@ class UsageParsingTests(unittest.TestCase):
         self.assertEqual(parsed["five_hour_percent"], "64")
         self.assertEqual(parsed["weekly_percent"], "91")
 
+    def test_reset_time_survives_a_status_line_on_the_same_line(self) -> None:
+        """A limit's reset time is kept when the CLI's status line repeats the limit later on the same line."""
+        # As captured from CLI 0.160.0: the redrawn status line follows the panel's last line.
+        output = "\n".join(
+            [
+                "5h limit: [███████████████████░] 95% left (resets 17:22)",
+                "Weekly limit: [████████████████████] 98% left (resets 07:01 on 10 Oct) › Ask Codex to do anything "
+                "GPT-6.1-Sol default · Context 100% left · 5h 94% left · weekly 97% left",
+            ]
+        )
+
+        parsed = server._parse_usage_output(output)
+
+        self.assertEqual(parsed["weekly_reset"], "07:01 on 10 Oct")
+        self.assertTrue(parsed["weekly_reset_at"])
+        self.assertEqual(parsed["five_hour_reset"], "17:22")
+        # The percentage is still the last one on the line, the freshest the CLI printed.
+        self.assertEqual((parsed["five_hour_percent"], parsed["weekly_percent"]), ("94", "97"))
+        # The same for the 5-hour limit when it is the panel's last line.
+        parsed = server._parse_usage_output("5h limit: [###] 95% left (resets 17:22) › Ask Codex · 5h 95% left")
+        self.assertEqual(parsed["five_hour_reset"], "17:22")
+
     def test_status_panel_names_the_model_the_cli_picks(self) -> None:
         """The /status panel names the model the CLI picked; a model the worker offers is returned as its id.
 

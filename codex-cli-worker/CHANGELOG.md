@@ -2,11 +2,12 @@
 
 ## 0.1.70
 
-- Keep a local copy of the official Home Assistant documentation so Codex can search it directly instead of searching the web for documentation. Local lookups are faster, and web search stays available for custom integrations, custom cards, and anything the documentation does not cover.
-- Download the copy in the background when the app starts, and refresh it when a task starts and the copy is more than a day old. Tasks and startup never wait for a download, and a failed download keeps the existing copy.
-- Add **Local Home Assistant documentation** to the app configuration, on by default. The copy uses about 25 MB of private app storage and is left out of app backups. See [how it works](DOCS.md#local-home-assistant-documentation).
+- **Codex searches a local copy of the Home Assistant documentation.** The worker keeps a copy of the official documentation in private app storage, and Codex searches those files directly instead of searching the web for documentation. Local lookups are faster, and web search stays available for custom integrations, custom cards, and anything the documentation does not cover.
+- The copy is downloaded from GitHub in the background when the app starts, and refreshed when a task starts and the copy is more than a day old. Tasks and startup never wait for a download, and a failed download keeps the existing copy.
+- **New option: Local Home Assistant documentation** (`local_docs`), on by default. Turn it off to stop the downloads; Codex then uses web search as before. The copy uses about 25 MB and is left out of app backups. See [how it works](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#local-home-assistant-documentation).
+- `GET /health` reports the copy under `local_docs`: whether it is enabled and available, its commit and download time, and the last download error.
 
-Update the **Codex CLI Worker** app to **0.1.70**. The **Codex** integration is also released as **0.1.70** so that both carry the same version; its code is unchanged.
+Update the **Codex CLI Worker** app to **0.1.70** for the local documentation. The **Codex** integration is also released as **0.1.70** so that both carry the same version; its code is unchanged.
 
 ## 0.1.69
 

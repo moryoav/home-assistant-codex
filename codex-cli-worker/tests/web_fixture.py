@@ -84,11 +84,13 @@ def main():
             The first chat plays its steps slowly so the browser can show them
             live. A message that starts with "Take your time" keeps its chat
             working until POST fixture/release, so the browser can queue
-            messages behind it. Every other chat completes at once.
+            messages behind it. A message that starts with "Ask me" is answered
+            with a question and two choices. Every other chat completes at once.
             """
             summary = "Preview response: " + (reply or prompt)
             live = task_id == "preview-00"
             held = (reply or prompt).startswith("Take your time")
+            asking = (reply or prompt).startswith("Ask me")
 
             def run():
                 """Play the worker's and Codex's steps for one exchange, then finish it."""
@@ -115,8 +117,16 @@ def main():
                 if live:
                     time.sleep(0.4)
                 server.finish_phase(task_id, "review")
-                server.update_task(task_id, status="completed", session_id=session_id, summary=summary,
-                                   details="", question="", completed_at=server.utc_now())
+                if asking:
+                    server.update_task(
+                        task_id, status="waiting_for_input", session_id=session_id, details="",
+                        summary="**Evening lights** and **Evening lights 2** do the same thing. I would remove "
+                                "`Evening lights 2` from `automations.yaml` and keep the other. Nothing has been changed yet.",
+                        question="Remove the duplicate automation?",
+                        choices=["Go ahead", "Don't change anything"])
+                else:
+                    server.update_task(task_id, status="completed", session_id=session_id, summary=summary,
+                                       details="", question="", completed_at=server.utc_now())
                 server.finish_activity(task_id)
                 server.active_task_runners.discard(task_id)
                 # The real runner starts the next queued message when it ends.

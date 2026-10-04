@@ -167,11 +167,27 @@ Because Codex does not currently provide a stable non-interactive usage command,
 
 Leave `notify_service` unset or empty to use Home Assistant persistent notifications for task completion, failures, and questions. If you want push notifications, set it to a Home Assistant notify service such as `notify.mobile_app_your_phone`.
 
+From **0.1.69**, a question sent to a mobile app notify service has a button for each answer Codex offers. See [Human Input](#human-input).
+
 Home Assistant app configuration schemas do not currently provide a Home Assistant service autocomplete selector, so this option remains a plain text field.
 
 ## Human Input
 
-Runs are non-interactive. If Codex needs a decision, it should return `needs_input`; Home Assistant marks the task as waiting and you can continue it with `codex_cli.reply_task`.
+Runs are non-interactive. If Codex needs a decision, it returns `needs_input` with a question. The task is marked as waiting, and your answer continues it as the next message.
+
+From **0.1.69**, Codex can offer up to three short answers with its question, for example **Go ahead** and **Don't change anything**. When it asks whether to go ahead with a change, it is told to say in the summary exactly what it would change.
+
+- **In the chat**, the choices are buttons under the question. Picking one sends it as your next message. You can still type a different answer in the message box, and a draft there stays as it is. Once the question is answered the buttons are gone, and the question stays in the history.
+- **In a notification**, a mobile app notify service (`notify.mobile_app_...`) shows a button for each choice, and tapping one sends that answer. The **Codex** integration receives the tap, so it has to be installed and at **0.1.69** or later. Any other notify service, and the persistent notification, lists the choices in the text instead.
+- **In automations**, the `codex_cli_task_result` event carries `choices` (a list, empty when Codex offered none) and `turn_id`, and the **Last task** sensor has the same two attributes. Answer with `codex_cli.reply_task`. Its reply is free text, so to pick a choice, send that choice's text.
+
+An answer goes to the question it was given for. `codex_cli.reply_task` accepts an optional `turn_id`. When it is set, the worker takes the reply only while that turn's question is the one waiting, and refuses it otherwise. The buttons in the chat and in notifications always send it, so a button on an old notification cannot answer a newer question in the same chat. A tap the worker refuses shows a Home Assistant notification that says why. A reply without `turn_id` works as before.
+
+If another chat is working when you pick a choice, the answer waits in the [queue](#queueing-messages-while-another-chat-works) and is sent when that chat finishes.
+
+The choices are a convenience and not a safeguard. Codex decides when to ask, and nothing stops it from changing files without asking. Use `/config/AGENTS.md` to tell it when you want to be asked first.
+
+API: `POST /tasks/<task_id>/reply` and `POST /tasks/<task_id>/continue` accept `turn_id`, and `choice` in place of the text: the position of one of the waiting question's choices, counted from 0. A `turn_id` that is not the waiting turn returns HTTP 409, and a `choice` the question does not offer returns HTTP 400. Each turn in `GET /tasks/<task_id>` has `choices`, and `latest_task` in `GET /status` has `choices` and `current_turn_id`. The action of a notification button is `CODEX_CLI_CHOICE_<position>_<turn_id>_<task_id>`, which Home Assistant delivers in the `mobile_app_notification_action` event.
 
 ## Saved conversations
 

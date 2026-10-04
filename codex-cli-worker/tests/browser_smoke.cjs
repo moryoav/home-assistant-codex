@@ -1119,6 +1119,83 @@ function pngBuffer(width = 8, height = 6) {
       1,
     );
     assert.equal(await page.locator("#notice").isHidden(), true);
+    // A question from Codex shows its choices as buttons. Picking one sends it
+    // as the next message and leaves a draft in the message box alone. The
+    // fixture answers a message that starts with "Ask me" with a question.
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    await page
+      .locator("#message")
+      .fill("Ask me before you remove the duplicate automation.");
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
+    const choiceButtons = page.locator("#messages .choices .choice");
+    await choiceButtons.first().waitFor();
+    assert.deepEqual(await choiceButtons.allTextContents(), [
+      "Go ahead",
+      "Don't change anything",
+    ]);
+    assert.equal(
+      await page.locator("#messages .choices").getAttribute("aria-label"),
+      "Answers Codex offers",
+    );
+    assert.match(
+      await page.locator("#chat-status").textContent(),
+      /^Needs your reply · /,
+    );
+    assert.equal(await choiceButtons.first().isEnabled(), true);
+    await page.screenshot({
+      path: path.join(output, "choices.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
+    await page.locator("#message").fill("A draft I am still writing");
+    const asked = await page.evaluate(async () => {
+      const id = localStorage.getItem("codex-last-chat");
+      const task = (await (await fetch(`tasks/${id}`)).json()).task;
+      return {
+        id,
+        turn: task.turns[0].turn_id,
+        choices: task.turns[0].choices,
+      };
+    });
+    assert.deepEqual(asked.choices, ["Go ahead", "Don't change anything"]);
+    await choiceButtons.nth(1).click();
+    await page
+      .locator("#messages")
+      .getByText("Preview response: Don't change anything", { exact: true })
+      .waitFor();
+    assert.equal(await choiceButtons.count(), 0);
+    assert.deepEqual(
+      await page.locator("#messages .message.user").allTextContents(),
+      [
+        "Ask me before you remove the duplicate automation.",
+        "Don't change anything",
+      ],
+    );
+    // The question stays in the history, and the draft in the message box.
+    await page
+      .locator("#messages")
+      .getByText("Remove the duplicate automation?", { exact: true })
+      .waitFor();
+    assert.equal(
+      await page.locator("#message").inputValue(),
+      "A draft I am still writing",
+    );
+    await page.locator("#message").fill("");
+    // An answer that names a question no longer waiting is refused.
+    const late = await page.evaluate(async ({ id, turn }) => {
+      const response = await fetch(`tasks/${id}/continue`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ choice: 0, turn_id: turn }),
+      });
+      return { status: response.status, error: (await response.json()).error };
+    }, asked);
+    assert.deepEqual(late, {
+      status: 409,
+      error: "This question is no longer waiting for an answer.",
+    });
     await page.getByRole("button", { name: "Open settings" }).click();
     await page
       .getByText("Signed in (local preview)", { exact: true })
@@ -1349,7 +1426,7 @@ function pngBuffer(width = 8, height = 6) {
     await webview.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: queued messages (wait behind a working chat, edit, remove, start in order), attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, the model a chat runs on by name, quota bars, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: queued messages (wait behind a working chat, edit, remove, start in order), choices under a question (pick one, draft kept, late answer refused), attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, the model a chat runs on by name, quota bars, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

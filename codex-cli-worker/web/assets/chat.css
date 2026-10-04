@@ -644,6 +644,21 @@ h1 {
   margin-top: 14px;
   font-weight: 500;
 }
+/* The answers Codex offers with a question, one button each. */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.choice {
+  padding: 8px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  border-color: var(--accent);
+  overflow-wrap: anywhere;
+}
 /* Messages formatted as Markdown. A message shown as plain text keeps pre-wrap. */
 .markdown {
   white-space: normal;

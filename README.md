@@ -40,6 +40,8 @@ The chat formats Markdown in your messages and in Codex's answers. Wrap code in 
 
 The worker runs one task at a time. While a chat is working, you can still send messages in new chats or other saved chats: they wait under **In queue** at the top of the sidebar and start one after another when the running chat finishes. A waiting message can be edited or removed until it starts.
 
+When Codex needs a decision, it can offer up to three answers as buttons under its question. Pick one, or type a different answer. With a mobile app notify service, the same buttons appear on the notification.
+
 ### Chat UI preview
 
 Screenshots use demo conversations from the local test fixture.
@@ -62,6 +64,8 @@ Screenshots use demo conversations from the local test fixture.
 
 ![Desktop chat UI with two messages waiting in the queue while another chat is working](examples/chat-ui/queue.png)
 
+![Desktop chat UI showing a question from Codex with two answers offered as buttons under it](examples/chat-ui/choices.png)
+
 This repository contains two pieces:
 
 - `codex-cli-worker`: a Home Assistant app/add-on that runs Codex CLI with read-write access to `/config`.
@@ -75,6 +79,7 @@ This repository contains two pieces:
 - Shows what Codex is doing while it works: reasoning headlines, commands, file edits, searches, and tool calls appear live under your message, with a timer from the moment you send it.
 - Formats Markdown in the chat, in your messages and in Codex's answers: code blocks, inline code, headings, lists, tables, and links.
 - Queues messages sent while another chat is working and starts them in order, with the option to edit or remove them first.
+- Offers answers to its own questions as buttons, in the chat and on mobile app notifications, so a decision takes one tap.
 - Asks Home Assistant to check the configuration after YAML edits and fails the task on errors.
 - Has Codex save the previous version of each file before changing it, reports changed files that have no saved copy, and removes the copies after a number of days you choose.
 - Mounts the Home Assistant config folder as `/config` inside the worker app.
@@ -247,7 +252,7 @@ The integration exposes these Home Assistant actions:
 
 The integration also provides diagnostic sensors for auth status, active tasks, last task, and the usage windows reported by Codex `/status`. Depending on the account and plan, Codex may report both 5-hour and weekly limits or only a weekly limit. The existing 5-hour entities remain available for automation compatibility; when that window is omitted their state is `unknown` and their `reported` attribute is `false`. Reported usage sensors expose numeric percent states plus ISO datetime reset attributes when reset times are present.
 
-When a Codex task completes, fails, or needs input, the worker fires a Home Assistant event named `codex_cli_task_result` in addition to the notification. Automations can listen for that event and read fields such as `task_id`, `status`, `summary`, `question`, `details`, `attachments`, and the nested `response` object from `trigger.event.data`.
+When a Codex task completes, fails, or needs input, the worker fires a Home Assistant event named `codex_cli_task_result` in addition to the notification. Automations can listen for that event and read fields such as `task_id`, `turn_id`, `status`, `summary`, `question`, `choices`, `details`, `attachments`, and the nested `response` object from `trigger.event.data`.
 
 Example:
 
@@ -286,9 +291,21 @@ Completed, failed, cancelled, and waiting tasks can continue if their saved Code
 
 The existing `codex_cli.reply_task` action still answers tasks waiting for input. New tasks do not automatically inherit context from other chats.
 
+Answer a waiting question:
+
+```yaml
+action: codex_cli.reply_task
+data:
+  task_id: "{{ trigger.event.data.task_id }}"
+  turn_id: "{{ trigger.event.data.turn_id }}"
+  reply: "Don't change anything"
+```
+
+`reply` is free text. When Codex offered answers, they are in the event's `choices` list, and sending one of them picks it. `turn_id` is optional: with it, the reply is refused once that question is no longer the one waiting, so a late reply cannot answer a newer question. See [Human Input](codex-cli-worker/DOCS.md#human-input).
+
 ## Task Output
 
-Codex tasks return a structured response with `status`, `summary`, `question`, and `details`. These values are plain strings, and how they are displayed depends on the Home Assistant consumer or notification service that receives them. The worker web UI formats Markdown in them; see [Formatted messages](codex-cli-worker/DOCS.md#formatted-messages).
+Codex tasks return a structured response with `status`, `summary`, `question`, `details`, and `choices`. The first four are plain strings, and how they are displayed depends on the Home Assistant consumer or notification service that receives them. `choices` is a list of up to three short answers Codex offers with a question, and is empty otherwise. The worker web UI formats Markdown in them; see [Formatted messages](codex-cli-worker/DOCS.md#formatted-messages).
 
 You can request a preferred output style through `/config/AGENTS.md`, which is editable from the worker app web UI. Codex treats this as guidance rather than a formatting guarantee. If you want Markdown-friendly task output, you can add this instruction:
 

@@ -77,6 +77,24 @@
         }
       }
     },
+    "reply_task": {
+      "name": "Reply to task",
+      "description": "Answer the question of a Codex task that is waiting for input.",
+      "fields": {
+        "task_id": {
+          "name": "Task ID",
+          "description": "The task that is waiting for input."
+        },
+        "reply": {
+          "name": "Reply",
+          "description": "Your answer. To pick one of the choices Codex offered, send that choice's text."
+        },
+        "turn_id": {
+          "name": "Turn ID",
+          "description": "The turn that asked the question, from `turn_id` in the `codex_cli_task_result` event. When set, the reply is refused once that question is no longer the one waiting."
+        }
+      }
+    },
     "list_tasks": {
       "name": "List tasks",
       "description": "Get all tasks or a filtered page of saved conversations.",

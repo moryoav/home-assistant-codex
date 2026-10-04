@@ -468,16 +468,19 @@ function controls() {
   const waiting = Boolean(task?.queued_message);
   // While another chat works, a message sent here waits in the queue instead.
   const queueing = Boolean(state.active) && state.active !== state.id;
-  $("send").disabled =
+  // What stops any message to this chat, whether typed or picked from choices.
+  const blocked =
     !state.catalog ||
     state.settingsBusy ||
     state.busy ||
     state.loading ||
     working ||
     waiting ||
-    (state.id !== null && !task?.can_continue) ||
-    preparingCount(state.files) > 0 ||
-    !$("message").value.trim();
+    (state.id !== null && !task?.can_continue);
+  $("send").disabled =
+    blocked || preparingCount(state.files) > 0 || !$("message").value.trim();
+  for (const button of document.querySelectorAll("#messages .choice"))
+    button.disabled = blocked;
   $("send").setAttribute(
     "aria-label",
     queueing ? "Add message to queue" : "Send message",
@@ -1006,6 +1009,14 @@ function renderTask(force = false) {
         answer.append(renderMarkdown(turn.details, "message details"));
       if (turn.question && turn.question !== turn.summary)
         answer.append(renderMarkdown(turn.question, "message question"));
+      // Only the question still waiting can be answered with a choice.
+      if (
+        latest &&
+        !queued &&
+        task.status === "waiting_for_input" &&
+        turn.choices?.length
+      )
+        answer.append(renderChoices(turn));
       const check = renderConfigCheck(turn.config_check);
       if (check) answer.append(check);
       answer.append(...renderBackups(turn));
@@ -1052,6 +1063,61 @@ function renderTask(force = false) {
   area.scrollTop = force || nearBottom ? area.scrollHeight : oldScroll;
   controls();
   ensureActivity();
+}
+/**
+ * Build a button for each answer Codex offered with its question. A click
+ * sends that answer as the next message; the message box stays free for a
+ * different one.
+ */
+function renderChoices(turn) {
+  const group = textNode("div", "", "choices");
+  group.setAttribute("role", "group");
+  group.setAttribute("aria-label", "Answers Codex offers");
+  turn.choices.forEach((choice, index) => {
+    const button = textNode(
+      "button",
+      markdownPlain(choice) || choice,
+      "subtle choice",
+    );
+    button.type = "button";
+    button.onclick = () => sendChoice(turn.turn_id, index);
+    group.append(button);
+  });
+  return group;
+}
+/**
+ * Answer the waiting question with one of the choices Codex offered. The turn
+ * id lets the worker refuse the answer when the question was already answered
+ * somewhere else. A draft in the message box stays as it is.
+ */
+async function sendChoice(turnId, index) {
+  const id = state.id;
+  if (!id || state.busy) return;
+  state.busy = true;
+  controls();
+  showError(null);
+  try {
+    const result = await api(`tasks/${encodeURIComponent(id)}/continue`, {
+      choice: index,
+      turn_id: turnId,
+      chat_settings: selectedSettings(),
+      // If another chat is working, the worker holds this answer in its queue.
+      queue: true,
+    });
+    state.chatSettings.delete(id);
+    if (result.status !== "in_queue") state.active = result.task_id;
+    state.busy = false;
+    await selectChat(result.task_id);
+    await loadList();
+    if (result.status === "in_queue") $("chat-list").scrollTop = 0;
+  } catch (error) {
+    showError(error);
+    // The question may have been answered elsewhere; show where the chat stands.
+    await Promise.allSettled([loadList(), fetchSelected(true)]);
+  } finally {
+    state.busy = false;
+    controls();
+  }
 }
 /**
  * Show a message that waits in the queue: outlined rather than filled, so it

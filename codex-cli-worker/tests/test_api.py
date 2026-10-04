@@ -49,6 +49,16 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.request.call_args.args, ("POST", "http://worker/tasks/chat/reply"))
         self.assertEqual(self.session.request.call_args.kwargs["json"], {"reply": "Yes"})
 
+    async def test_reply_names_its_turn_and_a_choice_goes_by_position(self):
+        """A reply carries the turn id only when one is given; a picked choice is sent by position and may wait in the queue."""
+        await self.client.reply_task("chat", "Yes", "turn-1")
+        self.assertEqual(self.session.request.call_args.kwargs["json"], {"reply": "Yes", "turn_id": "turn-1"})
+        await self.client.reply_task("chat", "Yes", None)
+        self.assertEqual(self.session.request.call_args.kwargs["json"], {"reply": "Yes"})
+        await self.client.reply_choice("chat", "turn-1", 2)
+        self.assertEqual(self.session.request.call_args.args, ("POST", "http://worker/tasks/chat/reply"))
+        self.assertEqual(self.session.request.call_args.kwargs["json"], {"choice": 2, "turn_id": "turn-1", "queue": True})
+
     async def test_continuation_error_is_actionable(self):
         """A refused continuation raises an error carrying the worker's own message and the HTTP status."""
         self.response.status = 409

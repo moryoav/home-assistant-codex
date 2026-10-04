@@ -659,6 +659,21 @@ def write_agents_file(content: str) -> None:
     AGENTS_PATH.write_text(content.rstrip() + "\n", encoding="utf-8")
 
 
+# The final answer Codex must return. Codex enforces the schema strictly, so every property is required.
+FINAL_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "status": {"type": "string", "enum": ["completed", "needs_input", "failed"]},
+        "summary": {"type": "string"},
+        "question": {"type": "string"},
+        "details": {"type": "string"},
+        "choices": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "summary", "question", "details", "choices"],
+}
+
+
 def ensure_runtime_files() -> None:
     """Create the worker's folders, make an API token if there is none, and write Codex's output schema and config."""
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
@@ -667,18 +682,7 @@ def ensure_runtime_files() -> None:
     AUTH_QR_DIR.mkdir(parents=True, exist_ok=True)
     if not api_token():
         set_api_token(secrets.token_urlsafe(32))
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "status": {"type": "string", "enum": ["completed", "needs_input", "failed"]},
-            "summary": {"type": "string"},
-            "question": {"type": "string"},
-            "details": {"type": "string"},
-        },
-        "required": ["status", "summary", "question", "details"],
-    }
-    SCHEMA_PATH.write_text(json.dumps(schema, indent=2), encoding="utf-8")
+    SCHEMA_PATH.write_text(json.dumps(FINAL_RESPONSE_SCHEMA, indent=2), encoding="utf-8")
     CODEX_CONFIG_PATH.write_text(
         "\n".join(
             [
@@ -1476,7 +1480,7 @@ def load_stored_activity(task_id: str, turn_id: str) -> dict[str, Any] | None:
 
 
 TURN_RESULT_FIELDS = (
-    "status", "summary", "details", "question", "started_at", "completed_at",
+    "status", "summary", "details", "question", "choices", "started_at", "completed_at",
     "returncode", "changes", "validation_errors", "lovelace_results", "error",
     "attachments", "config_check", "recovery_files", "backups", "verification", "verification_attachments",
 )
@@ -1491,6 +1495,13 @@ QUEUE_MAX_MESSAGES = 50
 IN_QUEUE_STATUS = "in_queue"
 QUEUED_MESSAGE_GONE = "This message is no longer in the queue. It may have already started."
 SESSION_UNAVAILABLE = "The saved Codex session is unavailable. Start a new chat and include the context you need."
+# Answers Codex may offer with a question. Three is what an Android notification has buttons for.
+CHOICES_MAX = 3
+CHOICE_MAX_LENGTH = 200
+# A notification button's action: this prefix, the choice's position, the turn that asked, and the task.
+# The Codex integration parses it, so keep the two in step.
+CHOICE_ACTION_PREFIX = "CODEX_CLI_CHOICE_"
+QUESTION_NOT_WAITING = "This question is no longer waiting for an answer."
 
 
 def atomic_json_write(path: Path, value: Any) -> None:
@@ -2625,6 +2636,30 @@ def notify(title: str, message: str) -> None:
     )
 
 
+def notify_question(task_id: str, turn_id: str, question: str, choices: list[str]) -> None:
+    """Notify that Codex waits for an answer, and offer its choices.
+
+    A mobile app notify service gets one button per choice; the Codex
+    integration sends the tapped one back as the reply. Any other service, and
+    the persistent notification, lists the choices in the text.
+    """
+    title = "Codex needs input"
+    service = str(read_options().get("notify_service") or "")
+    if choices and turn_id and service.startswith("notify.mobile_app_"):
+        actions = [
+            {"action": f"{CHOICE_ACTION_PREFIX}{index}_{turn_id}_{task_id}", "title": choice}
+            for index, choice in enumerate(choices)
+        ]
+        ok, detail = call_ha_service(
+            service, {"title": title, "message": f"{question} Task: {task_id}", "data": {"actions": actions}}
+        )
+        if ok:
+            return
+        print(f"Notification with choices through {service} failed: {detail}", flush=True)
+    options = f" Options: {'; '.join(choices)}." if choices else ""
+    notify(title, f"{question}{options} Task: {task_id}")
+
+
 def save_lovelace_dashboard(ref: dict[str, str]) -> tuple[bool, str]:
     """Save the config from a dashboard's storage file through Home Assistant's WebSocket API; return (ok, message)."""
     token = ha_token()
@@ -3063,7 +3098,7 @@ Task id: {task_id}
 
 Follow /config/AGENTS.md. Treat this as a live Home Assistant config tree. Make focused edits, do not expose secrets, and validate changed YAML/JSON when practical. After you finish, the worker asks Home Assistant to check its configuration whenever YAML files changed; if that check fails, the task is reported as failed, so prefer a change you are confident is valid over a speculative one.
 
-This is a non-interactive run. Do not wait for terminal input. If you need the user's decision or verification before continuing, stop cleanly by returning status "needs_input" with one concise question.
+This is a non-interactive run. Do not wait for terminal input. If you need the user's decision or verification before continuing, stop cleanly by returning status "needs_input" with one concise question. If you are asking whether to go ahead with a change, say in the summary exactly what you would change. When the answer is one of a few options, also list up to three in choices, each a few words of plain text, for example "Go ahead" and "Don't change anything". The user answers by picking one or by typing something else, and the answer arrives as the next message.
 
 {backups}If the user asks for an image, use the built-in image generation tool. Every image it generates is attached to this conversation and shown to the user automatically, so leave it at its default save location and describe it in the summary. Copy it into /config only when the user asks for a file at a specific path. The default save location is not a failure.
 
@@ -3082,6 +3117,7 @@ After an authorized storage-dashboard edit, add "save_pending":true to the dashb
 - summary: concise result
 - question: use an empty string unless status is "needs_input"
 - details: use an empty string unless there are useful implementation/test notes
+- choices: use an empty list unless status is "needs_input" and the answer is one of a few options
 {attached}Current user message:
 {current_request}
 """
@@ -3208,6 +3244,19 @@ def parse_final(final_file: Path, returncode: int) -> dict[str, Any]:
         "summary": raw[:1000] or "Codex completed without a structured final response.",
         "details": f"returncode={returncode}",
     }
+
+
+def clean_choices(value: Any) -> list[str]:
+    """Return the answers Codex offered with its question: text only, distinct, at most three, none overly long."""
+    choices: list[str] = []
+    for item in value if isinstance(value, list) else []:
+        text = " ".join(item.split()) if isinstance(item, str) else ""
+        if not text or len(text) > CHOICE_MAX_LENGTH or text.casefold() in {choice.casefold() for choice in choices}:
+            continue
+        choices.append(text)
+        if len(choices) == CHOICES_MAX:
+            break
+    return choices
 
 
 def terminate_and_reap_process(
@@ -3707,6 +3756,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), unsaved_note(unsaved)) if part)
     task_status = "waiting_for_input" if status == "needs_input" else status
     completed_at = utc_now() if status != "needs_input" else ""
+    choices = clean_choices(final.get("choices")) if status == "needs_input" else []
     # The task's error names why it failed, and is empty for every other outcome.
     error = ""
     if status == "failed":
@@ -3729,6 +3779,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         session_id=session_id,
         summary=final.get("summary", ""),
         question=final.get("question", ""),
+        choices=choices,
         details=final.get("details", ""),
         error=error,
         changes=changes,
@@ -3741,12 +3792,15 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     ) is False:
         return
 
+    turn_id = str(tasks.get(task_id, {}).get("current_turn_id") or "")
     event_data = {
         "task_id": task_id,
+        "turn_id": turn_id,
         "status": task_status,
         "codex_status": status,
         "summary": final.get("summary", ""),
         "question": final.get("question", ""),
+        "choices": choices,
         "details": final.get("details", ""),
         "returncode": returncode,
         "session_id": session_id,
@@ -3764,6 +3818,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
             "status": status,
             "summary": final.get("summary", ""),
             "question": final.get("question", ""),
+            "choices": choices,
             "details": final.get("details", ""),
         },
     }
@@ -3772,7 +3827,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         print(f"Codex task result event failed: {detail}", flush=True)
 
     if status == "needs_input":
-        notify("Codex needs input", f"{final.get('question', 'Codex needs your input.')} Task: {task_id}")
+        notify_question(task_id, turn_id, str(final.get("question") or "Codex needs your input."), choices)
     elif status == "completed":
         notify("Codex task completed", f"{final.get('summary', 'Done')} Task: {task_id}")
     else:
@@ -3959,6 +4014,7 @@ def open_task(task_id: str, title: str, prompt: str, settings: dict[str, Any], t
         created_at=utc_now(),
         summary="",
         question="",
+        choices=[],
         details="",
         attachments=[],
     )
@@ -3977,7 +4033,7 @@ def open_turn(task_id: str, task: dict[str, Any], turn: dict[str, Any], settings
         chat_settings=settings,
         cancellation_event_emitted=False, turns=turns,
         current_turn_id=turn["turn_id"], history_incomplete=incomplete,
-        reply_history=reply_history, summary="", question="", details="",
+        reply_history=reply_history, summary="", question="", choices=[], details="",
         error="", started_at="", completed_at="", returncode=None,
         changes={}, validation_errors=[], lovelace_results=[], attachments=[],
         config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[], backups=[],
@@ -4617,17 +4673,39 @@ def continue_task(task_id: str) -> Response:
 
 
 def continue_task_request(task_id: str, field: str, *, waiting_only: bool = False) -> Response:
-    """Add a message to a saved chat as a new exchange and start it."""
+    """Add a message to a saved chat as a new exchange and start it.
+
+    `choice` sends one of the answers the waiting question offered, by its
+    position counted from 0, in place of typed text. `turn_id` names the
+    question being answered: the request is refused once that question is no
+    longer the one waiting, so a late answer cannot land on a newer question.
+    """
     payload = request.get_json(silent=True)
-    if not isinstance(payload, dict) or not isinstance(payload.get(field), str) or not payload[field].strip():
+    if not isinstance(payload, dict):
         return jsonify({"ok": False, "error": f"{field} must be non-empty text"}), 400
-    message = payload[field].strip()
+    choice = payload.get("choice")
+    turn_id = payload.get("turn_id")
+    if choice is None and (not isinstance(payload.get(field), str) or not payload[field].strip()):
+        return jsonify({"ok": False, "error": f"{field} must be non-empty text"}), 400
+    if choice is not None and (isinstance(choice, bool) or not isinstance(choice, int)):
+        return jsonify({"ok": False, "error": "choice must be the position of an offered choice, counted from 0"}), 400
+    if turn_id is not None and not isinstance(turn_id, str):
+        return jsonify({"ok": False, "error": "turn_id must be text"}), 400
+    message = "" if choice is not None else payload[field].strip()
     with lock:
         task = tasks.get(task_id)
         if not task:
             return jsonify({"ok": False, "error": "task not found"}), 404
-        if waiting_only and task.get("status") != "waiting_for_input":
+        waiting = task.get("status") == "waiting_for_input"
+        if turn_id and (not waiting or task.get("current_turn_id") != turn_id):
+            return jsonify({"ok": False, "error": QUESTION_NOT_WAITING}), 409
+        if (waiting_only or choice is not None) and not waiting:
             return jsonify({"ok": False, "error": "task is not waiting for input"}), 409
+        if choice is not None:
+            choices = task.get("choices") or []
+            if not 0 <= choice < len(choices):
+                return jsonify({"ok": False, "error": "choice is not one of the choices this question offers"}), 400
+            message = choices[choice]
         if task.get("status") not in CONTINUABLE_STATUSES:
             return jsonify({"ok": False, "error": "task is still active"}), 409
         session_id = str(task.get("session_id") or "")

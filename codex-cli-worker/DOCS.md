@@ -43,7 +43,7 @@ prompts you; the next capture uses the new value.
 
 ## Local Home Assistant documentation
 
-From **0.1.63**, the worker keeps a copy of the official Home Assistant
+From **0.1.70**, the worker keeps a copy of the official Home Assistant
 documentation in private app storage. Codex searches those files directly
 instead of running a web search for each documentation question, which is
 faster and always uses the official pages. Web search remains available for

@@ -26,7 +26,7 @@ There is no worker URL or API token to enter.
 - 5-hour limit: Shows the 5-hour window when Codex reports one. The entity remains for compatibility and is `unknown` with `reported: false` when the account only reports a weekly window.
 - Weekly limit: Shows the weekly window when Codex reports one.
 - Active tasks: Shows the number of currently running Codex tasks.
-- Last task: Shows the latest known task status and related attributes.
+- Last task: Shows the latest known task status and related attributes. When that task failed, the `error` attribute gives the reason.
 - Task running: Binary sensor that is on while a task is active.
 
 All entities are diagnostic entities on the Codex device.
@@ -41,7 +41,7 @@ All entities are diagnostic entities on the Codex device.
 - `codex_cli.list_tasks`: Return all tasks or filter with `limit`, `offset`, `status`, `order`, and `summary`. Use `order: updated_desc` for recent activity and `summary: true` for compact entries.
 - `codex_cli.get_task`: Return one task by task ID, including its conversation in `turns`.
 - `codex_cli.cancel_task`: Cancel one task by task ID.
-- `codex_cli.reply_task`: Send a reply to a waiting task.
+- `codex_cli.reply_task`: Send a reply to a waiting task. Requires `task_id` and `reply`. With the optional `turn_id`, taken from the `codex_cli_task_result` event or the **Last task** sensor, the reply is refused once that question is no longer the one waiting.
 
 Example automation action:
 
@@ -61,7 +61,8 @@ The integration polls the worker every 30 seconds. Actions that start, cancel, o
 - If entities are unavailable, check that the Codex CLI Worker add-on is running and that the worker URL is reachable.
 - If setup cannot connect, restart the Codex CLI Worker app so it can generate its worker API token, then reload or add the integration again.
 - If Codex is not signed in, run `codex_cli.start_login` or use the add-on web UI to start the sign-in flow.
-- If a task needs input, use `codex_cli.reply_task` with the task ID and reply text.
+- If a task needs input, use `codex_cli.reply_task` with the task ID and reply text. The answers Codex offered are in the `choices` attribute of the **Last task** sensor and in the `codex_cli_task_result` event.
+- If the worker's `notify_service` is a mobile app service, a question's notification has a button for each of those answers. The integration sends the tapped one to the worker. If the worker does not take it, for example because the question was already answered, a persistent notification says why.
 
 ## Removal
 

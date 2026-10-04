@@ -68,6 +68,10 @@ reply_task:
       selector:
         text:
           multiline: true
+    turn_id:
+      required: false
+      selector:
+        text:
 
 continue_task:
   fields:

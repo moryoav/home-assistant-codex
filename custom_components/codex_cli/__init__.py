@@ -19,6 +19,7 @@ from .const import (
     ATTR_PROMPT,
     ATTR_REPLY,
     ATTR_TASK_ID,
+    ATTR_TURN_ID,
     ATTR_FORCE,
     CONF_BASE_URL,
     DOMAIN,
@@ -34,6 +35,7 @@ from .const import (
 )
 from .coordinator import CodexCliCoordinator
 from .discovery import async_discover_worker
+from .notification_actions import async_listen_for_choices
 from .browser_auth import STORAGE_KEY, BrowserSessions, BrowserSessionView, DiagnosticView
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
@@ -45,7 +47,9 @@ START_TASK_SCHEMA = vol.Schema(
     }
 )
 TASK_ID_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): str})
-REPLY_TASK_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): str, vol.Required(ATTR_REPLY): str})
+REPLY_TASK_SCHEMA = vol.Schema(
+    {vol.Required(ATTR_TASK_ID): str, vol.Required(ATTR_REPLY): str, vol.Optional(ATTR_TURN_ID): str}
+)
 CONTINUE_TASK_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): str, vol.Required("message"): str})
 LIST_TASKS_SCHEMA = vol.Schema({
     vol.Optional("limit"): vol.All(vol.Coerce(int), vol.Range(min=1, max=500)),
@@ -92,6 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await broker.setup()
     hass.data.setdefault(DOMAIN, {})["browser_sessions"] = broker
     entry.async_on_unload(broker.close)
+    entry.async_on_unload(async_listen_for_choices(hass, client, coordinator))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -150,6 +155,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         pass
 
     async def handle_start_task(call: ServiceCall) -> dict[str, Any]:
+        """Start a Codex task with the given prompt, refresh the coordinator and return the worker's response."""
         runtime_data = _first_runtime(hass)
         try:
             result = await runtime_data.client.start_task(call.data[ATTR_PROMPT])
@@ -159,6 +165,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return result
 
     async def handle_start_login(call: ServiceCall) -> dict[str, Any]:
+        """Start the Codex login flow on the worker, even when logged in if forced, and refresh the coordinator."""
         runtime_data = _first_runtime(hass)
         try:
             result = await runtime_data.client.start_login(bool(call.data.get(ATTR_FORCE, False)))
@@ -168,6 +175,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return result
 
     async def handle_get_login_status(call: ServiceCall) -> dict[str, Any]:
+        """Return the worker's Codex login flow status."""
         runtime_data = _first_runtime(hass)
         try:
             return await runtime_data.client.login_status()
@@ -175,6 +183,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError(str(exc)) from exc
 
     async def handle_logout(call: ServiceCall) -> dict[str, Any]:
+        """Remove the saved Codex credentials from the worker and refresh the coordinator."""
         runtime_data = _first_runtime(hass)
         try:
             result = await runtime_data.client.logout()
@@ -184,6 +193,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return result
 
     async def handle_get_task(call: ServiceCall) -> dict[str, Any]:
+        """Return the worker's record of the task with the given task ID."""
         runtime_data = _first_runtime(hass)
         try:
             return await runtime_data.client.get_task(call.data[ATTR_TASK_ID])
@@ -191,6 +201,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError(str(exc)) from exc
 
     async def handle_list_tasks(call: ServiceCall) -> dict[str, Any]:
+        """Return the worker's tasks, passing the service data on as list filters."""
         runtime_data = _first_runtime(hass)
         try:
             return await runtime_data.client.list_tasks(**call.data)
@@ -198,6 +209,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError(str(exc)) from exc
 
     async def handle_cancel_task(call: ServiceCall) -> dict[str, Any]:
+        """Cancel the task with the given task ID on the worker and refresh the coordinator."""
         runtime_data = _first_runtime(hass)
         try:
             result = await runtime_data.client.cancel_task(call.data[ATTR_TASK_ID])
@@ -207,15 +219,22 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return result
 
     async def handle_reply_task(call: ServiceCall) -> dict[str, Any]:
+        """Send a reply to a task that is waiting for input and refresh the coordinator.
+
+        With a turn ID, the worker takes the reply only while that turn's question is the one waiting.
+        """
         runtime_data = _first_runtime(hass)
         try:
-            result = await runtime_data.client.reply_task(call.data[ATTR_TASK_ID], call.data[ATTR_REPLY])
+            result = await runtime_data.client.reply_task(
+                call.data[ATTR_TASK_ID], call.data[ATTR_REPLY], call.data.get(ATTR_TURN_ID)
+            )
         except CodexCliApiError as exc:
             raise HomeAssistantError(str(exc)) from exc
         await runtime_data.coordinator.async_request_refresh()
         return result
 
     async def handle_continue_task(call: ServiceCall) -> dict[str, Any]:
+        """Continue a saved conversation with a new message and refresh the coordinator."""
         runtime_data = _first_runtime(hass)
         try:
             result = await runtime_data.client.continue_task(call.data[ATTR_TASK_ID], call.data["message"])

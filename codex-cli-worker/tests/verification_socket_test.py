@@ -24,6 +24,7 @@ def test_parallel_request_is_rejected_while_active_check_is_blocked(tmp_path, mo
     release = threading.Event()
 
     def inspect(_payload):
+        """Block the first entity check until the test releases it."""
         entered.set()
         if not release.wait(5):
             raise ValueError("Test inspection was not released")

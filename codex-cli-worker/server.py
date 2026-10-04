@@ -39,7 +39,10 @@ from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification
 
 
 class _VerificationWorker:
+    """Let the verification code reach this module's functions and state by name."""
+
     def __getattr__(self, name):
+        """Return the module global with that name, as it is at the time of the call."""
         return globals()[name]
 
 
@@ -56,6 +59,7 @@ CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
 CODEX_BINARY = "/usr/local/bin/codex"
 AGENTS_PATH = CONFIG_ROOT / "AGENTS.md"
 TASK_STATE_FILE = DATA_ROOT / "task_index.json"
+MESSAGE_QUEUE_FILE = DATA_ROOT / "message_queue.json"
 HA_DOCS_ROOT = DATA_ROOT / "ha-docs"
 HA_DOCS_INFO_FILE = "docs-source.json"
 HA_DOCS_REPOSITORY = "https://github.com/home-assistant/home-assistant.io.git"
@@ -83,6 +87,10 @@ HA_DOCS_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
 HA_DOCS_RETRY_INTERVAL_SECONDS = 60 * 60
 HA_DOCS_GIT_TIMEOUT_SECONDS = 300
 
+# Home Assistant's own address inside the app network. A Home Assistant token, such
+# as the HA_TOKEN option, works there and not at the Supervisor's Core proxy.
+CORE_URL = "http://homeassistant:8123"
+
 DEFAULT_OPTIONS = {
     "codex_model": "default",
     "model_reasoning_effort": "medium",
@@ -93,27 +101,38 @@ DEFAULT_OPTIONS = {
     "task_timeout_seconds": 3600,
     "auto_save_lovelace": True,
     "config_check": True,
+    "full_snapshot": False,
+    "backup_retention_days": 7,
     "browser_verification": True,
     "browser_memory_limit_mib": DEFAULT_BROWSER_MEMORY_LIMIT_MIB,
     "local_docs": True,
-    "ha_url": "http://supervisor/core",
+    "ha_url": CORE_URL,
     "HA_TOKEN": "",
 }
+BACKUP_RETENTION_DAYS_RANGE = (1, 365)
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 # Codex only emits reasoning items when summaries are requested; "auto" produced none.
 REASONING_SUMMARIES = {"concise", "detailed", "none"}
-# Supported choices in the bundled CLI 0.157.1 model catalog. Availability still
+# Supported choices in the bundled CLI 0.160.0 model catalog. Availability still
 # depends on the signed-in account; the CLI reports unavailable models normally.
 CHAT_MODELS = (
     ("gpt-6-astra", "GPT-6 Astra", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-6.1-sol", "GPT-6.1 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6-sol", "GPT-6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6-luna", "GPT-6 Luna", ("low", "medium", "high", "xhigh", "max")),
     ("gpt-5.6-sol", "GPT-5.6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-terra", "GPT-5.6 Terra", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-5.6-luna", "GPT-5.6 Luna", ("low", "medium", "high", "xhigh", "max")),
-    ("gpt-5.5", "GPT-5.5", ("low", "medium", "high", "xhigh")),
 )
 CHAT_MODEL_EFFORTS = {model: efforts for model, _, efforts in CHAT_MODELS}
+# The model the bundled CLI picks when none is named. The CLI refreshes its model
+# list per account, so the model its own /status names replaces this once seen.
+CLI_DEFAULT_MODEL = "gpt-6.1-sol"
+# Models that are no longer offered, each with the next model up. An add-on option
+# or a chat that still has one selected runs on the first model in that chain
+# that is still offered. The option schema keeps accepting them: Home Assistant
+# does not start an app whose saved option is missing from the list.
+RETIRED_MODELS = {"gpt-5.5": "gpt-5.6-sol"}
 DEFAULT_CHAT_SETTINGS = {"model": None, "reasoning_effort": None}
 
 AGENTS_MAX_BYTES = 256 * 1024
@@ -178,6 +197,9 @@ WEEKLY_RE = re.compile(
     r"(?P<percent>\d{1,3})%(?:\s+left)?(?:\s+\(resets\s+(?P<reset>[^)]+)\))?"
 )
 CONTEXT_RE = re.compile(r"(?i)(?<!\w)context\s+(?P<percent>\d{1,3})%\s+left\b")
+# The /status panel's own line, as in "Model:   GPT-6.1-Sol (reasoning low, summaries auto)".
+# The startup banner's lowercase "model:" is not it.
+STATUS_MODEL_RE = re.compile(r"(?<![\w.-])Model:[ \t]+(?P<model>[A-Za-z0-9][\w.-]*(?: [\w.-]+)*)(?=[ \t]*[(\n])")
 RESET_TIME_RE = re.compile(
     r"(?i)^\s*(?P<hour>\d{1,2}):(?P<minute>\d{2})"
     r"(?:\s+on\s+(?P<day>\d{1,2})\s+(?P<month>[a-z]{3,9})(?:\s+(?P<year>\d{4}))?)?\s*$"
@@ -257,6 +279,9 @@ auth_lock = threading.RLock()
 tasks: dict[str, dict[str, Any]] = {}
 running_processes: dict[str, subprocess.Popen] = {}
 active_task_runners: set[str] = set()
+# Messages sent while another task was running, oldest first. Each one starts
+# on its own once the tasks ahead of it have finished.
+message_queue: list[dict[str, Any]] = []
 auth_state: dict[str, Any] = {}
 auth_process: subprocess.Popen | None = None
 event_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
@@ -278,6 +303,8 @@ usage_state: dict[str, Any] = {
     "error": "",
     "_updated_monotonic": 0.0,
     "_refreshing": False,
+    "_default_model": "",
+    "_model_generation": 0,
 }
 ha_docs_lock = threading.RLock()
 ha_docs_state: dict[str, Any] = {"error": "", "_failed_monotonic": 0.0, "_refreshing": False}
@@ -308,6 +335,7 @@ class HassYamlLoader(yaml.SafeLoader):
 
 
 def _unknown_yaml(loader: yaml.Loader, tag_suffix: str, node: yaml.Node) -> Any:
+    """Load the value under a Home Assistant tag such as !include as plain data, ignoring the tag."""
     if isinstance(node, yaml.ScalarNode):
         return loader.construct_scalar(node)
     if isinstance(node, yaml.SequenceNode):
@@ -321,10 +349,12 @@ HassYamlLoader.add_multi_constructor("!", _unknown_yaml)
 
 
 def utc_now() -> str:
+    """Return the current UTC time as an ISO 8601 string, to the second."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def read_options() -> dict[str, Any]:
+    """Return the add-on options on top of the defaults; an options file that cannot be read leaves only the defaults."""
     options = dict(DEFAULT_OPTIONS)
     if OPTIONS_PATH.exists():
         try:
@@ -335,10 +365,12 @@ def read_options() -> dict[str, Any]:
 
 
 def task_root() -> Path:
+    """Return the folder under which every task keeps its files, as set in the add-on options."""
     return Path(str(read_options().get("task_root") or DEFAULT_OPTIONS["task_root"]))
 
 
 def model_reasoning_effort(options: dict[str, Any]) -> str:
+    """Return the add-on's reasoning effort, falling back to the default."""
     effort = str(options.get("model_reasoning_effort") or DEFAULT_OPTIONS["model_reasoning_effort"]).strip()
     if effort not in REASONING_EFFORTS:
         return DEFAULT_OPTIONS["model_reasoning_effort"]
@@ -351,33 +383,89 @@ def reasoning_summary(options: dict[str, Any]) -> str:
     return value if value in REASONING_SUMMARIES else DEFAULT_OPTIONS["reasoning_summary"]
 
 
+def backup_retention_days(options: dict[str, Any] | None = None) -> int:
+    """Return how many days backups are kept, within the supported range."""
+    value = (read_options() if options is None else options).get("backup_retention_days")
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = DEFAULT_OPTIONS["backup_retention_days"]
+    low, high = BACKUP_RETENTION_DAYS_RANGE
+    return min(high, max(low, days))
+
+
+def current_model(model: Any) -> Any:
+    """Return the model that replaces one that is no longer offered."""
+    while isinstance(model, str) and model in RETIRED_MODELS:
+        model = RETIRED_MODELS[model]
+    return model
+
+
+def default_model(options: dict[str, Any]) -> str:
+    """Return the model a chat runs on when it has not selected one."""
+    model = current_model(str(options.get("codex_model") or "default"))
+    if model in {"default", "gpt-5.3-codex"}:
+        # The add-on leaves the choice to the CLI.
+        with usage_lock:
+            return str(usage_state.get("_default_model") or CLI_DEFAULT_MODEL)
+    return model
+
+
+def current_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Return chat selections with a model that is no longer offered replaced by the next one up."""
+    settings = copy.deepcopy(settings)
+    model = current_model(settings.get("model"))
+    if model != settings.get("model"):
+        settings["model"] = model
+        # The replacement may not support a level the retired model did.
+        if settings.get("reasoning_effort") not in CHAT_MODEL_EFFORTS.get(model, ()):
+            settings["reasoning_effort"] = None
+    return settings
+
+
 def resolve_chat_settings(settings: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
     """Resolve inheritance once per turn, without changing shared options."""
-    model = settings.get("model") or str(options.get("codex_model") or "default")
+    settings = current_chat_settings(settings)
+    model = settings.get("model") or current_model(str(options.get("codex_model") or "default"))
     if model == "gpt-5.3-codex":
         model = "default"
-    efforts = CHAT_MODEL_EFFORTS.get(model, ("low", "medium", "high", "xhigh"))
+    # A run on default names no model; its levels are those of the model the CLI picks.
+    efforts = CHAT_MODEL_EFFORTS.get(
+        default_model(options) if model == "default" else model, ("low", "medium", "high", "xhigh")
+    )
     effort = settings.get("reasoning_effort")
     if effort is not None and effort not in efforts:
-        raise ValueError("The selected reasoning level is not supported by this model.")
+        if settings.get("model"):
+            raise ValueError("The selected reasoning level is not supported by this model.")
+        # The chat follows the add-on's model, which can change under a saved level.
+        # The chat then shows Medium, so the run uses it.
+        effort = "medium"
     if effort is None:
         effort = model_reasoning_effort(options)
-        # A legacy global setting may not suit an explicitly selected model.
-        if model in CHAT_MODEL_EFFORTS and effort not in efforts:
+        # The add-on level may not suit the model: none offered supports minimal, and
+        # neither does the model the CLI picks for default, which gets it unchanged.
+        if effort not in efforts:
             effort = "medium"
     return {"model": model, "reasoning_effort": effort}
 
 
 def parse_chat_settings(payload: dict[str, Any], task: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return the chat settings a request carries, or else the task's saved ones, after checking them.
+
+    A model or level of None follows the add-on default. A model that is no
+    longer offered is replaced, and an unsupported choice raises ValueError.
+    """
     settings = payload.get("chat_settings", (task or {}).get("chat_settings", DEFAULT_CHAT_SETTINGS))
     if not isinstance(settings, dict) or set(settings) - set(DEFAULT_CHAT_SETTINGS):
         raise ValueError("chat_settings must contain only model and reasoning_effort.")
     settings = {**DEFAULT_CHAT_SETTINGS, **settings}
-    model, effort = settings["model"], settings["reasoning_effort"]
+    model, effort = current_model(settings["model"]), settings["reasoning_effort"]
     if model is not None and (not isinstance(model, str) or model not in CHAT_MODEL_EFFORTS):
         raise ValueError("Select a supported model or use the add-on default.")
     if effort is not None and (not isinstance(effort, str) or effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}):
         raise ValueError("Select a supported reasoning level or use the add-on default.")
+    # Only after the checks: replacing a retired model drops a level its replacement lacks.
+    settings = current_chat_settings(settings)
     resolve_chat_settings(settings, read_options())
     return settings
 
@@ -432,7 +520,7 @@ def _codex_sandbox_probe(mode: str) -> dict[str, Any]:
     if not codex:
         return {"ok": False, "error": "Codex CLI executable is unavailable."}
     try:
-        # The pinned CLI (0.157.1) takes the command directly: `codex sandbox
+        # The pinned CLI (0.160.0) takes the command directly: `codex sandbox
         # [options] -- <command>`. It has no platform subcommand, so any word
         # before `--` that is not an option is executed as the program.
         result = subprocess.run(
@@ -565,6 +653,7 @@ def sandbox_readiness() -> dict[str, Any]:
 
 
 def api_token() -> str:
+    """Return the worker API token from its file, or from CODEX_WORKER_TOKEN when the file is missing or unreadable."""
     if WORKER_TOKEN_PATH.exists():
         try:
             return WORKER_TOKEN_PATH.read_text(encoding="utf-8").strip()
@@ -583,6 +672,7 @@ def set_api_token(token: str) -> bool:
 
 
 def read_agents_file() -> str:
+    """Return the text of /config/AGENTS.md, empty when there is none; raises ValueError when it is too large."""
     if not AGENTS_PATH.exists():
         return ""
     if AGENTS_PATH.stat().st_size > AGENTS_MAX_BYTES:
@@ -591,31 +681,37 @@ def read_agents_file() -> str:
 
 
 def write_agents_file(content: str) -> None:
+    """Write /config/AGENTS.md with a single trailing newline; raises ValueError when the content is too large."""
     encoded = content.encode("utf-8")
     if len(encoded) > AGENTS_MAX_BYTES:
         raise ValueError(f"{AGENTS_PATH} is larger than {AGENTS_MAX_BYTES} bytes")
     AGENTS_PATH.write_text(content.rstrip() + "\n", encoding="utf-8")
 
 
+# The final answer Codex must return. Codex enforces the schema strictly, so every property is required.
+FINAL_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "status": {"type": "string", "enum": ["completed", "needs_input", "failed"]},
+        "summary": {"type": "string"},
+        "question": {"type": "string"},
+        "details": {"type": "string"},
+        "choices": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "summary", "question", "details", "choices"],
+}
+
+
 def ensure_runtime_files() -> None:
+    """Create the worker's folders, make an API token if there is none, and write Codex's output schema and config."""
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     task_root().mkdir(parents=True, exist_ok=True)
     AUTH_QR_DIR.mkdir(parents=True, exist_ok=True)
     if not api_token():
         set_api_token(secrets.token_urlsafe(32))
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "status": {"type": "string", "enum": ["completed", "needs_input", "failed"]},
-            "summary": {"type": "string"},
-            "question": {"type": "string"},
-            "details": {"type": "string"},
-        },
-        "required": ["status", "summary", "question", "details"],
-    }
-    SCHEMA_PATH.write_text(json.dumps(schema, indent=2), encoding="utf-8")
+    SCHEMA_PATH.write_text(json.dumps(FINAL_RESPONSE_SCHEMA, indent=2), encoding="utf-8")
     CODEX_CONFIG_PATH.write_text(
         "\n".join(
             [
@@ -636,6 +732,7 @@ def ensure_runtime_files() -> None:
 
 
 def save_task_index() -> None:
+    """Write every task, without its prompt, reply history, and turns, to the task index file while holding the lock."""
     with lock:
         slim = {
             task_id: {
@@ -649,6 +746,11 @@ def save_task_index() -> None:
 
 
 def load_task_index() -> None:
+    """Load the saved tasks into memory at startup, marking any that were still active as failed.
+
+    Each task's own task.json is read first; the task index only adds the
+    tasks that have none.
+    """
     root = task_root()
     if root.exists():
         for task_file in root.glob("*/task.json"):
@@ -658,7 +760,7 @@ def load_task_index() -> None:
                 task["task_id"] = task_id
                 if task.get("status") in {"queued", "running"}:
                     task["status"] = "failed"
-                    task["summary"] = "Worker restarted while this task was active."
+                    task["summary"] = task["error"] = "Worker restarted while this task was active."
                     sync_current_turn(task)
                 tasks[task_id] = task
             except Exception as exc:
@@ -671,13 +773,14 @@ def load_task_index() -> None:
             for task_id, task in loaded.items():
                 if task.get("status") in {"queued", "running"}:
                     task["status"] = "failed"
-                    task["summary"] = "Worker restarted while this task was active."
+                    task["summary"] = task["error"] = "Worker restarted while this task was active."
                 tasks.setdefault(task_id, task)
     except Exception as exc:
         print(f"Could not load task index: {exc}", flush=True)
 
 
 def redact(text: str) -> str:
+    """Replace Supervisor tokens, verification capabilities, and values that look like keys or tokens with [redacted]."""
     redacted = text
     for value in (os.environ.get("SUPERVISOR_TOKEN"), os.environ.get("HASSIO_TOKEN")):
         if value:
@@ -754,11 +857,13 @@ def parse_codex_reset_at(reset_text: str, now: datetime | None = None) -> str:
 
 
 def usage_status_payload() -> dict[str, Any]:
+    """Return a copy of the Codex usage state without the worker's internal fields."""
     with usage_lock:
         return {k: v for k, v in usage_state.items() if not k.startswith("_")}
 
 
 def _update_usage_state(**updates: Any) -> None:
+    """Store new values in the usage state and note when it was updated."""
     with usage_lock:
         usage_state.update(updates)
         usage_state["updated_at"] = utc_now()
@@ -766,6 +871,7 @@ def _update_usage_state(**updates: Any) -> None:
 
 
 def _read_pty(master_fd: int, timeout_seconds: float) -> str:
+    """Return what the pseudo-terminal prints until the timeout passes or the terminal closes."""
     chunks: list[str] = []
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -783,7 +889,13 @@ def _read_pty(master_fd: int, timeout_seconds: float) -> str:
     return "".join(chunks)
 
 
+def _last_reset(matches: list[re.Match[str]]) -> str:
+    """Return the reset time of the last limit match on a line that names one, or an empty string."""
+    return next((match.group("reset") for match in reversed(matches) if match.group("reset")), "")
+
+
 def _parse_usage_output(text: str) -> dict[str, str]:
+    """Extract the 5-hour and weekly limits, their reset times, and the context left from Codex CLI output."""
     cleaned = clean_cli_text(text)
     lines = [" ".join(line.strip().split()) for line in cleaned.splitlines() if line.strip()]
     five_hour = ""
@@ -796,16 +908,16 @@ def _parse_usage_output(text: str) -> dict[str, str]:
     context_percent = ""
     now = datetime.now().astimezone()
     for line in lines:
+        # The CLI's status line can follow the panel's limit on the same line. It repeats
+        # the percentage without the reset time, so the reset is taken from any match.
         if matches := list(FIVE_HOUR_RE.finditer(line)):
-            match = matches[-1]
-            five_hour_percent = match.group("percent")
-            if reset := match.group("reset"):
+            five_hour_percent = matches[-1].group("percent")
+            if reset := _last_reset(matches):
                 five_hour_reset = reset
             five_hour = f"5h {five_hour_percent}%"
         if matches := list(WEEKLY_RE.finditer(line)):
-            match = matches[-1]
-            weekly_percent = match.group("percent")
-            if reset := match.group("reset"):
+            weekly_percent = matches[-1].group("percent")
+            if reset := _last_reset(matches):
                 weekly_reset = reset
             weekly = f"weekly {weekly_percent}%"
         if matches := list(CONTEXT_RE.finditer(line)):
@@ -827,7 +939,29 @@ def _parse_usage_output(text: str) -> dict[str, str]:
     }
 
 
+def _parse_status_model(text: str) -> str:
+    """Return the model the CLI's /status panel names, or an empty string.
+
+    The panel shows a display name such as GPT-6.1-Sol. A model the worker offers
+    is returned as its id, any other as the CLI names it.
+    """
+    names = STATUS_MODEL_RE.findall(clean_cli_text(text))
+    name = names[-1] if names else ""
+    # Until its session is ready the CLI shows the word "loading" there.
+    if name.casefold() == "loading":
+        return ""
+    return name.casefold() if name.casefold() in CHAT_MODEL_EFFORTS else name
+
+
+def forget_default_model() -> None:
+    """Forget the model the CLI named, as the account may have changed; a check still running will not restore it."""
+    with usage_lock:
+        usage_state["_model_generation"] += 1
+        usage_state["_default_model"] = ""
+
+
 def _has_rich_status_panel(text: str) -> bool:
+    """Return whether the captured CLI output contains the /status panel."""
     compacted = compact_cli_text(text)
     return (
         "chatgptcomcodexsettingsusage" in compacted
@@ -837,6 +971,7 @@ def _has_rich_status_panel(text: str) -> bool:
 
 
 def _capture_status_from_tui(master_fd: int) -> str:
+    """Send /status to the Codex TUI and return all it printed, accepting the folder trust prompt first if shown."""
     captured = _read_pty(master_fd, USAGE_READY_TIMEOUT_SECONDS)
 
     # First-run Codex can pause on the trust-directory screen before accepting slash commands.
@@ -858,6 +993,14 @@ def _capture_status_from_tui(master_fd: int) -> str:
 
 
 def fetch_codex_usage_status() -> dict[str, Any]:
+    """Run the Codex TUI in a pseudo-terminal, ask it for /status, and return the quota it reports.
+
+    The result is "deferred" with the last known values while a task is active,
+    and "unavailable" when Codex is missing or not logged in. The model the CLI
+    picks by default is remembered from the same panel.
+    """
+    with usage_lock:
+        model_generation = usage_state["_model_generation"]
     if active_task_id():
         return {
             "status": "deferred",
@@ -965,6 +1108,12 @@ def fetch_codex_usage_status() -> dict[str, Any]:
         except OSError:
             pass
         parsed = _parse_usage_output(status_text)
+        # The probe names no model, so the panel shows the one the CLI picks itself.
+        if model := _parse_status_model(status_text):
+            with usage_lock:
+                # After a sign-out or sign-in during this check, the model is the previous account's.
+                if usage_state["_model_generation"] == model_generation:
+                    usage_state["_default_model"] = model
         if not parsed["five_hour_limit"] and not parsed["weekly_limit"]:
             return {
                 "status": "error",
@@ -1003,6 +1152,7 @@ def fetch_codex_usage_status() -> dict[str, Any]:
 
 
 def _refresh_usage_worker(force: bool = False) -> None:
+    """Fetch and store the usage status, unless a refresh is running or, when not forced, the last one is recent."""
     with usage_lock:
         if usage_state.get("_refreshing"):
             return
@@ -1021,11 +1171,13 @@ def _refresh_usage_worker(force: bool = False) -> None:
 
 
 def refresh_usage_status_async(force: bool = False) -> None:
+    """Start a background thread that refreshes the usage status."""
     thread = threading.Thread(target=_refresh_usage_worker, args=(force,), daemon=True)
     thread.start()
 
 
 def write_task_log(task_id: str, stream: str, text: str) -> None:
+    """Append a redacted, timestamped line to the codex.log in the task's folder."""
     task_dir = get_task_dir(task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
     path = task_dir / "codex.log"
@@ -1035,6 +1187,7 @@ def write_task_log(task_id: str, stream: str, text: str) -> None:
 
 
 def get_task_dir(task_id: str) -> Path:
+    """Return the folder that holds a task's files."""
     return task_root() / task_id
 
 
@@ -1057,10 +1210,37 @@ def start_activity(task_id: str, turn_id: str) -> None:
         task_activity[task_id] = {
             "turn_id": turn_id, "seq": 0, "running": True, "capped": False,
             "steps": [], "by_id": {}, "clock": {},
+            "started": time.monotonic(), "edited": set(),
         }
 
 
+def start_phase(task_id: str, phase: str, text: str) -> None:
+    """Show what the worker itself is doing, so the chat has a step before Codex reports one."""
+    append_activity_step(task_id, {"id": f"worker:{phase}", "kind": "phase", "status": "running", "text": text})
+
+
+def finish_phase(task_id: str, *phases: str, failed: bool = False) -> None:
+    """Close the named worker steps as done or failed; steps that never started are left alone."""
+    for phase in phases:
+        with lock:
+            record = task_activity.get(task_id)
+            step = record["by_id"].get(f"worker:{phase}") if record else None
+            if step is None or step["status"] != "running":
+                continue
+            text = step["text"]
+        status = "failed" if failed else "done"
+        append_activity_step(task_id, {"id": f"worker:{phase}", "kind": "phase", "status": status, "text": text})
+
+
+def edited_paths(task_id: str) -> set[str]:
+    """Existing files under /config that Codex reported editing or deleting in the running exchange."""
+    with lock:
+        record = task_activity.get(task_id)
+        return set(record["edited"]) if record else set()
+
+
 def clip_activity_text(value: Any, limit: int) -> tuple[str, bool]:
+    """Return the redacted text cut to the limit, and whether it was cut."""
     text = redact(str(value or ""))
     if len(text) > limit:
         return text[:limit].rstrip() + "…", True
@@ -1074,6 +1254,7 @@ def display_command(command: str) -> str:
 
 
 def display_config_path(path: Any) -> str:
+    """Show a path under /config relative to it; any other path is returned unchanged."""
     text = str(path or "")
     prefix = CONFIG_ROOT.as_posix() + "/"
     return text[len(prefix):] if text.startswith(prefix) else text
@@ -1206,17 +1387,38 @@ def append_activity_error(task_id: str, message: Any) -> None:
     append_activity_step(task_id, {"id": "", "kind": "error", "status": "failed", "text": text})
 
 
+def note_edited_files(task_id: str, step: dict[str, Any]) -> None:
+    """Remember which existing files Codex says it edited, to check their backups afterwards."""
+    paths = {
+        change["path"] for change in step.get("files") or []
+        if change["kind"] != "add" and change["path"] and not change["path"].startswith("/")
+    }
+    if not paths:
+        return
+    with lock:
+        record = task_activity.get(task_id)
+        if record is not None:
+            record["edited"].update(paths)
+
+
 def record_activity_event(task_id: str, event: Any) -> None:
     """Map one line of `codex exec --json` output onto the running exchange's steps."""
     if not isinstance(event, dict):
         return
     kind = str(event.get("type") or "")
-    if kind in {"item.started", "item.updated", "item.completed"}:
+    if kind == "thread.started":
+        finish_phase(task_id, "launch")
+    elif kind == "turn.started":
+        finish_phase(task_id, "launch")
+        start_phase(task_id, "think", "Codex is thinking")
+    elif kind in {"item.started", "item.updated", "item.completed"}:
+        finish_phase(task_id, "launch", "think")
         item = event.get("item")
         if isinstance(item, dict):
             step = activity_step_from_item(item)
             if step is not None:
                 append_activity_step(task_id, step)
+                note_edited_files(task_id, step)
     elif kind == "error":
         append_activity_error(task_id, event.get("message"))
     elif kind == "turn.failed":
@@ -1226,18 +1428,25 @@ def record_activity_event(task_id: str, event: Any) -> None:
 
 
 def public_activity_step(step: dict[str, Any]) -> dict[str, Any]:
+    """Return a step as the chat gets it, leaving out an empty id."""
     return {key: value for key, value in step.items() if key != "id" or value}
 
 
 def activity_payload_locked(record: dict[str, Any], after: int = 0) -> dict[str, Any]:
+    """The steps after a sequence number, with the running time while the exchange lasts."""
     steps = [public_activity_step(step) for step in record["steps"] if step["seq"] > after]
-    return {
+    payload = {
         "turn_id": record["turn_id"], "seq": record["seq"], "running": record["running"],
         "total": len(record["steps"]), "steps": steps,
     }
+    if record["running"]:
+        # Lets the chat show a timer that does not depend on the browser's clock.
+        payload["elapsed_ms"] = round((time.monotonic() - record["started"]) * 1000)
+    return payload
 
 
 def activity_file(task_id: str, turn_id: str) -> Path:
+    """Return where an exchange's steps are saved: its turn folder, or the task folder when it has no turn id."""
     root = get_task_dir(task_id)
     return (root / "turns" / turn_id / ACTIVITY_FILE) if turn_id else (root / ACTIVITY_FILE)
 
@@ -1263,6 +1472,13 @@ def finish_activity(task_id: str) -> None:
                 if step.get("status") == "running":
                     step["status"] = "failed"
         append_activity_step(task_id, outcome, force=True)
+    else:
+        with lock:
+            # A worker step still open when the exchange ends well has simply finished.
+            for step in record["steps"]:
+                if step.get("kind") == "phase" and step.get("status") == "running":
+                    record["seq"] += 1
+                    step.update(status="done", seq=record["seq"])
     with lock:
         record["running"] = False
         payload = activity_payload_locked(record)
@@ -1279,6 +1495,7 @@ def finish_activity(task_id: str) -> None:
 
 
 def load_stored_activity(task_id: str, turn_id: str) -> dict[str, Any] | None:
+    """Return the saved steps of a finished exchange, or None when there are none or the file cannot be read."""
     path = activity_file(task_id, turn_id)
     try:
         if not path.is_file():
@@ -1292,9 +1509,9 @@ def load_stored_activity(task_id: str, turn_id: str) -> dict[str, Any] | None:
 
 
 TURN_RESULT_FIELDS = (
-    "status", "summary", "details", "question", "started_at", "completed_at",
+    "status", "summary", "details", "question", "choices", "started_at", "completed_at",
     "returncode", "changes", "validation_errors", "lovelace_results", "error",
-    "attachments", "config_check", "recovery_files", "verification", "verification_attachments",
+    "attachments", "config_check", "recovery_files", "backups", "verification", "verification_attachments",
 )
 # The check result recorded when no check ran: launch failures, cancellations, and new turns.
 EMPTY_CONFIG_CHECK = {"result": "skipped", "errors": "", "warnings": ""}
@@ -1302,6 +1519,18 @@ CONTINUABLE_STATUSES = frozenset({"completed", "waiting_for_input", "failed", "c
 TASK_STATUSES = CONTINUABLE_STATUSES | {"queued", "running"}
 TASK_ORDERS = frozenset({"created_asc", "updated_desc", "pinned_first"})
 TITLE_MAX_LENGTH = 200
+QUEUE_MAX_MESSAGES = 50
+# Reported for a chat that exists only as a message waiting in the queue.
+IN_QUEUE_STATUS = "in_queue"
+QUEUED_MESSAGE_GONE = "This message is no longer in the queue. It may have already started."
+SESSION_UNAVAILABLE = "The saved Codex session is unavailable. Start a new chat and include the context you need."
+# Answers Codex may offer with a question. Three is what an Android notification has buttons for.
+CHOICES_MAX = 3
+CHOICE_MAX_LENGTH = 200
+# A notification button's action: this prefix, the choice's position, the turn that asked, and the task.
+# The Codex integration parses it, so keep the two in step.
+CHOICE_ACTION_PREFIX = "CODEX_CLI_CHOICE_"
+QUESTION_NOT_WAITING = "This question is no longer waiting for an answer."
 
 
 def atomic_json_write(path: Path, value: Any) -> None:
@@ -1337,6 +1566,7 @@ def sync_current_turn(task: dict[str, Any]) -> None:
 
 
 def new_turn(message: str) -> dict[str, Any]:
+    """Return a new queued turn for a user message, with its own id."""
     return {"turn_id": uuid.uuid4().hex, "message": message, "created_at": utc_now(), "status": "queued"}
 
 
@@ -1620,6 +1850,7 @@ def find_attachment(task: dict[str, Any], attachment_id: str) -> dict[str, Any] 
 
 
 def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, Any]:
+    """Return a task as the API sends it: a short summary for lists, or the full record with its turns."""
     if summary:
         fields = ("task_id", "title", "status", "created_at", "updated_at", "summary", "question")
         result = {key: task.get(key, "") for key in fields}
@@ -1627,7 +1858,7 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
         result["pinned"] = bool(task.get("pinned"))
     else:
         result = copy.deepcopy(task)
-        result["chat_settings"] = copy.deepcopy(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
+        result["chat_settings"] = current_chat_settings(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
         result["turns"] = task_turns(task)
         result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
     result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES
@@ -1635,6 +1866,11 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
 
 
 def update_task(task_id: str, **updates: Any) -> bool:
+    """Apply changes to a task, creating it if needed, and save it to task.json and the task index.
+
+    Once cancellation was requested, nothing is changed and False is returned,
+    unless the update sets the cancelled status or clears the request.
+    """
     with lock:
         task = tasks.setdefault(task_id, {"task_id": task_id})
         if task.get("cancellation_requested") and updates.get("status") != "cancelled" and updates.get("cancellation_requested") is not False:
@@ -1718,13 +1954,15 @@ def task_cancellation_requested(task_id: str) -> bool:
 
 
 def require_auth(func):
+    """Make a route require the worker API token, except for requests that come through Home Assistant Ingress."""
     @wraps(func)
     def wrapper(*args, **kwargs):
+        """Run the route only for an Ingress request or one that carries the worker API token."""
         if is_ingress_request():
             return func(*args, **kwargs)
         expected = api_token()
         if not expected:
-            return jsonify({"ok": False, "error": "api_token is not configured in add-on options"}), 503
+            return jsonify({"ok": False, "error": "worker API token is not available"}), 503
         supplied = request.headers.get("X-Codex-Worker-Token", "")
         auth = request.headers.get("Authorization", "")
         if auth.lower().startswith("bearer "):
@@ -1768,6 +2006,7 @@ def stdin_reader() -> None:
 
 
 def _active_task_ids_locked() -> set[str]:
+    """Return the ids of tasks that are queued or running or still hold a runner or process; call with the lock held."""
     active = set(active_task_runners)
     active.update(running_processes)
     active.update(
@@ -1779,6 +2018,7 @@ def _active_task_ids_locked() -> set[str]:
 
 
 def _active_task_id_locked() -> str | None:
+    """Return the id of an active task, the first in the task list if any, or None when idle; call with the lock held."""
     active = _active_task_ids_locked()
     for task_id in tasks:
         if task_id in active:
@@ -1787,16 +2027,23 @@ def _active_task_id_locked() -> str | None:
 
 
 def active_task_id() -> str | None:
+    """Return the id of the active task, or None when the worker is idle."""
     with lock:
         return _active_task_id_locked()
 
 
 def active_task_count() -> int:
+    """Return how many tasks are active."""
     with lock:
         return len(_active_task_ids_locked())
 
 
 def should_include_file(path: Path) -> bool:
+    """Return whether a file under /config is watched for changes and may go into a snapshot.
+
+    Links, excluded folders and file types, the recorder database, and files
+    over the size limit are left out.
+    """
     try:
         rel = path.relative_to(CONFIG_ROOT)
     except ValueError:
@@ -1824,6 +2071,7 @@ def should_include_file(path: Path) -> bool:
 
 
 def file_hash(path: Path) -> str:
+    """Return the SHA-256 hex digest of a file's content."""
     hasher = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -1831,25 +2079,51 @@ def file_hash(path: Path) -> str:
     return hasher.hexdigest()
 
 
+# What the last scan of /config saw, so the next scan reads only the files that
+# changed since. A file is trusted when its size and both timestamps are the
+# same and it was already at rest some time before that scan started.
+manifest_cache: dict[str, Any] = {"root": "", "scanned_ns": 0, "files": {}}
+MANIFEST_SETTLE_NS = 2_000_000_000
+
+
 def build_manifest() -> dict[str, dict[str, Any]]:
+    """List the files under /config with a hash of each, to find what an exchange changed."""
+    root = str(CONFIG_ROOT)
+    with lock:
+        same_root = manifest_cache["root"] == root
+        known: dict[str, tuple[int, int, int, str]] = manifest_cache["files"] if same_root else {}
+        trusted_before = (manifest_cache["scanned_ns"] if same_root else 0) - MANIFEST_SETTLE_NS
+    scanned_ns = time.time_ns()
+    own_files = str(task_root()) + os.sep
+    seen: dict[str, tuple[int, int, int, str]] = {}
     manifest: dict[str, dict[str, Any]] = {}
     for path in CONFIG_ROOT.rglob("*"):
-        if not should_include_file(path):
+        # The worker's own task files are not part of the user's configuration.
+        if str(path).startswith(own_files) or not should_include_file(path):
             continue
         rel = path.relative_to(CONFIG_ROOT).as_posix()
         try:
             stat = path.stat()
-            manifest[rel] = {
-                "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
-                "sha256": file_hash(path),
-            }
+            previous = known.get(rel)
+            if (
+                previous is not None
+                and previous[:3] == (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                and stat.st_ctime_ns < trusted_before
+            ):
+                digest = previous[3]
+            else:
+                digest = file_hash(path)
         except OSError:
             continue
+        seen[rel] = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, digest)
+        manifest[rel] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": digest}
+    with lock:
+        manifest_cache.update(root=root, scanned_ns=scanned_ns, files=seen)
     return manifest
 
 
 def diff_manifests(before: dict[str, Any], after: dict[str, Any]) -> dict[str, list[str]]:
+    """Return the paths added, changed, and deleted between two manifests; changed means the hash differs."""
     before_keys = set(before)
     after_keys = set(after)
     changed = [
@@ -1864,10 +2138,19 @@ def diff_manifests(before: dict[str, Any], after: dict[str, Any]) -> dict[str, l
     }
 
 
-def create_snapshot(task_id: str) -> dict[str, Any]:
-    task_dir = get_run_dir(task_id)
-    snapshot_path = task_dir / "snapshot-before.tar.gz"
+def record_baseline(task_id: str) -> dict[str, dict[str, Any]]:
+    """Note the state of /config before an exchange, to find afterwards what it changed."""
     manifest = build_manifest()
+    (get_run_dir(task_id) / BASELINE_FILE).write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
+def create_snapshot(task_id: str, manifest: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Archive every listed file before an exchange; only done when full snapshots are turned on."""
+    task_dir = get_run_dir(task_id)
+    snapshot_path = task_dir / SNAPSHOT_FILE
+    if manifest is None:
+        manifest = record_baseline(task_id)
     file_count = 0
     with tarfile.open(snapshot_path, "w:gz") as tar:
         for rel in sorted(manifest):
@@ -1877,7 +2160,6 @@ def create_snapshot(task_id: str) -> dict[str, Any]:
             if path.exists():
                 tar.add(path, arcname=rel, recursive=False)
                 file_count += 1
-    (task_dir / "manifest-before.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     snapshot_path.chmod(0o600)
     return {"path": str(snapshot_path), "file_count": file_count, "created_at": utc_now()}
 
@@ -1891,6 +2173,7 @@ def snapshot_secret_path(relative: str) -> bool:
 
 
 def validate_changed_files(changes: dict[str, list[str]]) -> list[str]:
+    """Check that added and changed JSON, YAML, and .storage files still parse; return a message for each that fails."""
     errors: list[str] = []
     for rel in sorted(set(changes.get("added", []) + changes.get("changed", []))):
         path = CONFIG_ROOT / rel
@@ -1911,7 +2194,14 @@ def validate_changed_files(changes: dict[str, list[str]]) -> list[str]:
 CONFIG_CHECK_TIMEOUT = 180
 CONFIG_CHECK_SUFFIXES = {".yaml", ".yml"}
 CONFIG_CHECK_TEXT_MAX = 4000
+BASELINE_FILE = "manifest-before.json"
+SNAPSHOT_FILE = "snapshot-before.tar.gz"
+# Copies of files as they were before an exchange changed them: made by Codex
+# before each edit, or taken from the full snapshot when that option is on.
+BACKUP_DIR = "backups"
+# Folder name used for recovery copies before 0.1.63; only cleaned up now.
 RECOVERY_DIR = "recovery"
+DASHBOARD_STORAGE_PREFIX = ".storage/lovelace"
 
 
 def yaml_config_changes(changes: dict[str, list[str]]) -> list[str]:
@@ -1976,46 +2266,150 @@ def files_in_validation_errors(validation_errors: list[str]) -> list[str]:
     return sorted(files)
 
 
-def preserve_recovery_copies(run_dir: Path, changes: dict[str, list[str]], affected: list[str]) -> list[dict[str, str]]:
-    """Copy the pre-change version of each affected file out of the snapshot.
+def codex_backup_dir(run_dir: Path, options: dict[str, Any]) -> Path | None:
+    """The folder Codex copies files into before changing them, or None when it cannot write there."""
+    mode = str(options.get("codex_sandbox") or DEFAULT_OPTIONS["codex_sandbox"])
+    if mode == "read-only":
+        return None
+    folder = run_dir / BACKUP_DIR
+    # The workspace-write sandbox only lets Codex write inside /config.
+    if mode != "danger-full-access" and not folder.resolve().is_relative_to(CONFIG_ROOT.resolve()):
+        return None
+    return folder
 
-    Returns one entry per affected file: `copy` is the recovery file for files
-    that existed before the exchange, and empty for files the exchange added.
+
+def safe_relative_path(rel: str) -> bool:
+    """Whether a path from a task result stays inside the folder it is joined to."""
+    return bool(rel) and not rel.startswith("/") and ".." not in Path(rel).parts
+
+
+def copied_files(run_dir: Path) -> dict[str, Path]:
+    """The files in an exchange's backup folder by their path under /config.
+
+    Codex can write in this folder, so links to folders are not followed.
     """
-    snapshot_path = run_dir / "snapshot-before.tar.gz"
+    root = run_dir / BACKUP_DIR
+    if root.is_symlink() or not root.is_dir():
+        return {}
+    return {
+        Path(folder, name).relative_to(root).as_posix(): Path(folder, name)
+        for folder, _, names in os.walk(root) for name in names
+    }
+
+
+def drop_credential_backups(run_dir: Path) -> None:
+    """Delete copies of credential files, which Codex is told not to make."""
+    for rel, path in copied_files(run_dir).items():
+        if snapshot_secret_path(rel):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def saved_copy(run_dir: Path, rel: str, before: dict[str, Any]) -> dict[str, str]:
+    """Find the copy Codex made of a file before changing it.
+
+    A copy counts as saved only when it is identical to the file the worker saw
+    before the exchange started. `status` is `saved`, `missing`, `unverified`
+    for a copy that is not the earlier version, or `excluded` for credential
+    files, which are never copied.
+    """
+    entry = {"path": rel, "status": "missing", "copy": ""}
+    # Codex can write in this folder, so never follow a link it may have left there.
+    if not safe_relative_path(rel) or (run_dir / BACKUP_DIR).is_symlink():
+        return entry
+    if snapshot_secret_path(rel):
+        return {**entry, "status": "excluded"}
+    root = (run_dir / BACKUP_DIR).resolve()
+    target = root / rel
+    expected = str((before.get(rel) or {}).get("sha256") or "")
+    try:
+        if not target.resolve().is_relative_to(root) or target.is_symlink() or not target.is_file():
+            return entry
+        if expected and file_hash(target) == expected:
+            return {**entry, "status": "saved", "copy": str(target)}
+    except OSError:
+        return entry
+    return {**entry, "status": "unverified", "copy": str(target)}
+
+
+def fill_from_snapshot(run_dir: Path, entries: list[dict[str, str]]) -> None:
+    """With a full snapshot, take every previous version Codex did not save out of the archive."""
+    wanted = {
+        entry["path"]: entry for entry in entries
+        if entry["status"] in {"missing", "unverified"} and safe_relative_path(entry["path"])
+    }
+    snapshot_path = run_dir / SNAPSHOT_FILE
+    if not wanted or not snapshot_path.is_file() or (run_dir / BACKUP_DIR).is_symlink():
+        return
+    root = (run_dir / BACKUP_DIR).resolve()
+    with tarfile.open(snapshot_path, "r:gz") as tar:
+        for member in tar:
+            entry = wanted.get(member.name)
+            target = root / member.name
+            if entry is None or not member.isfile() or not target.resolve().is_relative_to(root):
+                continue
+            source = tar.extractfile(member)
+            if source is None:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read())
+            entry.update(status="saved", copy=str(target))
+
+
+def previous_versions(run_dir: Path, paths: list[str], before: dict[str, Any]) -> list[dict[str, str]]:
+    """Say for each changed file where its previous version is saved, if anywhere."""
+    entries = [saved_copy(run_dir, rel, before) for rel in paths]
+    try:
+        fill_from_snapshot(run_dir, entries)
+    except (OSError, tarfile.TarError) as exc:
+        print(f"Could not read {run_dir / SNAPSHOT_FILE}: {redact(str(exc))}", flush=True)
+    return entries
+
+
+def review_backups(run_dir: Path, before: dict[str, Any], changes: dict[str, list[str]], edited: set[str]) -> list[dict[str, str]]:
+    """Report which changed files have a copy of their previous version.
+
+    Home Assistant rewrites its own storage files all the time, so only files
+    that are Codex's doing are reviewed: the ones it reported editing, the ones
+    it copied, and changed YAML and dashboard files.
+    """
+    drop_credential_backups(run_dir)
+    copied = {rel for rel, path in copied_files(run_dir).items() if not path.is_symlink()}
+    existed = set(changes.get("changed", [])) | set(changes.get("deleted", []))
+    reviewed = sorted(
+        rel for rel in existed
+        if rel in edited or rel in copied or rel.startswith(DASHBOARD_STORAGE_PREFIX)
+        or (not rel.startswith(".storage/") and Path(rel).suffix.lower() in CONFIG_CHECK_SUFFIXES)
+    )
+    return previous_versions(run_dir, reviewed, before)
+
+
+def recovery_copies(run_dir: Path, changes: dict[str, list[str]], affected: list[str], before: dict[str, Any]) -> list[dict[str, str]]:
+    """Point to the pre-change version of each file that failed validation.
+
+    Returns one entry per affected file: `copy` is the saved previous version,
+    and empty for files the exchange added or that have no saved copy; `reason`
+    then says why.
+    """
     added = set(changes.get("added", []))
-    wanted = [rel for rel in affected if rel and not rel.startswith("/") and ".." not in Path(rel).parts]
-    if not wanted:
-        return []
-    recovery_root = (run_dir / RECOVERY_DIR).resolve()
-    results: dict[str, dict[str, str]] = {rel: {"path": rel, "copy": ""} for rel in wanted}
+    wanted = [rel for rel in affected if safe_relative_path(rel)]
+    saved = {entry["path"]: entry for entry in previous_versions(run_dir, [rel for rel in wanted if rel not in added], before)}
+    results = []
     for rel in wanted:
-        if rel not in added and snapshot_secret_path(rel):
-            results[rel]["reason"] = "excluded_credentials"
-    if snapshot_path.is_file() and any(rel not in added for rel in wanted):
-        with tarfile.open(snapshot_path, "r:gz") as tar:
-            for rel in wanted:
-                if rel in added or snapshot_secret_path(rel):
-                    continue
-                try:
-                    member = tar.getmember(rel)
-                except KeyError:
-                    continue
-                if not member.isfile():
-                    continue
-                target = (recovery_root / rel).resolve()
-                if not target.is_relative_to(recovery_root):
-                    continue
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(source.read())
-                results[rel]["copy"] = str(target)
-    return [results[rel] for rel in wanted]
+        entry = {"path": rel, "copy": ""}
+        if rel in saved and saved[rel]["status"] == "saved":
+            entry["copy"] = saved[rel]["copy"]
+        elif rel in saved:
+            entry["reason"] = "excluded_credentials" if saved[rel]["status"] == "excluded" else "no_backup"
+        results.append(entry)
+    return results
 
 
-def assess_changes(task_id: str, run_dir: Path, changes: dict[str, list[str]]) -> dict[str, Any]:
+def assess_changes(
+    task_id: str, run_dir: Path, changes: dict[str, list[str]], before: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Validate what the exchange changed and prepare recovery copies when it failed.
 
     Syntax validation runs first. When it passes and YAML files changed, Home
@@ -2042,9 +2436,9 @@ def assess_changes(task_id: str, run_dir: Path, changes: dict[str, list[str]]) -
     recovery_files: list[dict[str, str]] = []
     if affected:
         try:
-            recovery_files = preserve_recovery_copies(run_dir, changes, affected)
+            recovery_files = recovery_copies(run_dir, changes, affected, before or {})
         except Exception as exc:
-            write_task_log(task_id, "worker", f"Could not keep recovery copies: {exc}")
+            write_task_log(task_id, "worker", f"Could not find recovery copies: {exc}")
     lovelace_results: list[dict[str, Any]] = []
     failed_storage = {rel for rel in files_in_validation_errors(validation_errors) if rel.startswith(".storage/")}
     for rel in sorted(failed_storage):
@@ -2067,24 +2461,55 @@ def assess_changes(task_id: str, run_dir: Path, changes: dict[str, list[str]]) -
     }
 
 
+def code_span(text: str) -> str:
+    """Return text as Markdown inline code, so the chat shows a path with its underscores and asterisks."""
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def code_spans(paths: list[str]) -> str:
+    """Return paths as a comma-separated list of Markdown inline code."""
+    return ", ".join(code_span(path) for path in paths)
+
+
+def validation_message(message: str) -> str:
+    """Return a validation message with the file it starts with, if any, as Markdown inline code."""
+    rel, sep, rest = message.partition(": ")
+    return f"{code_span(rel)}: {rest}" if sep and not rel.startswith("Home Assistant") else message
+
+
+def unsaved_note(paths: list[str]) -> str:
+    """Tell the user which changed files have no copy of their previous version."""
+    shown = code_spans(paths[:10]) + (f", and {len(paths) - 10} more" if len(paths) > 10 else "")
+    return f"No copy of the previous version was saved for: {shown}. Use a Home Assistant backup to restore such a file."
+
+
 def validation_details(validation_errors: list[str], config_check: dict[str, str], recovery_files: list[dict[str, str]]) -> str:
     """The details text for a failed validation, with how to recover."""
-    lines = ["Validation errors: " + "; ".join(validation_errors[:5])]
+    lines = ["Validation errors: " + "; ".join(validation_message(message) for message in validation_errors[:5])]
     copies = [entry for entry in recovery_files if entry.get("copy")]
     added = [entry["path"] for entry in recovery_files if not entry.get("copy") and not entry.get("reason")]
     excluded = [entry["path"] for entry in recovery_files if entry.get("reason") == "excluded_credentials"]
+    unsaved = [entry["path"] for entry in recovery_files if entry.get("reason") == "no_backup"]
     if copies:
-        lines.append("Pre-change copies of the affected files are kept at: " + ", ".join(entry["copy"] for entry in copies))
+        lines.append(
+            f"Pre-change copies of the affected files are kept for {backup_retention_days()} days at: "
+            + code_spans([entry["copy"] for entry in copies])
+        )
     if added:
-        lines.append("New files that did not exist before: " + ", ".join(added))
+        lines.append("New files that did not exist before: " + code_spans(added))
     if excluded:
-        lines.append("Credential files excluded from recovery snapshots; use a Home Assistant backup: " + ", ".join(excluded))
+        lines.append("Credential files excluded from recovery copies; use a Home Assistant backup: " + code_spans(excluded))
+    if unsaved:
+        lines.append(unsaved_note(unsaved))
     if config_check.get("warnings"):
         lines.append("Home Assistant warnings: " + config_check["warnings"])
     return "\n".join(lines)
 
 
 def find_lovelace_dashboard_refs(changes: dict[str, list[str]]) -> list[dict[str, str]]:
+    """Return the storage dashboards among the added and changed files, with their id, URL path, and storage file."""
     refs: list[dict[str, str]] = []
     changed_paths = sorted(set(changes.get("added", []) + changes.get("changed", [])))
     registry = read_lovelace_registry()
@@ -2107,6 +2532,7 @@ def find_lovelace_dashboard_refs(changes: dict[str, list[str]]) -> list[dict[str
 
 
 def read_lovelace_registry() -> dict[str, dict[str, Any]]:
+    """Return the dashboards Home Assistant has registered, by id, or an empty dict when they cannot be read."""
     registry_path = CONFIG_ROOT / ".storage" / "lovelace_dashboards"
     if not registry_path.exists():
         return {}
@@ -2119,16 +2545,19 @@ def read_lovelace_registry() -> dict[str, dict[str, Any]]:
 
 
 def ha_token() -> str:
+    """Return the Supervisor token the worker uses for Home Assistant, or an empty string when there is none."""
     return str(os.environ.get("SUPERVISOR_TOKEN") or "")
 
 
 def ha_token_source() -> str:
+    """Return where the Home Assistant token comes from: "supervisor", or "none" when there is no token."""
     if os.environ.get("SUPERVISOR_TOKEN"):
         return "supervisor"
     return "none"
 
 
 def create_persistent_notification(title: str, message: str, notification_id: str) -> None:
+    """Create or replace a persistent notification in Home Assistant, logging a failure."""
     ok, detail = call_ha_service(
         "persistent_notification.create",
         {"title": title, "message": message, "notification_id": notification_id},
@@ -2138,16 +2567,19 @@ def create_persistent_notification(title: str, message: str, notification_id: st
 
 
 def dismiss_persistent_notification(notification_id: str) -> None:
+    """Dismiss a persistent notification in Home Assistant."""
     call_ha_service("persistent_notification.dismiss", {"notification_id": notification_id})
 
 
 def ha_base_url() -> str:
+    """Return Home Assistant's base URL: the Supervisor proxy when its token is used, otherwise the ha_url option."""
     if ha_token_source() == "supervisor":
         return "http://supervisor/core"
     return str(read_options().get("ha_url") or DEFAULT_OPTIONS["ha_url"]).rstrip("/")
 
 
 def ha_api_url(path: str) -> str:
+    """Return the Home Assistant REST API URL for a path, given with or without a leading slash or api/ prefix."""
     base = ha_base_url().rstrip("/")
     if path.startswith("/"):
         path = path[1:]
@@ -2157,6 +2589,7 @@ def ha_api_url(path: str) -> str:
 
 
 def ha_ws_url() -> str:
+    """Return the URL of Home Assistant's WebSocket API."""
     if ha_token_source() == "supervisor":
         return "ws://supervisor/core/websocket"
     parsed = urlparse(ha_api_url("websocket"))
@@ -2165,6 +2598,7 @@ def ha_ws_url() -> str:
 
 
 def call_ha_service(service: str, data: dict[str, Any]) -> tuple[bool, str]:
+    """Call a Home Assistant service, named as domain.service, and return whether it worked and the error text if not."""
     token = ha_token()
     if not token:
         return False, "No Home Assistant token available"
@@ -2195,6 +2629,7 @@ def call_ha_service(service: str, data: dict[str, Any]) -> tuple[bool, str]:
 
 
 def fire_ha_event(event_type: str, data: dict[str, Any]) -> tuple[bool, str]:
+    """Fire an event on Home Assistant's event bus and return whether it worked and the error text if not."""
     token = ha_token()
     if not token:
         return False, "No Home Assistant token available"
@@ -2217,6 +2652,7 @@ def fire_ha_event(event_type: str, data: dict[str, Any]) -> tuple[bool, str]:
 
 
 def notify(title: str, message: str) -> None:
+    """Send a notification through the configured notify service; without one, or when it fails, show a persistent one."""
     service = str(read_options().get("notify_service") or "")
     if service:
         ok, detail = call_ha_service(service, {"title": title, "message": message})
@@ -2229,7 +2665,32 @@ def notify(title: str, message: str) -> None:
     )
 
 
+def notify_question(task_id: str, turn_id: str, question: str, choices: list[str]) -> None:
+    """Notify that Codex waits for an answer, and offer its choices.
+
+    A mobile app notify service gets one button per choice; the Codex
+    integration sends the tapped one back as the reply. Any other service, and
+    the persistent notification, lists the choices in the text.
+    """
+    title = "Codex needs input"
+    service = str(read_options().get("notify_service") or "")
+    if choices and turn_id and service.startswith("notify.mobile_app_"):
+        actions = [
+            {"action": f"{CHOICE_ACTION_PREFIX}{index}_{turn_id}_{task_id}", "title": choice}
+            for index, choice in enumerate(choices)
+        ]
+        ok, detail = call_ha_service(
+            service, {"title": title, "message": f"{question} Task: {task_id}", "data": {"actions": actions}}
+        )
+        if ok:
+            return
+        print(f"Notification with choices through {service} failed: {detail}", flush=True)
+    options = f" Options: {'; '.join(choices)}." if choices else ""
+    notify(title, f"{question}{options} Task: {task_id}")
+
+
 def save_lovelace_dashboard(ref: dict[str, str]) -> tuple[bool, str]:
+    """Save the config from a dashboard's storage file through Home Assistant's WebSocket API; return (ok, message)."""
     token = ha_token()
     if not token:
         return False, "No Home Assistant token available"
@@ -2273,6 +2734,7 @@ def save_lovelace_dashboard(ref: dict[str, str]) -> tuple[bool, str]:
 
 
 def codex_login_status() -> dict[str, Any]:
+    """Ask the Codex CLI whether it is logged in; return that, whether auth.json exists, and the CLI's message."""
     auth_file = CODEX_HOME / "auth.json"
     result = {"has_auth_file": auth_file.exists(), "status_ok": False, "message": ""}
     codex = codex_binary_path()
@@ -2296,6 +2758,7 @@ def codex_login_status() -> dict[str, Any]:
 
 
 def auth_status_payload() -> dict[str, Any]:
+    """Return the sign-in flow's state for the API, with whether its process is running and the Codex login status."""
     with auth_lock:
         state = dict(auth_state)
         proc = auth_process
@@ -2314,6 +2777,7 @@ def auth_status_payload() -> dict[str, Any]:
 
 
 def parse_login_output(text: str) -> dict[str, str]:
+    """Return the first URL and the first device code in `codex login` output, each empty when not found."""
     cleaned = clean_cli_text(text)
     urls = [url.rstrip(".,;") for url in URL_RE.findall(cleaned)]
     codes = DEVICE_CODE_RE.findall(cleaned)
@@ -2324,6 +2788,7 @@ def parse_login_output(text: str) -> dict[str, str]:
 
 
 def write_login_qr(login_id: str, url: str) -> str:
+    """Write a QR code for the sign-in URL as an SVG on a white background under /config/www and return its /local URL."""
     from qrcode import QRCode
     from qrcode.image.svg import SvgImage
 
@@ -2348,12 +2813,14 @@ def write_login_qr(login_id: str, url: str) -> str:
 
 
 def update_auth_state(**updates: Any) -> None:
+    """Store new values in the sign-in flow's state and note when it was updated."""
     with auth_lock:
         auth_state.update(updates)
         auth_state["updated_at"] = utc_now()
 
 
 def notify_codex_login_ready(login_id: str, url: str, code: str) -> str:
+    """Show a persistent notification with the sign-in link, its QR code, and the code if known; return the QR URL."""
     qr_url = write_login_qr(login_id, url)
     code_line = (
         f"\n\nOpenAI will ask for this code:\n\n**`{code}`**"
@@ -2374,6 +2841,7 @@ def notify_codex_login_ready(login_id: str, url: str, code: str) -> str:
 
 
 def auth_reader_thread(handle) -> None:
+    """Follow `codex login` output: log it, update the sign-in state, and notify the user when the link or code appears."""
     buffer = ""
     notified = False
     notified_code = ""
@@ -2410,6 +2878,7 @@ def auth_reader_thread(handle) -> None:
 
 
 def run_codex_device_login(login_id: str) -> None:
+    """Run `codex login --device-auth` until it exits, then record and announce whether the sign-in worked."""
     global auth_process
     codex = CODEX_BINARY
     update_auth_state(
@@ -2451,6 +2920,7 @@ def run_codex_device_login(login_id: str) -> None:
     if returncode == 0 and codex_login_status().get("status_ok"):
         update_auth_state(status="completed", completed_at=utc_now(), returncode=returncode)
         dismiss_persistent_notification(AUTH_NOTIFY_ID)
+        forget_default_model()
         notify("Codex sign-in complete", "Codex CLI is now authenticated for the Home Assistant worker.")
         refresh_usage_status_async(force=True)
     else:
@@ -2459,6 +2929,11 @@ def run_codex_device_login(login_id: str) -> None:
 
 
 def start_codex_login_flow(force: bool = False) -> dict[str, Any]:
+    """Start the device-code sign-in in a background thread and return the sign-in state.
+
+    Nothing is started when Codex is already logged in, unless forced, or when
+    a sign-in is already running.
+    """
     global auth_process
     current = codex_login_status()
     if current.get("status_ok") and not force:
@@ -2486,6 +2961,7 @@ def start_codex_login_flow(force: bool = False) -> dict[str, Any]:
 
 
 def logout_codex() -> dict[str, Any]:
+    """Stop any running sign-in, run `codex logout`, and return the outcome; refused while a task is active."""
     global auth_process
     if active_task_id():
         return {"ok": False, "error": "cannot log out while a Codex task is running", "status": auth_status_payload()}
@@ -2528,6 +3004,7 @@ def logout_codex() -> dict[str, Any]:
             output="",
             error="",
         )
+        forget_default_model()
         notify("Codex signed out", "Codex CLI credentials were removed from the Home Assistant worker.")
         refresh_usage_status_async(force=True)
         return {"ok": True, "message": message, "status": auth_status_payload()}
@@ -2536,6 +3013,7 @@ def logout_codex() -> dict[str, Any]:
 
 
 def auto_start_login_if_needed() -> None:
+    """Start the sign-in flow when Codex is not logged in; otherwise refresh the usage status if it is due."""
     status = codex_login_status()
     if status.get("status_ok"):
         update_auth_state(status="authenticated", message=status.get("message", ""))
@@ -2711,15 +3189,36 @@ Pages contain Liquid tags; snippets they include are under _includes. Search for
 """
 
 
+def codex_ha_url(options: dict[str, Any]) -> str:
+    """Return the address Codex's own Home Assistant API calls go to with the HA_TOKEN option.
+
+    It is the ha_url option. The option used to default to the Supervisor's Core
+    proxy, which does not accept a Home Assistant token, so that address and an
+    empty option stand for Core's own address.
+    """
+    url = str(options.get("ha_url") or "").strip().rstrip("/")
+    if not url or urlparse(url).hostname == "supervisor":
+        return CORE_URL
+    return url
+
+
 def codex_env() -> dict[str, str]:
+    """Return the environment Codex processes run in.
+
+    The Supervisor tokens and the verification capability are removed, HOME and
+    CODEX_HOME point into the add-on's data folder, and HA_TOKEN is set only
+    from the add-on option, together with HA_URL, the address it works at.
+    """
     env = dict(os.environ)
-    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_VERIFICATION_CAPABILITY"):
+    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_URL", "HA_VERIFICATION_CAPABILITY"):
         env.pop(key, None)
     env["CODEX_HOME"] = str(CODEX_HOME)
     env["HOME"] = str(DATA_ROOT)
-    ha_token = str(read_options().get("HA_TOKEN") or "").strip()
-    if ha_token:
-        env["HA_TOKEN"] = ha_token
+    options = read_options()
+    token = str(options.get("HA_TOKEN") or "").strip()
+    if token:
+        env["HA_TOKEN"] = token
+        env["HA_URL"] = codex_ha_url(options)
     return env
 
 
@@ -2754,9 +3253,39 @@ def attached_image_note(task_id: str) -> str:
     )
 
 
-def build_prompt(user_prompt: str, task_id: str, reply: str | None = None) -> str:
+def backup_instructions(backup_dir: Path | None) -> str:
+    """Tell Codex to keep the previous version of each file it changes."""
+    if backup_dir is None:
+        return ""
+    return (
+        f"Before you change, move, or delete a file that already exists under /config, copy it to {backup_dir} under "
+        f"the same relative path, creating folders as needed: /config/automations.yaml goes to {backup_dir}/automations.yaml "
+        f"and /config/.storage/lovelace.kitchen goes to {backup_dir}/.storage/lovelace.kitchen. Copy each file once, before "
+        "your first change to it for this message, and only the files you are about to change. Files you create need no copy. "
+        "Never copy secrets.yaml, .storage/auth, .storage/auth_provider.*, .storage/http.auth, or .storage/core.config_entries. "
+        "Do not leave other backup copies in /config. The worker checks these copies when you finish and tells the user "
+        "which changed files have none.\n\n"
+    )
+
+
+def home_assistant_api_instructions(options: dict[str, Any]) -> str:
+    """Tell Codex where its own Home Assistant API calls go; empty when the add-on gives it no token for them."""
+    if not str(options.get("HA_TOKEN") or "").strip():
+        return ""
+    return (
+        "For Home Assistant API calls you make yourself, such as a reload or a restart the user asked for, use the "
+        "HA_URL and HA_TOKEN environment variables: send the request to $HA_URL, for example "
+        '$HA_URL/api/services/automation/reload, with the header "Authorization: Bearer $HA_TOKEN". '
+        "Do not use http://supervisor/core, which does not accept this token, and never print the token.\n\n"
+    )
+
+
+def build_prompt(user_prompt: str, task_id: str, reply: str | None = None, backup_dir: Path | None = None) -> str:
+    """Write the instructions Codex gets for one message, including where to save its backups."""
     current_request = reply if reply is not None else user_prompt
     attached = attached_image_note(task_id)
+    backups = backup_instructions(backup_dir)
+    api = home_assistant_api_instructions(read_options())
     docs = ha_docs_note()
     return f"""You are Codex running as a Home Assistant add-on worker.
 
@@ -2765,9 +3294,9 @@ Task id: {task_id}
 
 Follow /config/AGENTS.md. Treat this as a live Home Assistant config tree. Make focused edits, do not expose secrets, and validate changed YAML/JSON when practical. After you finish, the worker asks Home Assistant to check its configuration whenever YAML files changed; if that check fails, the task is reported as failed, so prefer a change you are confident is valid over a speculative one.
 
-This is a non-interactive run. Do not wait for terminal input. If you need the user's decision or verification before continuing, stop cleanly by returning status "needs_input" with one concise question.
+This is a non-interactive run. Do not wait for terminal input. If you need the user's decision or verification before continuing, stop cleanly by returning status "needs_input" with one concise question. If you are asking whether to go ahead with a change, say in the summary exactly what you would change. When the answer is one of a few options, also list up to three in choices, each a few words of plain text, for example "Go ahead" and "Don't change anything". The user answers by picking one or by typing something else, and the answer arrives as the next message.
 
-If the user asks for an image, use the built-in image generation tool. Every image it generates is attached to this conversation and shown to the user automatically, so leave it at its default save location and describe it in the summary. Copy it into /config only when the user asks for a file at a specific path. The default save location is not a failure.
+{backups}If the user asks for an image, use the built-in image generation tool. Every image it generates is attached to this conversation and shown to the user automatically, so leave it at its default save location and describe it in the summary. Copy it into /config only when the user asks for a file at a specific path. The default save location is not a failure.
 
 Use the home_assistant MCP verify tool for authenticated Home Assistant checks, with these argument examples:
   {{"operation":"entity","entity_id":"light.kitchen","expected_state":"on","attributes":["brightness"]}}
@@ -2779,11 +3308,12 @@ The MCP tool runs through the worker outside the shell network sandbox. Do not a
 Use fresh entity readback after any user-authorized reload or change. These tools do not perform reloads or device actions. Only perform those when authorized by the user. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
 After an authorized storage-dashboard edit, add "save_pending":true to the dashboard request to have the worker save that turn's pending dashboard edit and verify API readback before capturing it. This requires auto_save_lovelace to be enabled. Without save_pending, the browser inspects only the dashboard currently loaded in Home Assistant.
 
-{docs}At the end, return only an object matching the provided JSON schema:
+{api}{docs}At the end, return only an object matching the provided JSON schema:
 - status: "completed", "needs_input", or "failed"
 - summary: concise result
 - question: use an empty string unless status is "needs_input"
 - details: use an empty string unless there are useful implementation/test notes
+- choices: use an empty list unless status is "needs_input" and the answer is one of a few options
 {attached}Current user message:
 {current_request}
 """
@@ -2808,6 +3338,12 @@ def verification_mcp_args() -> list[str]:
 
 
 def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_id: str | None) -> list[str]:
+    """Return the `codex exec` command line for the task's latest turn, resuming the session when one is given.
+
+    It carries the turn's model and reasoning level, the sandbox, the output
+    files, the verification tool, and the attached images; the prompt itself
+    is read from stdin.
+    """
     options = read_options()
     with lock:
         task = tasks.get(task_id, {})
@@ -2855,6 +3391,7 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
 
 
 def reader_thread(task_id: str, stream_name: str, handle, session_holder: dict[str, str]) -> None:
+    """Copy one Codex output stream to the task log; from stdout also record the steps and the session id."""
     for line in iter(handle.readline, ""):
         if not line:
             break
@@ -2873,6 +3410,7 @@ def reader_thread(task_id: str, stream_name: str, handle, session_holder: dict[s
 
 
 def parse_final(final_file: Path, returncode: int) -> dict[str, Any]:
+    """Return Codex's final answer from its output file, or a stand-in when the file is missing or holds no JSON object."""
     if not final_file.exists():
         log_tail = ""
         log_file = final_file.parent / "codex.log"
@@ -2902,6 +3440,19 @@ def parse_final(final_file: Path, returncode: int) -> dict[str, Any]:
         "summary": raw[:1000] or "Codex completed without a structured final response.",
         "details": f"returncode={returncode}",
     }
+
+
+def clean_choices(value: Any) -> list[str]:
+    """Return the answers Codex offered with its question: text only, distinct, at most three, none overly long."""
+    choices: list[str] = []
+    for item in value if isinstance(value, list) else []:
+        text = " ".join(item.split()) if isinstance(item, str) else ""
+        if not text or len(text) > CHOICE_MAX_LENGTH or text.casefold() in {choice.casefold() for choice in choices}:
+            continue
+        choices.append(text)
+        if len(choices) == CHOICES_MAX:
+            break
+    return choices
 
 
 def terminate_and_reap_process(
@@ -2977,6 +3528,7 @@ def request_task_cancellation(
                 "attachments": [],
                 "config_check": dict(EMPTY_CONFIG_CHECK),
                 "recovery_files": [],
+                "backups": [],
                 "updated_at": utc_now(),
             }
         )
@@ -3028,6 +3580,7 @@ def publish_cancelled_task_outcome(task_id: str, returncode: int | None = None) 
         "attachments": [],
         "config_check": dict(EMPTY_CONFIG_CHECK),
         "recovery_files": [],
+        "backups": [],
         "response": {
             "status": "cancelled",
             "summary": CANCELLED_TASK_SUMMARY,
@@ -3075,6 +3628,7 @@ def fail_task_launch(
         "attachments": [],
         "config_check": dict(EMPTY_CONFIG_CHECK),
         "recovery_files": [],
+        "backups": [],
     }
     if resolved_session_id:
         task_updates["session_id"] = resolved_session_id
@@ -3096,6 +3650,7 @@ def fail_task_launch(
         "attachments": [],
         "config_check": dict(EMPTY_CONFIG_CHECK),
         "recovery_files": [],
+        "backups": [],
         "response": {
             "status": "failed",
             "summary": summary,
@@ -3143,6 +3698,7 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
                         "attachments": [],
                         "config_check": dict(EMPTY_CONFIG_CHECK),
                         "recovery_files": [],
+                        "backups": [],
                         "updated_at": completed_at,
                     }
                 )
@@ -3154,13 +3710,14 @@ def record_background_start_failure(task_id: str, exc: Exception) -> None:
 
 
 def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: str | None = None) -> None:
+    """Run one exchange: record the configuration, launch Codex, then check and report what it changed."""
     if task_cancellation_requested(task_id):
         return
     task_dir = get_run_dir(task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
     final_file = task_dir / ("final-resume.json" if reply else "final.json")
     prompt_file = task_dir / ("prompt-resume.txt" if reply else "prompt.txt")
-    before_manifest_path = task_dir / "manifest-before.json"
+    before_manifest_path = task_dir / BASELINE_FILE
 
     update_task(task_id, status="running", started_at=utc_now(), error="")
     verification_capability = verification.begin(task_id)
@@ -3169,15 +3726,30 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     start_activity(task_id, current_turn_id)
     if task_cancellation_requested(task_id):
         return
+    options = read_options()
     if not before_manifest_path.exists():
         try:
-            snapshot = create_snapshot(task_id)
-            update_task(task_id, snapshot=snapshot)
+            start_phase(task_id, "baseline", "Noting the current state of your configuration files")
+            manifest = record_baseline(task_id)
+            finish_phase(task_id, "baseline")
+            if options.get("full_snapshot"):
+                start_phase(task_id, "snapshot", "Saving a full snapshot of your configuration")
+                update_task(task_id, snapshot=create_snapshot(task_id, manifest))
+                finish_phase(task_id, "snapshot")
         except Exception as exc:
-            write_task_log(task_id, "worker", f"Snapshot failed: {exc}")
+            # Otherwise the step would be closed as done when the exchange ends well.
+            finish_phase(task_id, "baseline", "snapshot", failed=True)
+            write_task_log(task_id, "worker", f"Could not record the configuration before the run: {exc}")
             update_task(task_id, snapshot_error=str(exc))
     if task_cancellation_requested(task_id):
         return
+    backup_dir = codex_backup_dir(task_dir, options)
+    if backup_dir is not None:
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            write_task_log(task_id, "worker", f"Could not create the backup folder: {exc}")
+            backup_dir = None
 
     try:
         final_file.unlink(missing_ok=True)
@@ -3193,7 +3765,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
 
     prepare_ha_docs()
     try:
-        prompt_file.write_text(build_prompt(prompt, task_id, reply=reply), encoding="utf-8")
+        prompt_file.write_text(build_prompt(prompt, task_id, reply=reply, backup_dir=backup_dir), encoding="utf-8")
     except OSError as exc:
         fail_task_launch(
             task_id,
@@ -3208,6 +3780,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     args = build_codex_args(task_id, prompt_file, final_file, session_id)
     write_task_log(task_id, "worker", "Starting Codex: " + " ".join(args))
 
+    start_phase(task_id, "launch", "Starting Codex")
     readiness = sandbox_readiness()
     if task_cancellation_requested(task_id):
         return
@@ -3316,8 +3889,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
 
     final = parse_final(final_file, returncode)
+    start_phase(task_id, "review", "Checking the changes")
     after_manifest = build_manifest()
-    (task_dir / "manifest-after.json").write_text(json.dumps(after_manifest, indent=2), encoding="utf-8")
     try:
         before_manifest = json.loads(before_manifest_path.read_text(encoding="utf-8"))
     except Exception:
@@ -3326,7 +3899,12 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     (task_dir / "changes.json").write_text(json.dumps(changes, indent=2), encoding="utf-8")
     if task_cancellation_requested(task_id):
         return
-    assessment = assess_changes(task_id, task_dir, changes)
+    try:
+        backups = review_backups(task_dir, before_manifest, changes, edited_paths(task_id))
+    except Exception as exc:
+        backups = []
+        write_task_log(task_id, "worker", f"Could not review the saved copies: {exc}")
+    assessment = assess_changes(task_id, task_dir, changes, before_manifest)
     if task_cancellation_requested(task_id):
         return
     validation_errors = assessment["validation_errors"]
@@ -3336,7 +3914,11 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     verification.after_changes(task_id, lovelace_results)
     if task_cancellation_requested(task_id):
         return
+    finish_phase(task_id, "review")
 
+    # Why the worker turned a completed answer into a failure. A failure that
+    # already has its own summary, as a timeout or one Codex reports, needs none.
+    reason = ""
     if timed_out:
         final = {
             "status": "failed",
@@ -3345,13 +3927,18 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         }
     elif returncode != 0 and final.get("status") == "completed":
         final["status"] = "failed"
-        final["details"] = f"Codex exited with {returncode}. {final.get('details', '')}".strip()
+        reason = f"Codex exited with {returncode}."
+        final["details"] = f"{reason} {final.get('details', '')}".strip()
 
     status = str(final.get("status") or "failed")
+    # Files the validation details already report as having no saved copy.
+    named: set[str] = set()
     if validation_errors and status == "completed":
         status = "failed"
         final["status"] = "failed"
         final["details"] = validation_details(validation_errors, config_check, recovery_files)
+        reason = "Validation errors: " + "; ".join(validation_errors[:5])
+        named = {entry["path"] for entry in recovery_files if entry.get("reason") == "no_backup"}
     elif config_check["result"] == "unavailable" and status == "completed":
         note = "Home Assistant could not check the configuration, so the change is applied but unverified: " + config_check["errors"]
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
@@ -3361,8 +3948,16 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     if incomplete:
         note = f"Verification needs review: {incomplete} check(s) failed, found issues, or could not run. See the evidence below."
         final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), note) if part)
+    unsaved =[entry["path"] for entry in backups if entry["status"] in {"missing", "unverified"} and entry["path"] not in named]
+    if unsaved:
+        final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), unsaved_note(unsaved)) if part)
     task_status = "waiting_for_input" if status == "needs_input" else status
     completed_at = utc_now() if status != "needs_input" else ""
+    choices = clean_choices(final.get("choices")) if status == "needs_input" else []
+    # The task's error names why it failed, and is empty for every other outcome.
+    error = ""
+    if status == "failed":
+        error = redact(reason or str(final.get("summary") or final.get("details") or "Codex reported a failure."))
     session_id = (
         session_holder.get("session_id")
         or session_id
@@ -3381,22 +3976,28 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         session_id=session_id,
         summary=final.get("summary", ""),
         question=final.get("question", ""),
+        choices=choices,
         details=final.get("details", ""),
+        error=error,
         changes=changes,
         validation_errors=validation_errors,
         config_check=config_check,
         recovery_files=recovery_files,
+        backups=backups,
         lovelace_results=lovelace_results,
         attachments=attachments,
     ) is False:
         return
 
+    turn_id = str(tasks.get(task_id, {}).get("current_turn_id") or "")
     event_data = {
         "task_id": task_id,
+        "turn_id": turn_id,
         "status": task_status,
         "codex_status": status,
         "summary": final.get("summary", ""),
         "question": final.get("question", ""),
+        "choices": choices,
         "details": final.get("details", ""),
         "returncode": returncode,
         "session_id": session_id,
@@ -3405,6 +4006,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         "validation_errors": validation_errors,
         "config_check": config_check,
         "recovery_files": recovery_files,
+        "backups": backups,
         "lovelace_results": lovelace_results,
         "attachments": attachments,
         "verification": copy.deepcopy(tasks.get(task_id, {}).get("verification") or []),
@@ -3413,6 +4015,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
             "status": status,
             "summary": final.get("summary", ""),
             "question": final.get("question", ""),
+            "choices": choices,
             "details": final.get("details", ""),
         },
     }
@@ -3421,12 +4024,114 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         print(f"Codex task result event failed: {detail}", flush=True)
 
     if status == "needs_input":
-        notify("Codex needs input", f"{final.get('question', 'Codex needs your input.')} Task: {task_id}")
+        notify_question(task_id, turn_id, str(final.get("question") or "Codex needs your input."), choices)
     elif status == "completed":
         notify("Codex task completed", f"{final.get('summary', 'Done')} Task: {task_id}")
     else:
         notify("Codex task failed", f"{final.get('summary', 'Failed')} Task: {task_id}")
     refresh_usage_status_async(force=True)
+
+
+TURN_ID_RE = re.compile(r"[0-9a-f]{32}")
+# Only needed while an exchange runs; exchanges from before 0.1.63 left them behind.
+WORKING_FILES = (BASELINE_FILE, "manifest-after.json")
+BACKUP_ARTIFACTS = (SNAPSHOT_FILE, BACKUP_DIR, RECOVERY_DIR)
+BACKUP_CLEANUP_INTERVAL_SECONDS = 3600
+backup_cleanup_lock = threading.Lock()
+
+
+def remove_run_artifacts(run_dir: Path, names: tuple[str, ...]) -> None:
+    """Delete the named files and folders of one exchange, without following links."""
+    for name in names:
+        target = run_dir / name
+        try:
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(target)
+        except OSError as exc:
+            print(f"Could not remove {target}: {redact(str(exc))}", flush=True)
+
+
+def timestamp_seconds(value: Any) -> float | None:
+    """Read a saved ISO timestamp as seconds since the epoch, or None when it is not one."""
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except ValueError:
+        return None
+
+
+def ended_before(record: dict[str, Any], cutoff: float) -> bool:
+    """Whether an exchange ended before the given time; one without a readable time did not."""
+    ended = timestamp_seconds(record.get("completed_at") or record.get("updated_at") or record.get("created_at"))
+    return ended is not None and ended <= cutoff
+
+
+def cleanup_backups() -> None:
+    """Delete the backups of exchanges that ended longer ago than the retention setting.
+
+    The age counts from the end of the exchange, not from file dates, which a
+    copy can inherit from its original. The exchange that is running is skipped.
+    """
+    if not backup_cleanup_lock.acquire(blocking=False):
+        return
+    try:
+        cutoff = time.time() - backup_retention_days() * 86400
+        root = task_root()
+        finished: list[tuple[str, str, bool]] = []
+        with lock:
+            active = _active_task_ids_locked()
+            for task_id, task in tasks.items():
+                if TASK_ID_RE.fullmatch(task_id) is None:
+                    continue
+                running = task_id in active or task.get("status") in {"queued", "running"}
+                turns = task["turns"] if "turns" in task else []
+                # A chat from before conversation history keeps the files of its early
+                # exchanges in the chat's own folder, also after it was continued.
+                early = [turn for turn in turns if str(turn.get("turn_id") or "").startswith("legacy")] if "turns" in task else [task]
+                if early and not task.get("backups_removed") and not (running and not task.get("current_turn_id")):
+                    finished.append((task_id, "", ended_before(early[-1], cutoff)))
+                for turn in turns:
+                    turn_id = str(turn.get("turn_id") or "")
+                    if turn.get("backups_removed") or TURN_ID_RE.fullmatch(turn_id) is None:
+                        continue
+                    if running and turn_id == task.get("current_turn_id"):
+                        continue
+                    finished.append((task_id, turn_id, ended_before(turn, cutoff)))
+        expired: dict[str, set[str]] = {}
+        for task_id, turn_id, old in finished:
+            run_dir = root / task_id / "turns" / turn_id if turn_id else root / task_id
+            remove_run_artifacts(run_dir, WORKING_FILES)
+            if old:
+                remove_run_artifacts(run_dir, BACKUP_ARTIFACTS)
+                expired.setdefault(task_id, set()).add(turn_id)
+        for task_id, turn_ids in expired.items():
+            with lock:
+                task = tasks.get(task_id)
+                if task is None:
+                    continue
+                # Saved in place: this must not move the chat in the recent list.
+                if "" in turn_ids:
+                    task["backups_removed"] = True
+                for turn in task.get("turns") or []:
+                    if turn.get("turn_id") in turn_ids:
+                        turn["backups_removed"] = True
+                try:
+                    atomic_json_write(get_task_dir(task_id) / "task.json", task)
+                except OSError as exc:
+                    print(f"Could not record the backup cleanup for {task_id}: {redact(str(exc))}", flush=True)
+    finally:
+        backup_cleanup_lock.release()
+
+
+def backup_cleanup_loop() -> None:
+    """Clean up when the worker starts, and keep doing so while it sits idle."""
+    while True:
+        try:
+            cleanup_backups()
+        except Exception as exc:
+            print(f"Backup cleanup failed: {redact(str(exc))}", flush=True)
+        time.sleep(BACKUP_CLEANUP_INTERVAL_SECONDS)
 
 
 def _run_background_task(
@@ -3435,6 +4140,7 @@ def _run_background_task(
     session_id: str | None,
     reply: str | None,
 ) -> None:
+    """Run an exchange in its thread and always release the worker and clean up afterwards."""
     try:
         run_task(task_id, prompt, session_id, reply)
     except Exception as exc:
@@ -3450,8 +4156,12 @@ def _run_background_task(
                     if running_processes.get(task_id) is proc:
                         running_processes.pop(task_id, None)
         finish_activity(task_id)
-        with lock:
-            active_task_runners.discard(task_id)
+        remove_run_artifacts(get_run_dir(task_id), WORKING_FILES)
+        start_next_queued(release=task_id)
+        try:
+            cleanup_backups()
+        except Exception as exc:
+            print(f"Backup cleanup failed: {redact(str(exc))}", flush=True)
 
 
 def start_background_task(
@@ -3460,6 +4170,10 @@ def start_background_task(
     session_id: str | None = None,
     reply: str | None = None,
 ) -> threading.Thread:
+    """Reserve the worker for a task and start the thread that runs its exchange.
+
+    Raises RuntimeError when another task is active.
+    """
     with lock:
         other_active = _active_task_ids_locked() - {task_id}
         if other_active:
@@ -3480,14 +4194,243 @@ def start_background_task(
     return thread
 
 
+def open_task(task_id: str, title: str, prompt: str, settings: dict[str, Any], turn: dict[str, Any]) -> None:
+    """Record a new chat whose first exchange is about to run."""
+    update_task(
+        task_id,
+        status="queued",
+        cancellation_requested=False,
+        cancellation_event_emitted=False,
+        title=title,
+        prompt=prompt,
+        chat_settings=settings,
+        turns=[turn],
+        current_turn_id=turn["turn_id"],
+        created_at=utc_now(),
+        summary="",
+        question="",
+        choices=[],
+        details="",
+        attachments=[],
+    )
+    (get_task_dir(task_id) / "user-prompt.txt").write_text(prompt, encoding="utf-8")
+
+
+def open_turn(task_id: str, task: dict[str, Any], turn: dict[str, Any], settings: dict[str, Any]) -> None:
+    """Add the next exchange to a saved chat and clear the previous task-level result."""
+    turns = task_turns(task)
+    turns.append(turn)
+    incomplete = task.get("history_incomplete", "turns" not in task)
+    reply_history = list(task.get("reply_history") or [])
+    reply_history.append({"at": turn["created_at"], "reply": turn["message"]})
+    update_task(
+        task_id, status="queued", cancellation_requested=False,
+        chat_settings=settings,
+        cancellation_event_emitted=False, turns=turns,
+        current_turn_id=turn["turn_id"], history_incomplete=incomplete,
+        reply_history=reply_history, summary="", question="", choices=[], details="",
+        error="", started_at="", completed_at="", returncode=None,
+        changes={}, validation_errors=[], lovelace_results=[], attachments=[],
+        config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[], backups=[],
+        verification=[], verification_attachments=[],
+    )
+
+
+def save_message_queue() -> None:
+    """Write the queue to disk so waiting messages survive a worker restart."""
+    with lock:
+        atomic_json_write(MESSAGE_QUEUE_FILE, message_queue)
+
+
+def load_message_queue() -> None:
+    """Restore the queue after a restart, skipping messages that already started or lost their chat."""
+    if not MESSAGE_QUEUE_FILE.exists():
+        return
+    try:
+        loaded = json.loads(MESSAGE_QUEUE_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Could not load the message queue: {exc}", flush=True)
+        return
+    with lock:
+        for entry in loaded if isinstance(loaded, list) else []:
+            if not isinstance(entry, dict) or not all(
+                isinstance(entry.get(key), str) and entry[key]
+                for key in ("queue_id", "task_id", "turn_id", "message")
+            ):
+                continue
+            # The ids name directories, so accept only the shapes the worker generates.
+            if TASK_ID_RE.fullmatch(entry["task_id"]) is None or ATTACHMENT_ID_RE.fullmatch(entry["turn_id"]) is None:
+                continue
+            task = tasks.get(entry["task_id"])
+            started = task is not None and any(
+                turn.get("turn_id") == entry["turn_id"] for turn in task.get("turns") or []
+            )
+            if started or (task is None) != bool(entry.get("new_chat")):
+                continue
+            message_queue.append(entry)
+
+
+def queue_payload_locked(task_id: str | None = None) -> list[dict[str, Any]]:
+    """Describe the queued messages with their place in line, optionally for one chat only."""
+    return [
+        {**copy.deepcopy(entry), "position": index + 1}
+        for index, entry in enumerate(message_queue)
+        if task_id is None or entry["task_id"] == task_id
+    ]
+
+
+def find_queued_attachment(task_id: str, attachment_id: str) -> dict[str, Any] | None:
+    """Return the metadata of an image attached to a message still waiting in the queue."""
+    for entry in message_queue:
+        if entry["task_id"] != task_id:
+            continue
+        for attachment in entry.get("prompt_attachments") or []:
+            if isinstance(attachment, dict) and attachment.get("attachment_id") == attachment_id:
+                return attachment
+    return None
+
+
+def discard_queued_files(entry: dict[str, Any]) -> None:
+    """Remove the images stored for a queued message that will not run."""
+    task_dir = get_task_dir(entry["task_id"])
+    shutil.rmtree(task_dir / "turns" / entry["turn_id"], ignore_errors=True)
+    if entry.get("new_chat"):
+        # A chat that never started owns nothing else, so drop its empty directories.
+        for path in (task_dir / "turns", task_dir):
+            try:
+                path.rmdir()
+            except OSError:
+                break
+
+
+def enqueue_message(
+    task_id: str, title: str, message: str, settings: dict[str, Any],
+    uploads: list[tuple[Any, bytes]], *, new_chat: bool, answers_turn_id: str = "",
+) -> tuple[Response, int]:
+    """Hold a message until the running task and the messages queued before it finish.
+
+    The caller holds the lock, so the task that is running cannot finish
+    between its check and the message joining the queue. An answer keeps the
+    turn whose question it answers, and is sent only while that question waits.
+    """
+    if len(message_queue) >= QUEUE_MAX_MESSAGES:
+        return jsonify({"ok": False, "error": f"The queue is full ({QUEUE_MAX_MESSAGES} messages). Remove a queued message or wait for one to start."}), 409
+    now = utc_now()
+    entry = {
+        "queue_id": uuid.uuid4().hex, "task_id": task_id, "new_chat": new_chat,
+        "title": title, "message": message, "chat_settings": settings,
+        "turn_id": uuid.uuid4().hex, "prompt_attachments": [],
+        "created_at": now, "updated_at": now,
+    }
+    if answers_turn_id:
+        entry["answers_turn_id"] = answers_turn_id
+    try:
+        entry["prompt_attachments"] = store_uploads(task_id, entry["turn_id"], uploads)
+        message_queue.append(entry)
+        save_message_queue()
+    except OSError:
+        if entry in message_queue:
+            message_queue.remove(entry)
+        discard_queued_files(entry)
+        return jsonify({"ok": False, "error": "Could not save the queued message. Try again."}), 500
+    response = {
+        "ok": True, "task_id": task_id, "status": IN_QUEUE_STATUS, "queue_id": entry["queue_id"],
+        "position": len(message_queue), "active_task_id": _active_task_id_locked(),
+    }
+    # Nothing may be running after all, for example right after the last task ended.
+    start_next_queued()
+    return jsonify(response), 202
+
+
+def sync_message_queue() -> None:
+    """Rewrite the stored queue after messages left the list in memory.
+
+    A failed write only leaves stale entries behind, which loading skips.
+    """
+    try:
+        save_message_queue()
+    except OSError as exc:
+        print(f"Could not save the message queue: {exc}", flush=True)
+
+
+def start_queued_message(entry: dict[str, Any]) -> Exception | None:
+    """Send a queued message the way a direct request would have, with the lock held.
+
+    The message has left the list in memory but is still in the stored queue.
+    It is dropped from there only after its chat or exchange is saved, so a
+    worker that stops in between finds the message still waiting instead of
+    losing it. Returns the error when the message could not start.
+    """
+    task_id = entry["task_id"]
+    message = entry["message"]
+    settings = entry.get("chat_settings") or dict(DEFAULT_CHAT_SETTINGS)
+    task = tasks.get(task_id)
+    if (task is None) != bool(entry.get("new_chat")):
+        print(f"Skipped a queued message for {task_id}: its chat is no longer in the expected state.", flush=True)
+        sync_message_queue()
+        return None
+    answers = entry.get("answers_turn_id")
+    if answers and (task.get("status") != "waiting_for_input" or task.get("current_turn_id") != answers):
+        # The answer was accepted for one question; it must not land on a chat that has moved on.
+        print(f"Skipped a queued answer for {task_id}: its question is no longer waiting.", flush=True)
+        discard_queued_files(entry)
+        sync_message_queue()
+        return None
+    turn = {**new_turn(message), "turn_id": entry["turn_id"], "prompt_attachments": entry.get("prompt_attachments") or []}
+    try:
+        turn["execution_settings"] = resolve_chat_settings(settings, read_options())
+    except ValueError:
+        pass  # The add-on defaults changed while it waited; the run reports the mismatch.
+    session_id = str((task or {}).get("session_id") or "")
+    active_task_runners.add(task_id)
+    try:
+        if task is None:
+            open_task(task_id, str(entry.get("title") or message[:80]), message, settings, turn)
+        else:
+            open_turn(task_id, task, turn, settings)
+        sync_message_queue()
+        if task is None:
+            start_background_task(task_id, message)
+        elif not session_id or not session_available(session_id):
+            raise RuntimeError(SESSION_UNAVAILABLE)
+        else:
+            start_background_task(task_id, str(task.get("prompt") or ""), session_id=session_id, reply=message)
+    except Exception as exc:
+        return exc
+    return None
+
+
+def start_next_queued(release: str | None = None) -> None:
+    """Start the oldest queued message once no task is active.
+
+    `release` names the runner that just ended. It is freed in the same step
+    that picks the next message, so a direct request cannot start in between.
+    A message that cannot start becomes a failed exchange in its chat, and the
+    next one is tried.
+    """
+    while True:
+        with lock:
+            if release is not None:
+                active_task_runners.discard(release)
+                release = None
+            if not message_queue or _active_task_ids_locked():
+                return
+            entry = message_queue.pop(0)
+            failure = start_queued_message(entry)
+        if failure is not None:
+            record_background_start_failure(entry["task_id"], failure)
+
+
 @app.get("/")
 def index() -> Response:
+    """Serve the page of the chat web UI."""
     return Response((WEB_ROOT / "index.html").read_text(encoding="utf-8"), mimetype="text/html")
 
 
 @app.get("/health")
 @require_auth
 def health() -> Response:
+    """Report whether the worker can run Codex: binary, version, login, sign-in flow, and sandbox readiness."""
     version = codex_version_status()
     sandbox = sandbox_readiness()
     return jsonify(
@@ -3509,15 +4452,18 @@ def health() -> Response:
 @app.get("/status")
 @require_auth
 def status() -> Response:
+    """Return the active and latest task, the login state, and the Codex usage; also starts a usage refresh if due."""
     refresh_usage_status_async(force=False)
     with lock:
         task_values = sorted(tasks.values(), key=lambda task: task.get("updated_at") or task.get("created_at", ""))
         latest = {key: copy.deepcopy(value) for key, value in task_values[-1].items() if key != "turns"} if task_values else None
+        queued = len(message_queue)
     return jsonify(
         {
             "ok": True,
             "active_task_id": active_task_id(),
             "active_task_count": active_task_count(),
+            "queued_message_count": queued,
             "task_count": active_task_count(),
             "total_task_count": len(task_values),
             "latest_task": latest,
@@ -3531,6 +4477,7 @@ def status() -> Response:
 @app.get("/agents")
 @require_auth
 def get_agents() -> Response:
+    """Return the content of /config/AGENTS.md."""
     try:
         content = read_agents_file()
     except Exception as exc:
@@ -3548,6 +4495,7 @@ def get_agents() -> Response:
 @app.post("/agents")
 @require_auth
 def save_agents() -> Response:
+    """Replace the content of /config/AGENTS.md."""
     payload = request.get_json(silent=True) or {}
     if "content" not in payload:
         return jsonify({"ok": False, "error": "content is required"}), 400
@@ -3563,6 +4511,7 @@ def save_agents() -> Response:
 @app.post("/auth/start")
 @require_auth
 def start_auth() -> Response:
+    """Start the Codex sign-in flow and return its state; with "force" also when Codex is already logged in."""
     payload = request.get_json(silent=True) or {}
     return jsonify({"ok": True, "auth": start_codex_login_flow(bool(payload.get("force")))})
 
@@ -3570,12 +4519,14 @@ def start_auth() -> Response:
 @app.get("/auth/status")
 @require_auth
 def get_auth_status() -> Response:
+    """Return the state of the Codex sign-in flow."""
     return jsonify({"ok": True, "auth": auth_status_payload()})
 
 
 @app.post("/auth/logout")
 @require_auth
 def logout_auth() -> Response:
+    """Sign Codex out; refused with 409 while a task is active."""
     result = logout_codex()
     status_code = 200 if result.get("ok") else 409 if active_task_id() else 500
     return jsonify(result), status_code
@@ -3584,6 +4535,7 @@ def logout_auth() -> Response:
 @app.get("/tasks")
 @require_auth
 def list_tasks() -> Response:
+    """List the tasks, optionally filtered by status, in the requested order, one page at a time, or as summaries."""
     try:
         limit = int(request.args["limit"]) if "limit" in request.args else None
         offset = int(request.args.get("offset", "0"))
@@ -3609,28 +4561,35 @@ def list_tasks() -> Response:
         summaries = request.args.get("summary") == "true"
         result = [task_payload(task, summary=summaries) for task in page]
         active = _active_task_id_locked()
+        waiting = queue_payload_locked()
     next_offset = offset + len(page)
     return jsonify({"ok": True, "tasks": result, "total": len(ordered),
                     "next_offset": next_offset if next_offset < len(ordered) else None,
-                    "active_task_id": active})
+                    "active_task_id": active, "queue": waiting})
 
 
 @app.get("/chat-options")
 @require_auth
 def chat_options() -> Response:
+    """Return the models, defaults, and settings the web UI needs."""
     options = read_options()
     default = resolve_chat_settings(DEFAULT_CHAT_SETTINGS, options)
+    default_id = default_model(options)
     return jsonify({
         "ok": True,
         "defaults": default,
+        # The defaults' model by name, also when the add-on leaves the choice to the CLI.
+        "default_model": default_id,
         "models": [{"id": model, "label": label, "efforts": efforts} for model, label, efforts in CHAT_MODELS],
-        "default_efforts": CHAT_MODEL_EFFORTS.get(default["model"], ("low", "medium", "high", "xhigh")),
+        "default_efforts": CHAT_MODEL_EFFORTS.get(default_id, ("low", "medium", "high", "xhigh")),
+        "backup_retention_days": backup_retention_days(options),
     })
 
 
 @app.post("/tasks/<task_id>/settings")
 @require_auth
 def save_chat_settings(task_id: str) -> Response:
+    """Save the model and reasoning level a chat uses for its next message; refused while its task is active."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or "chat_settings" not in payload:
         return jsonify({"ok": False, "error": "chat_settings is required"}), 400
@@ -3640,6 +4599,9 @@ def save_chat_settings(task_id: str) -> Response:
             return jsonify({"ok": False, "error": "task not found"}), 404
         if task.get("status") in {"queued", "running"} or task_id in _active_task_ids_locked():
             return jsonify({"ok": False, "error": "Wait for this task to finish before changing its settings."}), 409
+        if queue_payload_locked(task_id):
+            # The waiting message carries the settings it was sent with.
+            return jsonify({"ok": False, "error": "This chat has a message in the queue. Remove it before changing the settings."}), 409
         try:
             settings = parse_chat_settings(payload, task)
         except ValueError as exc:
@@ -3708,6 +4670,10 @@ def delete_task(task_id: str) -> Response:
         tasks.pop(task_id, None)
         task_activity.pop(task_id, None)
         save_task_index()
+        if queue_payload_locked(task_id):
+            # Its waiting message went with the chat's files.
+            message_queue[:] = [entry for entry in message_queue if entry["task_id"] != task_id]
+            sync_message_queue()
         session_id = str(task.get("session_id") or "")
     remove_session_files(session_id)
     return jsonify({"ok": True, "task_id": task_id, "deleted": True})
@@ -3716,6 +4682,7 @@ def delete_task(task_id: str) -> Response:
 @app.post("/tasks")
 @require_auth
 def create_task() -> Response:
+    """Start a new chat from a prompt, with its settings and attached images; refused while another task is active."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), str):
         return jsonify({"ok": False, "error": "prompt must be text"}), 400
@@ -3734,6 +4701,8 @@ def create_task() -> Response:
     turn["execution_settings"] = execution
     with lock:
         active = _active_task_id_locked()
+        if payload.get("queue") is True and (active or message_queue):
+            return enqueue_message(task_id, title, prompt, settings, uploads, new_chat=True)
         if active:
             return jsonify(
                 {
@@ -3745,23 +4714,7 @@ def create_task() -> Response:
         active_task_runners.add(task_id)
     try:
         turn["prompt_attachments"] = store_uploads(task_id, turn["turn_id"], uploads)
-        update_task(
-            task_id,
-            status="queued",
-            cancellation_requested=False,
-            cancellation_event_emitted=False,
-            title=title,
-            prompt=prompt,
-            chat_settings=settings,
-            turns=[turn],
-            current_turn_id=turn["turn_id"],
-            created_at=utc_now(),
-            summary="",
-            question="",
-            details="",
-            attachments=[],
-        )
-        (get_task_dir(task_id) / "user-prompt.txt").write_text(prompt, encoding="utf-8")
+        open_task(task_id, title, prompt, settings, turn)
         start_background_task(task_id, prompt)
     except Exception as exc:
         record_background_start_failure(task_id, exc)
@@ -3778,9 +4731,21 @@ def create_task() -> Response:
 @app.get("/tasks/<task_id>")
 @require_auth
 def get_task(task_id: str) -> Response:
+    """Return one task in full, with its turns."""
     with lock:
         task = tasks.get(task_id)
+        queued = next(iter(queue_payload_locked(task_id)), None)
         result = task_payload(task) if task else None
+        if result is not None:
+            result["queued_message"] = queued
+        elif queued and queued.get("new_chat"):
+            # A chat that is still waiting for its first message to start.
+            result = {
+                "task_id": task_id, "title": queued["title"], "status": IN_QUEUE_STATUS,
+                "created_at": queued["created_at"], "updated_at": queued["updated_at"],
+                "chat_settings": queued["chat_settings"], "turns": [],
+                "history_incomplete": False, "can_continue": False, "queued_message": queued,
+            }
     if result is None:
         return jsonify({"ok": False, "error": "task not found"}), 404
     return jsonify({"ok": True, "task": result})
@@ -3789,6 +4754,14 @@ def get_task(task_id: str) -> Response:
 @app.get("/tasks/<task_id>/log")
 @require_auth
 def get_log(task_id: str) -> Response:
+    """Return the end of a task's codex.log as plain text."""
+    # Only a saved task has a log to give out: the sign-in log and any other
+    # folder that holds a codex.log are not tasks.
+    if TASK_ID_RE.fullmatch(task_id) is None:
+        return jsonify({"ok": False, "error": "task not found"}), 404
+    with lock:
+        if task_id not in tasks:
+            return jsonify({"ok": False, "error": "task not found"}), 404
     path = get_task_dir(task_id) / "codex.log"
     if not path.exists():
         return Response("", mimetype="text/plain")
@@ -3837,6 +4810,8 @@ def get_attachment(task_id: str, attachment_id: str) -> Response:
     with lock:
         task = tasks.get(task_id)
         attachment = find_attachment(task, attachment_id) if task else None
+        if attachment is None:
+            attachment = find_queued_attachment(task_id, attachment_id)
     if attachment is None:
         return jsonify({"ok": False, "error": "attachment not found"}), 404
     if attachment.get("origin") == "verification" and attachment.get("expires_at", 0) <= time.time():
@@ -3882,6 +4857,7 @@ def get_attachment(task_id: str, attachment_id: str) -> Response:
 @app.post("/tasks/<task_id>/cancel")
 @require_auth
 def cancel_task(task_id: str) -> Response:
+    """Cancel a queued or running task, stop its Codex process, and publish the cancelled result."""
     accepted, proc, error = request_task_cancellation(task_id)
     if not accepted:
         status_code = 404 if error == "task not found" else 409
@@ -3889,67 +4865,91 @@ def cancel_task(task_id: str) -> Response:
     if proc is not None:
         terminate_and_reap_process(proc)
     publish_cancelled_task_outcome(task_id, proc.returncode if proc is not None else None)
+    start_next_queued()
     return jsonify({"ok": True, "task_id": task_id, "status": "cancelled"})
 
 
 @app.post("/tasks/<task_id>/reply")
 @require_auth
 def reply_task(task_id: str) -> Response:
+    """Answer the question of a task that is waiting for input, as a new exchange."""
     return continue_task_request(task_id, "reply", waiting_only=True)
 
 
 @app.post("/tasks/<task_id>/continue")
 @require_auth
 def continue_task(task_id: str) -> Response:
+    """Send a new message to a chat whose last exchange has ended, as a new exchange."""
     return continue_task_request(task_id, "message")
 
 
 def continue_task_request(task_id: str, field: str, *, waiting_only: bool = False) -> Response:
+    """Add a message to a saved chat as a new exchange and start it.
+
+    `choice` sends one of the answers the waiting question offered, by its
+    position counted from 0, in place of typed text. `turn_id` names the
+    question being answered: the request is refused once that question is no
+    longer the one waiting, so a late answer cannot land on a newer question.
+    A position means nothing without its question, so `choice` needs `turn_id`;
+    typed text may come without it, as before.
+    """
     payload = request.get_json(silent=True)
-    if not isinstance(payload, dict) or not isinstance(payload.get(field), str) or not payload[field].strip():
+    if not isinstance(payload, dict):
         return jsonify({"ok": False, "error": f"{field} must be non-empty text"}), 400
-    message = payload[field].strip()
+    choice = payload.get("choice")
+    turn_id = payload.get("turn_id")
+    if choice is None and (not isinstance(payload.get(field), str) or not payload[field].strip()):
+        return jsonify({"ok": False, "error": f"{field} must be non-empty text"}), 400
+    if choice is not None and (isinstance(choice, bool) or not isinstance(choice, int)):
+        return jsonify({"ok": False, "error": "choice must be the position of an offered choice, counted from 0"}), 400
+    if turn_id is not None and not isinstance(turn_id, str):
+        return jsonify({"ok": False, "error": "turn_id must be text"}), 400
+    if choice is not None and not turn_id:
+        return jsonify({"ok": False, "error": "choice needs the turn_id of the question it answers"}), 400
+    message = "" if choice is not None else payload[field].strip()
     with lock:
         task = tasks.get(task_id)
         if not task:
             return jsonify({"ok": False, "error": "task not found"}), 404
-        if waiting_only and task.get("status") != "waiting_for_input":
+        waiting = task.get("status") == "waiting_for_input"
+        if turn_id and (not waiting or task.get("current_turn_id") != turn_id):
+            return jsonify({"ok": False, "error": QUESTION_NOT_WAITING}), 409
+        if waiting_only and not waiting:
             return jsonify({"ok": False, "error": "task is not waiting for input"}), 409
+        if choice is not None:
+            choices = task.get("choices") or []
+            if not 0 <= choice < len(choices):
+                return jsonify({"ok": False, "error": "choice is not one of the choices this question offers"}), 400
+            message = choices[choice]
         if task.get("status") not in CONTINUABLE_STATUSES:
             return jsonify({"ok": False, "error": "task is still active"}), 409
         session_id = str(task.get("session_id") or "")
         if not session_id or not session_available(session_id):
-            return jsonify({"ok": False, "error": "The saved Codex session is unavailable. Start a new chat and include the context you need."}), 409
+            return jsonify({"ok": False, "error": SESSION_UNAVAILABLE}), 409
         active = _active_task_id_locked()
-        if active:
+        wait = payload.get("queue") is True and bool(active or message_queue)
+        if active and not wait:
             return jsonify({"ok": False, "error": "another task is already running", "active_task_id": active}), 409
+        # This holds for a direct request too, so nothing can change the chat ahead of its waiting message.
+        if queue_payload_locked(task_id):
+            return jsonify({"ok": False, "error": "This chat already has a message in the queue. Edit or remove it first."}), 409
         try:
             settings = parse_chat_settings(payload, task)
             execution = resolve_chat_settings(settings, read_options())
             uploads = parse_uploads(payload)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
-        turns = task_turns(task)
+        if wait:
+            return enqueue_message(
+                task_id, str(task.get("title") or ""), message, settings, uploads,
+                new_chat=False, answers_turn_id=turn_id or "",
+            )
         turn = new_turn(message)
         turn["execution_settings"] = execution
-        turns.append(turn)
-        incomplete = task.get("history_incomplete", "turns" not in task)
-        reply_history = list(task.get("reply_history") or [])
-        reply_history.append({"at": turn["created_at"], "reply": message})
         active_task_runners.add(task_id)
         try:
             turn["prompt_attachments"] = store_uploads(task_id, turn["turn_id"], uploads)
-            update_task(
-                task_id, status="queued", cancellation_requested=False,
-                chat_settings=settings,
-                cancellation_event_emitted=False, turns=turns,
-                current_turn_id=turn["turn_id"], history_incomplete=incomplete,
-                reply_history=reply_history, summary="", question="", details="",
-                error="", started_at="", completed_at="", returncode=None,
-                changes={}, validation_errors=[], lovelace_results=[], attachments=[],
-                config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[],
-                verification=[], verification_attachments=[],
-            )
+            open_turn(task_id, task, turn, settings)
         except Exception as exc:
             record_background_start_failure(task_id, exc)
             return jsonify({"ok": False, "task_id": task_id, "error": "Could not save the new message"}), 500
@@ -3961,8 +4961,61 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
     return jsonify({"ok": True, "task_id": task_id, "turn_id": turn["turn_id"], "status": "queued"})
 
 
+@app.get("/queue")
+@require_auth
+def list_queue() -> Response:
+    """Return the messages waiting for the running task, in the order they will start."""
+    with lock:
+        return jsonify({"ok": True, "queue": queue_payload_locked(), "active_task_id": _active_task_id_locked()})
+
+
+@app.post("/queue/<queue_id>")
+@require_auth
+def edit_queued_message(queue_id: str) -> Response:
+    """Replace the text of a message that is still waiting in the queue."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("message"), str) or not payload["message"].strip():
+        return jsonify({"ok": False, "error": "message must be non-empty text"}), 400
+    message = payload["message"].strip()
+    with lock:
+        entry = next((item for item in message_queue if item["queue_id"] == queue_id), None)
+        if entry is None:
+            return jsonify({"ok": False, "error": QUEUED_MESSAGE_GONE}), 404
+        previous = dict(entry)
+        # A new chat is named after its message unless the request set a title.
+        if entry.get("new_chat") and entry.get("title") == entry["message"][:80]:
+            entry["title"] = message[:80]
+        entry.update(message=message, updated_at=utc_now())
+        try:
+            save_message_queue()
+        except OSError:
+            entry.update(previous)
+            return jsonify({"ok": False, "error": "Could not save the queued message. Try again."}), 500
+        result = queue_payload_locked(entry["task_id"])[0]
+    return jsonify({"ok": True, "queued_message": result})
+
+
+@app.delete("/queue/<queue_id>")
+@require_auth
+def delete_queued_message(queue_id: str) -> Response:
+    """Take a waiting message out of the queue and remove its attached images."""
+    with lock:
+        index = next((index for index, item in enumerate(message_queue) if item["queue_id"] == queue_id), None)
+        if index is None:
+            return jsonify({"ok": False, "error": QUEUED_MESSAGE_GONE}), 404
+        entry = message_queue.pop(index)
+        try:
+            save_message_queue()
+        except OSError:
+            message_queue.insert(index, entry)
+            return jsonify({"ok": False, "error": "Could not update the queue. Try again."}), 500
+        discard_queued_files(entry)
+    return jsonify({"ok": True, "queue_id": queue_id, "task_id": entry["task_id"], "deleted": True})
+
+
 
 def main() -> None:
+    """Prepare the worker's files, start its background threads, and serve the API."""
     ensure_runtime_files()
     version = codex_version_status()
     sandbox = sandbox_readiness()
@@ -3972,7 +5025,9 @@ def main() -> None:
         print(f"Codex version probe failed: {version['error']}", flush=True)
     print(f"Codex sandbox preflight: {sandbox['message']}", flush=True)
     load_task_index()
+    load_message_queue()
     verification.cleanup()
+    threading.Thread(target=backup_cleanup_loop, daemon=True).start()
     verification.serve(DATA_ROOT / "verification.sock")
     # Nothing else is running yet, so interrupted work from the last run can go.
     for leftover in ("download", "old"):
@@ -3980,6 +5035,8 @@ def main() -> None:
     prepare_ha_docs()
     auto_start_login_if_needed()
     threading.Thread(target=stdin_reader, daemon=True).start()
+    # Messages that were waiting when the worker stopped carry on in order.
+    start_next_queued()
     app.run(host="0.0.0.0", port=9123)
 
 

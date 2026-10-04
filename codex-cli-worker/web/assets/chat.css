@@ -9,6 +9,9 @@
   --line: #e5e6e1;
   --accent: #316b57;
   --error: #ac3131;
+  --quota-track: #fff;
+  --quota-good: #0ca30c;
+  --quota-low: #d03b3b;
   --sidebar-width: 280px;
   font-family:
     Inter,
@@ -364,18 +367,41 @@ aside {
   gap: 8px;
 }
 .usage {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 18px;
-  padding: 8px 0 0 14px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px 8px;
+  padding: 9px 0 0 14px;
   font-variant-numeric: tabular-nums;
-}
-.usage > span {
-  white-space: nowrap;
 }
 .usage strong {
   color: var(--text);
   font-weight: 500;
+  text-align: right;
+  white-space: nowrap;
+}
+.usage-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--quota-track);
+  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.usage-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--quota-good);
+  transition: width 0.3s;
+}
+.usage-bar.low {
+  background: color-mix(in srgb, var(--quota-low) 22%, var(--quota-track));
+}
+.usage-bar.low span {
+  background: var(--quota-low);
+}
+.usage-bar.unknown {
+  background: transparent;
 }
 .usage-note {
   margin: 6px 0 0 14px;
@@ -528,6 +554,74 @@ h1 {
   border-radius: 18px 18px 4px 18px;
   margin-bottom: 28px;
 }
+/* A message waiting in the queue is outlined, not filled: it has not been sent. */
+.exchange.queued {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.queue-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.queued-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 8px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.message.user.queued {
+  background: transparent;
+  border: 1.5px dashed var(--muted);
+  margin-bottom: 10px;
+}
+.queued-edit {
+  width: 100%;
+  max-width: 88%;
+  min-height: 52px;
+  margin-bottom: 10px;
+  padding: 13px 19px;
+  border: 1.5px dashed var(--accent);
+  border-radius: 18px 18px 4px 18px;
+  resize: none;
+}
+.queued-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 88%;
+}
+.queued-note {
+  margin-right: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: right;
+}
+.queued-actions button {
+  padding: 5px 12px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+.queued-actions .danger {
+  color: var(--error);
+}
+.chat-row.queued {
+  outline: 1px dashed var(--line);
+  outline-offset: -1px;
+}
 .answer {
   padding: 0 3px;
 }
@@ -549,6 +643,160 @@ h1 {
 .answer .question {
   margin-top: 14px;
   font-weight: 500;
+}
+/* The answers Codex offers with a question, one button each. */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.choice {
+  padding: 8px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  border-color: var(--accent);
+  overflow-wrap: anywhere;
+}
+/* Messages formatted as Markdown. A message shown as plain text keeps pre-wrap. */
+.markdown {
+  white-space: normal;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown .md-code,
+.markdown .md-table {
+  margin: 0 0 12px;
+}
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 20px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.markdown h3 {
+  font-size: 18px;
+}
+.markdown h4 {
+  font-size: 16px;
+}
+.markdown h6 {
+  color: var(--muted);
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 24px;
+}
+.markdown li > ul,
+.markdown li > ol {
+  margin: 2px 0;
+}
+.markdown li > p {
+  margin-bottom: 6px;
+}
+.markdown .md-task {
+  list-style: none;
+}
+.markdown .md-task input {
+  margin: 0 8px 0 -20px;
+  vertical-align: -1px;
+}
+.markdown blockquote {
+  padding-left: 14px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+.markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+.markdown hr {
+  margin: 18px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.markdown a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+.markdown code {
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.md-code {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.md-lang {
+  padding: 7px 14px 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+.md-code pre {
+  margin: 0;
+  padding: 10px 14px;
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.6;
+  scrollbar-width: thin;
+}
+.md-code code {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.md-table {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.markdown table {
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.6;
+  /* Columns keep whole words; a table that is too wide scrolls sideways. */
+  overflow-wrap: normal;
+}
+.markdown th,
+.markdown td {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.markdown th {
+  background: var(--surface);
+  font-weight: 600;
+}
+/* The bubble of a sent message already has the surface colour. */
+.message.user :not(pre) > code,
+.message.user .md-code,
+.message.user th {
+  background: var(--bg);
+}
+.message.user.queued :not(pre) > code,
+.message.user.queued .md-code,
+.message.user.queued th {
+  background: var(--surface);
 }
 .check {
   display: flex;
@@ -677,6 +925,10 @@ h1 {
   border-radius: 50%;
   background: var(--accent);
   margin-right: 10px;
+  animation: activity-pulse 1.4s ease-in-out infinite;
+}
+.elapsed {
+  font-variant-numeric: tabular-nums;
 }
 .activity {
   margin-top: 14px;
@@ -1036,20 +1288,11 @@ textarea::placeholder {
 .model-option:focus-visible {
   background: var(--surface);
 }
-.model-option:first-child {
-  background: var(--surface);
-}
 .model-option-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-}
-.model-option small {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  margin-top: 3px;
 }
 .model-check {
   font-size: 15px;
@@ -1194,6 +1437,12 @@ textarea::placeholder {
   padding: 0;
   flex-shrink: 0;
 }
+/* Sending now adds the message to the queue behind the running chat. */
+#send.queueing {
+  background: transparent;
+  color: var(--text);
+  border: 1.5px dashed var(--muted);
+}
 .footnote {
   text-align: center;
   color: var(--muted);
@@ -1332,6 +1581,7 @@ dialog label {
     --line: #363932;
     --accent: #8cbea6;
     --error: #f4a09c;
+    --quota-track: #e7e9e2;
   }
 }
 @media (max-width: 700px) {
@@ -1402,7 +1652,9 @@ dialog label {
   .suggestions small {
     font-size: 10px;
   }
-  .message.user {
+  .message.user,
+  .queued-edit,
+  .queued-actions {
     max-width: 94%;
   }
   #compose-hint {
@@ -1422,7 +1674,8 @@ dialog label {
     font-size: 14px;
   }
   #message,
-  #rename-input {
+  #rename-input,
+  .queued-edit {
     font-size: 16px;
   }
 }

@@ -42,10 +42,12 @@ async def test_resource_manifest_only_contains_registered_static_routes(hass, tm
         StaticPathConfig("/uncached-assets", str(assets), False),
     ])
     async def action(request):
+        """Answer like an ordinary view, not a static file."""
         return web.Response(text="not a static route")
     hass.http.app.router.add_get("/unsafe-action.js", action)
     # A matching function name alone must not turn an arbitrary view into an asset.
     async def _serve_file(path, request):
+        """Carry the name of Core's static file handler without being it."""
         return web.Response(text="not a Home Assistant static handler")
     hass.http.app.router.add_get("/lookalike.js", partial(_serve_file, str(script)))
     hass.http.app.router.add_post("/post-only.js", action)
@@ -70,6 +72,7 @@ async def test_resource_manifest_only_contains_registered_static_routes(hass, tm
 
 
 async def test_resource_discovery_failure_does_not_leave_credentials(hass):
+    """A failure while listing resources must not leave a session or refresh token behind."""
     broker = auth.BrowserSessions(hass, "paired-worker")
     await broker.setup()
     with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"), \
@@ -82,6 +85,7 @@ async def test_resource_discovery_failure_does_not_leave_credentials(hass):
 
 
 async def test_real_read_only_identity_lease_and_revocation(hass):
+    """The browser user is a local read-only system user with one session at a time, and revocation ends its token."""
     broker = auth.BrowserSessions(hass, "paired-worker")
     await broker.setup()
     assert broker.user.system_generated
@@ -101,6 +105,7 @@ async def test_real_read_only_identity_lease_and_revocation(hass):
 
 
 async def test_reload_revokes_orphaned_credentials_and_reuses_identity(hass):
+    """A new broker reuses the stored browser user and revokes the credentials the previous broker left."""
     broker = auth.BrowserSessions(hass, "paired-worker")
     await broker.setup()
     with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"):
@@ -114,6 +119,7 @@ async def test_reload_revokes_orphaned_credentials_and_reuses_identity(hass):
 
 
 async def test_auto_expiry_and_unload(hass):
+    """A session is revoked on its own when it expires, and a closed broker issues no new one."""
     broker = auth.BrowserSessions(hass, "paired-worker")
     await broker.setup()
     with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"), patch.object(auth, "SESSION_SECONDS", 0.01):
@@ -132,6 +138,7 @@ async def test_unload_during_credential_creation_revokes_the_new_credential(hass
     await broker.setup()
     create = hass.auth.async_create_refresh_token
     async def interrupted(*args, **kwargs):
+        """Create the refresh token, then close the broker before returning it."""
         token = await create(*args, **kwargs)
         broker.close()
         return token
@@ -144,11 +151,14 @@ async def test_unload_during_credential_creation_revokes_the_new_credential(hass
 
 
 async def test_broker_rejects_admin_without_pairing_and_read_only_user(hass):
+    """Only an administrator with the paired worker token gets the broker; the read-only browser user never does."""
     broker = auth.BrowserSessions(hass, "paired-worker")
     await broker.setup()
     hass.data.setdefault(auth.DOMAIN, {})["browser_sessions"] = broker
     view = auth.BrowserSessionView(hass)
     class Request(dict):
+        """Minimal stand-in for the request the view receives."""
+
         headers = {"X-Verification-Worker": "wrong"}
     request = Request({KEY_HASS_USER: types.SimpleNamespace(is_admin=True)})
     with pytest.raises(web.HTTPForbidden):
@@ -164,6 +174,7 @@ async def test_broker_rejects_admin_without_pairing_and_read_only_user(hass):
 
 
 async def test_session_http_requires_pairing_and_accepts_chunked_proxy_body(hass, hass_client):
+    """The session endpoint needs the worker token, reads it from a chunked body, and rejects an oversized body."""
     assert await async_setup_component(hass, "http", {})
     broker = auth.BrowserSessions(hass, "paired-worker")
     await broker.setup()
@@ -174,6 +185,7 @@ async def test_session_http_requires_pairing_and_accepts_chunked_proxy_body(hass
         response = await client.post(auth.BrowserSessionView.url, json={})
         assert response.status == 403
         async def chunks():
+            """Yield the pairing JSON in two pieces, as a chunked body."""
             yield b'{"worker_token":'
             yield b'"paired-worker"}'
         with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"):
@@ -191,6 +203,7 @@ async def test_session_http_requires_pairing_and_accepts_chunked_proxy_body(hass
 
 
 async def test_read_only_session_cannot_save_dashboard(hass, hass_ws_client):
+    """A browser session cannot save a dashboard, and revoking it closes its WebSocket connection."""
     assert await async_setup_component(hass, "lovelace", {})
     broker = auth.BrowserSessions(hass, "paired-worker")
     await broker.setup()

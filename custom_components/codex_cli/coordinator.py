@@ -23,6 +23,7 @@ class CodexCliCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Poll the local Codex CLI Worker."""
 
     def __init__(self, hass: HomeAssistant, client: CodexCliApiClient) -> None:
+        """Set up polling of the worker status through the given client, every DEFAULT_SCAN_INTERVAL_SECONDS."""
         super().__init__(
             hass,
             logger=_LOGGER,
@@ -32,6 +33,10 @@ class CodexCliCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.client = client
 
     async def _async_update_data(self) -> dict[str, Any]:
+        """Fetch the worker status and update the sign-in repair issue.
+
+        Rejected worker authentication raises ConfigEntryAuthFailed; any other failure raises UpdateFailed.
+        """
         try:
             data = await self.client.status()
         except CodexCliAuthError as exc:

@@ -11,11 +11,15 @@ from test_server import server
 
 
 def completed(code: int = 0, error: str = "") -> subprocess.CompletedProcess:
+    """Return a finished process with the given exit code and stderr."""
     return subprocess.CompletedProcess([], code, stdout="", stderr=error)
 
 
 class CodexSandboxReadinessTests(unittest.TestCase):
+    """The Codex sandbox execution probe and the readiness report that depends on it."""
+
     def test_probe_uses_selected_mode_task_environment_and_workspace(self) -> None:
+        """The probe runs `codex sandbox` in the selected mode, with the task environment, from the config folder."""
         for mode in ("read-only", "workspace-write"):
             with (
                 self.subTest(mode=mode),
@@ -43,12 +47,14 @@ class CodexSandboxReadinessTests(unittest.TestCase):
                 self.assertEqual(run.call_args.kwargs["errors"], "replace")
 
     def test_codex_probe_allows_more_time_than_the_raw_probes(self) -> None:
+        """The Codex execution probe gets a longer timeout than the raw Bubblewrap probes."""
         # A timeout blocks every task; the Codex probe does far more work than bwrap alone.
         self.assertGreater(
             server.CODEX_SANDBOX_PROBE_TIMEOUT_SECONDS, server.RUNTIME_PROBE_TIMEOUT_SECONDS
         )
 
     def test_missing_cli_fails_closed(self) -> None:
+        """Without the Codex executable the probe fails and runs nothing."""
         with (
             patch.object(server, "codex_binary_path", return_value=None),
             patch.object(server.subprocess, "run") as run,
@@ -59,12 +65,14 @@ class CodexSandboxReadinessTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_unsupported_mode_never_executes(self) -> None:
+        """An unknown mode or danger-full-access fails the probe without running a command."""
         with patch.object(server.subprocess, "run") as run:
             for mode in ("unexpected", "danger-full-access"):
                 self.assertFalse(server._codex_sandbox_probe(mode)["ok"])
         run.assert_not_called()
 
     def test_timeout_and_launch_failure_are_reported(self) -> None:
+        """A probe that times out or cannot start fails with an error message."""
         for error in (subprocess.TimeoutExpired("codex", 5), OSError("exec failed")):
             with (
                 self.subTest(error=error),
@@ -77,6 +85,7 @@ class CodexSandboxReadinessTests(unittest.TestCase):
                 self.assertTrue(result["error"])
 
     def test_failed_execution_is_redacted_and_not_ready(self) -> None:
+        """A failed probe reports its error on one line with secrets redacted."""
         secret = "a" * 32
         with (
             patch.object(server, "codex_binary_path", return_value=server.CODEX_BINARY),
@@ -89,6 +98,7 @@ class CodexSandboxReadinessTests(unittest.TestCase):
         self.assertNotIn("\n", result["error"])
 
     def readiness(self, results: list[subprocess.CompletedProcess], mode: str = "workspace-write") -> dict:
+        """Return the readiness report when the probe commands give these results in order; all must be used."""
         with (
             patch.object(server, "read_options", return_value={"codex_sandbox": mode}),
             patch.object(server.shutil, "which", return_value="/opt/codex-sandbox/bwrap"),
@@ -101,6 +111,7 @@ class CodexSandboxReadinessTests(unittest.TestCase):
         return result
 
     def test_proc_denial_requires_successful_codex_execution(self) -> None:
+        """A host that denies a fresh /proc is ready when the Codex execution probe passes."""
         result = self.readiness([completed(), completed(), completed(1, "proc denied")])
         self.assertTrue(result["ready"])
         self.assertTrue(result["namespace_probe"]["codex_probe"]["ok"])
@@ -109,6 +120,7 @@ class CodexSandboxReadinessTests(unittest.TestCase):
         self.assertNotIn("will use", result["message"])
 
     def test_raw_success_cannot_hide_broken_codex_fallback(self) -> None:
+        """A passing namespace probe does not make the sandbox ready when Codex execution fails."""
         for proc in (completed(), completed(1, "proc denied")):
             with self.subTest(proc=proc.returncode):
                 result = self.readiness([completed(), completed(1, "Codex failed"), proc])
@@ -118,17 +130,20 @@ class CodexSandboxReadinessTests(unittest.TestCase):
                 self.assertIn("Codex failed", result["message"])
 
     def test_fresh_proc_success_still_checks_codex(self) -> None:
+        """A host that can mount a fresh /proc still runs the Codex execution probe."""
         result = self.readiness([completed(), completed(), completed()], "read-only")
         self.assertTrue(result["ready"])
         self.assertTrue(result["proc_mount_supported"])
 
     def test_namespace_failure_skips_codex_and_proc_probes(self) -> None:
+        """A failed namespace probe makes the sandbox not ready and skips the Codex and /proc probes."""
         result = self.readiness([completed(1, "namespace denied")])
         self.assertFalse(result["ready"])
         self.assertTrue(result["proc_probe"]["skipped"])
         self.assertIn("namespace denied", result["message"])
 
     def test_danger_mode_does_not_run_any_probe(self) -> None:
+        """In danger-full-access mode the sandbox is not required and no probe runs."""
         result = self.readiness([], "danger-full-access")
         self.assertTrue(result["ready"])
         self.assertFalse(result["required"])

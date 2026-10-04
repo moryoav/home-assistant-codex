@@ -12,6 +12,7 @@ class CodexCliApiError(Exception):
     """Raised when the Codex CLI Worker API fails."""
 
     def __init__(self, message: str, *, status: int | None = None) -> None:
+        """Store the error message and the HTTP status the worker returned, if any."""
         super().__init__(message)
         self.status = status
 
@@ -24,6 +25,7 @@ class CodexCliApiClient:
     """Small async client for the local Codex CLI Worker."""
 
     def __init__(self, session: ClientSession, base_url: str, api_token: str) -> None:
+        """Store the aiohttp session, the worker URL without a trailing slash, and the worker API token."""
         self._session = session
         self._base_url = base_url.rstrip("/")
         self._api_token = api_token
@@ -34,8 +36,8 @@ class CodexCliApiClient:
         return self._base_url
 
     async def health(self) -> dict[str, Any]:
-        """Fetch unauthenticated worker health."""
-        return await self._request("GET", "/health", auth=False)
+        """Fetch worker health: the Codex binary, version and login, and sandbox readiness."""
+        return await self._request("GET", "/health")
 
     async def status(self) -> dict[str, Any]:
         """Fetch authenticated worker status."""
@@ -70,9 +72,21 @@ class CodexCliApiClient:
         """Cancel a task."""
         return await self._request("POST", f"/tasks/{task_id}/cancel")
 
-    async def reply_task(self, task_id: str, reply: str) -> dict[str, Any]:
-        """Reply to a waiting Codex task."""
-        return await self._request("POST", f"/tasks/{task_id}/reply", json={"reply": reply})
+    async def reply_task(self, task_id: str, reply: str, turn_id: str | None = None) -> dict[str, Any]:
+        """Reply to a waiting Codex task; with a turn ID, only while that turn's question is the one waiting."""
+        payload = {"reply": reply}
+        if turn_id:
+            payload["turn_id"] = turn_id
+        return await self._request("POST", f"/tasks/{task_id}/reply", json=payload)
+
+    async def reply_choice(self, task_id: str, turn_id: str, choice: int) -> dict[str, Any]:
+        """Answer a waiting question with one of the choices it offered, by position.
+
+        The answer waits in the worker's queue when another task is running.
+        """
+        return await self._request(
+            "POST", f"/tasks/{task_id}/reply", json={"choice": choice, "turn_id": turn_id, "queue": True}
+        )
 
     async def continue_task(self, task_id: str, message: str) -> dict[str, Any]:
         """Continue a saved conversation."""
@@ -83,11 +97,15 @@ class CodexCliApiClient:
         method: str,
         path: str,
         *,
-        auth: bool = True,
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Send one request to the worker, with the API token, and return its JSON object.
+
+        Raises CodexCliAuthError for HTTP 401 and 403, and CodexCliApiError for any other failure,
+        using the worker's own error text when it sent one.
+        """
         headers = {}
-        if auth and self._api_token:
+        if self._api_token:
             headers["Authorization"] = f"Bearer {self._api_token}"
         url = f"{self._base_url}{path}"
         try:

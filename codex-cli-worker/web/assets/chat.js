@@ -1,7 +1,9 @@
 "use strict";
+/** Return the page element with the given id. */
 const $ = (id) => document.getElementById(id);
 const labels = {
-  queued: "Queued",
+  queued: "Starting",
+  in_queue: "In queue",
   running: "Working",
   waiting_for_input: "Needs your reply",
   completed: "Completed",
@@ -17,6 +19,8 @@ const state = {
   id: null,
   task: null,
   chats: [],
+  queue: [],
+  edit: null,
   files: [],
   draftFiles: new Map(),
   next: null,
@@ -49,21 +53,46 @@ const effortDescriptions = {
   max: "Maximum reasoning for the hardest problems.",
   ultra: "Maximum reasoning with automatic task delegation.",
 };
+/**
+ * Return the model and reasoning level selected for the open chat. A null
+ * value means the chat follows the add-on setting.
+ */
 function selectedSettings() {
   return (
     state.chatSettings.get(state.id) || { model: null, reasoning_effort: null }
   );
 }
+/** The models a chat can run on, with the add-on's own model when it is not one of the usual choices. */
+function chatModels() {
+  const { models = [], default_model: id, default_efforts: efforts } =
+    state.catalog || {};
+  return !id || models.some((model) => model.id === id)
+    ? models
+    : [{ id, label: id, efforts }, ...models];
+}
+/**
+ * Return the entry of the model a chat runs on: the one it selected, or else
+ * the add-on's own model. Undefined when that model is not among the choices.
+ */
 function selectedModel(settings = selectedSettings()) {
-  return state.catalog?.models.find(
-    (model) => model.id === (settings.model || state.catalog.defaults.model),
+  return chatModels().find(
+    (model) => model.id === (settings.model || state.catalog?.default_model),
   );
 }
+/**
+ * Return the reasoning levels a chat can choose from: those of its model, or
+ * those of the add-on's model, or none before the chat options are loaded.
+ */
 function selectedEfforts(settings = selectedSettings()) {
   return (
     selectedModel(settings)?.efforts || state.catalog?.default_efforts || []
   );
 }
+/**
+ * Return the reasoning level that applies to a chat: its own selection, or
+ * else the add-on default. Falls back to medium when neither is known or the
+ * chat's model does not offer that level.
+ */
 function effectiveEffort(settings = selectedSettings()) {
   const effort =
     settings.reasoning_effort ||
@@ -73,6 +102,10 @@ function effectiveEffort(settings = selectedSettings()) {
     ? "medium"
     : effort;
 }
+/**
+ * Close the model and reasoning popovers. With focus, the button of the one
+ * that was open gets the focus back.
+ */
 function closePicker(focus = false) {
   for (const name of ["model", "effort"]) {
     if (focus && !$(name + "-popover").hidden) $(name + "-button").focus();
@@ -80,11 +113,16 @@ function closePicker(focus = false) {
     $(name + "-button").setAttribute("aria-expanded", "false");
   }
 }
+/**
+ * Fill the reasoning popover for a level, by default the one that applies to
+ * the open chat: its name and description, the model name, and the slider
+ * with one dot per level.
+ */
 function renderEffort(effort = effectiveEffort()) {
   const efforts = selectedEfforts();
   const index = Math.max(0, efforts.indexOf(effort));
   $("effort-title").textContent = effortLabels[effort] || effort;
-  $("effort-model").textContent = selectedModel()?.label || "Default model";
+  $("effort-model").textContent = modelLabel();
   $("effort-slider").max = Math.max(0, efforts.length - 1);
   $("effort-slider").value = index;
   $("effort-slider").setAttribute(
@@ -99,15 +137,20 @@ function renderEffort(effort = effectiveEffort()) {
   $("effort-description").textContent =
     effortDescriptions[effort] || "Using the add-on default reasoning level.";
 }
+/** The name of the model a chat runs on, whether it selected one or follows the add-on setting. */
+function modelLabel(settings = selectedSettings()) {
+  return selectedModel(settings)?.label || settings.model || "Model";
+}
+/**
+ * Show the open chat's model and reasoning level on the picker buttons. The
+ * picker is disabled and closed until the chat options are loaded, while the
+ * chat loads or its task is queued or running, and while a message, a stop
+ * request, or a selection is being sent.
+ */
 function renderPicker() {
   const settings = selectedSettings();
   const effort = effectiveEffort(settings);
-  $("model-button").textContent = settings.model
-    ? selectedModel(settings)?.label || settings.model
-    : "Default";
-  $("model-button").title = settings.model
-    ? "Select model"
-    : `Use add-on default: ${selectedModel(settings)?.label || "recommended model"}`;
+  $("model-button").textContent = modelLabel(settings);
   $("effort-label").textContent = effortLabels[effort] || effort;
   $("effort-button").title = settings.reasoning_effort
     ? "Select reasoning level"
@@ -117,7 +160,9 @@ function renderPicker() {
     state.loading ||
     state.busy ||
     state.settingsBusy ||
-    Boolean(state.task && ["queued", "running"].includes(state.task.status));
+    Boolean(state.task && ["queued", "running"].includes(state.task.status)) ||
+    // A waiting message keeps the settings it was sent with.
+    Boolean(state.task?.queued_message);
   for (const id of [
     "model-button",
     "effort-button",
@@ -128,6 +173,11 @@ function renderPicker() {
   if (disabled) closePicker();
   if (!$("effort-popover").hidden) renderEffort();
 }
+/**
+ * Store a model and reasoning selection for the open chat. A saved chat sends
+ * it to the worker and keeps what the worker returns; a new chat only holds it
+ * in state until its first message is sent. Errors show above the composer.
+ */
 async function saveSelection(settings) {
   const id = state.id;
   state.settingsBusy = true;
@@ -149,6 +199,11 @@ async function saveSelection(settings) {
     controls();
   }
 }
+/**
+ * Open the model or reasoning popover, or close it when it is already open.
+ * The model popover gets one button per model that saves the choice; the
+ * reasoning popover is filled and its slider focused.
+ */
 function openPicker(name) {
   const wasOpen = !$(name + "-popover").hidden;
   closePicker();
@@ -158,13 +213,10 @@ function openPicker(name) {
   if (name === "model") {
     const options = $("model-options");
     options.replaceChildren();
-    for (const model of [
-      { id: null, label: "Default" },
-      ...state.catalog.models,
-    ]) {
+    for (const model of chatModels()) {
       const button = textNode("button", "", "model-option");
       button.type = "button";
-      const selected = model.id === selectedSettings().model;
+      const selected = model.id === selectedModel()?.id;
       button.setAttribute("aria-pressed", String(selected));
       const title = textNode("span", "", "model-option-title");
       title.append(
@@ -172,9 +224,12 @@ function openPicker(name) {
         textNode("span", selected ? "✓" : "", "model-check"),
       );
       button.append(title);
-      if (!model.id) button.append(textNode("small", "Use add-on default"));
       button.onclick = async () => {
-        const settings = { ...selectedSettings(), model: model.id };
+        // The add-on's own model is saved as no selection, so the chat keeps following the add-on setting.
+        const settings = {
+          ...selectedSettings(),
+          model: model.id === state.catalog.default_model ? null : model.id,
+        };
         if (
           settings.reasoning_effort &&
           !selectedEfforts(settings).includes(settings.reasoning_effort)
@@ -186,7 +241,11 @@ function openPicker(name) {
       };
       options.append(button);
     }
-    options.querySelector('[aria-pressed="true"]').focus();
+    // A chat can hold a model that is no longer in the list; then none is marked.
+    (
+      options.querySelector('[aria-pressed="true"]') ||
+      options.firstElementChild
+    )?.focus();
   } else {
     renderEffort();
     $("effort-slider").focus();
@@ -237,11 +296,19 @@ $("chat-picker").addEventListener("keydown", (event) => {
     options[next].focus();
   }
 });
-async function loadChatOptions() {
+let optionsRequest = 0;
+/**
+ * Load the models, defaults, and settings the UI needs into state.catalog and
+ * update the controls. With quiet, a failed request shows no error.
+ */
+async function loadChatOptions(quiet = false) {
+  // A slow answer must not replace the catalog of a request made after it.
+  const request = ++optionsRequest;
   try {
-    state.catalog = await api("chat-options");
+    const catalog = await api("chat-options");
+    if (request === optionsRequest) state.catalog = catalog;
   } catch (error) {
-    showError(error);
+    if (!quiet) showError(error);
   }
   controls();
 }
@@ -250,7 +317,14 @@ let refreshTimer;
 let activityTimer = null;
 let usageTimer;
 let usageLoading = false;
-function renderUsage(usage = {}) {
+/**
+ * Show the quota left for the five-hour and weekly limits as a figure and a
+ * bar, with the reset time as a tooltip. A limit without a valid percentage
+ * reads Unavailable, and a note says when the quota is stale or missing.
+ */
+function renderUsage(usage) {
+  // An account can lack either limit, and the worker may have no quota data at all.
+  usage = usage || {};
   // The worker's percentages already represent quota left, not quota used.
   for (const [id, key] of [
     ["usage-five-hour", "five_hour"],
@@ -263,9 +337,15 @@ function renderUsage(usage = {}) {
         : NaN;
     const valid = Number.isFinite(percent) && percent >= 0 && percent <= 100;
     $(id).textContent = valid ? `${percent}% left` : "Unavailable";
+    // The bar is as long as the quota left, turns red below 5%, and is an outline without a value.
+    const bar = $(`${id}-bar`);
+    bar.style.width = valid ? `${percent}%` : "0";
+    bar.parentElement.classList.toggle("low", valid && percent < 5);
+    bar.parentElement.classList.toggle("unknown", !valid);
     const reset =
       dateLabel(usage[`${key}_reset_at`], true) || usage[`${key}_reset`];
-    $(id).title = valid && reset ? `Resets ${reset}` : "";
+    $(id).title = bar.parentElement.title =
+      valid && reset ? `Resets ${reset}` : "";
   }
   $("usage-note").textContent =
     usage.status === "deferred"
@@ -275,6 +355,11 @@ function renderUsage(usage = {}) {
         : "Quota is currently unavailable.";
   $("usage-note").hidden = !$("usage-note").textContent;
 }
+/**
+ * Fetch the worker status, show its quota, and reload the chat options, then
+ * schedule the next check in a minute. Nothing is fetched while the page is
+ * hidden, and a failed check shows the quota as unavailable.
+ */
 async function loadUsage() {
   if (usageLoading) return;
   usageLoading = true;
@@ -283,6 +368,9 @@ async function loadUsage() {
     if (!document.hidden) {
       const data = await api("status");
       renderUsage(data.codex_usage);
+      // The quota check also tells the worker which model Codex picks when the add-on names none.
+      // Not awaited: the quota shown must not depend on it.
+      if (state.catalog) loadChatOptions(true);
     }
   } catch (_) {
     renderUsage();
@@ -317,16 +405,22 @@ function workerError(message, status) {
   error.status = status;
   return error;
 }
+/** Create an element with the given text and optional class name. */
 function textNode(tag, text, className) {
   const node = document.createElement(tag);
   node.textContent = text || "";
   if (className) node.className = className;
   return node;
 }
+/** Show or clear the error line above the composer. */
 function showError(error) {
   $("error").textContent = error ? String(error.message || error) : "";
   $("error").hidden = !error;
 }
+/**
+ * Format a timestamp in the browser's locale as a day and month, or as a full
+ * date and time when full is set. Returns "" for a value that is not a date.
+ */
 function dateLabel(value, full = false) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -334,6 +428,11 @@ function dateLabel(value, full = false) {
     ? date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
     : date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
+/**
+ * Open or close the sidebar, which slides over the chat on narrow screens.
+ * There, whichever of the two is out of reach is made inert. Closing also
+ * closes the chat actions menu; opening moves focus to New chat.
+ */
 function sidebar(open) {
   if (!open) closeChatMenu();
   document.body.classList.toggle("sidebar-open", open);
@@ -344,24 +443,52 @@ function sidebar(open) {
     matchMedia("(max-width:700px)").matches && open;
   if (open) $("new-chat").focus();
 }
+/** Fit the height of the message box to its text, up to 180 pixels. */
 function resizeInput() {
   $("message").style.height = "auto";
   $("message").style.height = Math.min(180, $("message").scrollHeight) + "px";
 }
+/** Say when a waiting message will start, from its place in the queue. */
+function queueNote(entry) {
+  const ahead = entry.position - 1;
+  return ahead > 0
+    ? `Starts on its own after the running chat and the ${ahead === 1 ? "message" : `${ahead} messages`} ahead of it in the queue.`
+    : "Next in line. Starts on its own when the running chat finishes.";
+}
+/**
+ * Update the controls around the open chat from state: whether Send, Stop
+ * task, New chat, and Attach can be used, whether sending means queueing, the
+ * notice above the composer, the hint below it, and the picker.
+ */
 function controls() {
   const task = state.task;
-  const active =
-    Boolean(state.active) ||
-    Boolean(task && ["queued", "running"].includes(task.status));
-  $("send").disabled =
+  const working =
+    Boolean(task && ["queued", "running"].includes(task.status)) ||
+    (Boolean(state.active) && state.active === state.id);
+  const waiting = Boolean(task?.queued_message);
+  // While another chat works, a message sent here waits in the queue instead.
+  const queueing = Boolean(state.active) && state.active !== state.id;
+  // What stops any message to this chat, whether typed or picked from choices.
+  const blocked =
     !state.catalog ||
     state.settingsBusy ||
     state.busy ||
     state.loading ||
-    active ||
-    (state.id !== null && !task?.can_continue) ||
-    preparingCount(state.files) > 0 ||
-    !$("message").value.trim();
+    working ||
+    waiting ||
+    (state.id !== null && !task?.can_continue);
+  $("send").disabled =
+    blocked || preparingCount(state.files) > 0 || !$("message").value.trim();
+  for (const button of document.querySelectorAll("#messages .choice"))
+    button.disabled = blocked;
+  $("send").setAttribute(
+    "aria-label",
+    queueing ? "Add message to queue" : "Send message",
+  );
+  $("send").title = queueing
+    ? "Add to the queue. It starts when the running chat finishes."
+    : "";
+  $("send").classList.toggle("queueing", queueing);
   $("cancel").hidden = !task || !["queued", "running"].includes(task.status);
   $("cancel").disabled = state.busy;
   $("new-chat").disabled = state.busy || state.settingsBusy;
@@ -370,18 +497,26 @@ function controls() {
     state.busy ||
     state.files.length + preparingCount(state.files) >= UPLOADS_PER_MESSAGE;
   $("compose-hint").textContent = state.id
-    ? "Continue this conversation with its saved context."
+    ? task?.status === "in_queue"
+      ? "This chat starts when its message leaves the queue."
+      : "Continue this conversation with its saved context."
     : "A new chat starts a separate conversation.";
   let notice = "";
-  if (state.active && state.active !== state.id)
+  if (waiting)
     notice =
-      "Another chat is working. You can send this message when it finishes.";
-  else if (active)
+      "This chat's message is waiting in the queue and has not been sent yet. You can edit or remove it above.";
+  else if (working)
     notice =
       "Codex is working. Your response will appear here when it finishes.";
   else if (task && !task.can_continue)
     notice =
       "This chat has no saved session to continue. Start a new chat and include the context you need.";
+  else if (queueing)
+    notice = `Another chat is working. You can send this message now; it will wait in the queue and start on its own when the running chat ${
+      state.queue.length
+        ? `and the ${state.queue.length === 1 ? "message" : `${state.queue.length} messages`} already in the queue finish`
+        : "finishes"
+    }.`;
   $("notice").textContent = notice;
   $("notice").hidden = !notice;
   renderPicker();
@@ -400,6 +535,17 @@ function pinIcon() {
   svg.append(path);
   return svg;
 }
+/** Build the small clock icon that marks a message waiting in the queue. */
+function queueIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("queue-icon");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 4.5V12l3 2");
+  svg.append(path);
+  return svg;
+}
 /** Find a loaded sidebar chat by task id. */
 function chatById(id) {
   return state.chats.find((chat) => chat.task_id === id);
@@ -414,24 +560,34 @@ function chatOrder(a, b) {
     b.task_id.localeCompare(a.task_id)
   );
 }
-/** Build one sidebar row with its title, summary, status, and actions button. */
-function renderRow(chat) {
+/**
+ * Build one sidebar row with its title, summary, status, and actions button.
+ * A row for a message waiting in the queue shows that message and its place
+ * in line instead of the chat's last answer.
+ */
+function renderRow(chat, queued = null) {
   const title = chat.title || "Untitled chat";
   const row = textNode("div", "", "chat-row");
   row.classList.toggle("current", chat.task_id === state.id);
   row.classList.toggle("menu-open", chat.task_id === menu.id);
+  row.classList.toggle("queued", Boolean(queued));
   const main = textNode("button", "", "row-main");
   main.type = "button";
   main.dataset.taskId = chat.task_id;
   main.setAttribute("aria-current", String(chat.task_id === state.id));
   const heading = textNode("span", "", "row-title");
-  if (chat.pinned) heading.append(pinIcon());
+  if (queued) heading.append(queueIcon());
+  else if (chat.pinned) heading.append(pinIcon());
   heading.append(textNode("span", title));
   main.append(heading);
   main.append(
     textNode(
       "span",
-      chat.summary || chat.question || labels[chat.status] || chat.status,
+      queued
+        ? markdownPlain(queued.message) || queued.message
+        : markdownPlain(chat.summary || chat.question) ||
+            labels[chat.status] ||
+            chat.status,
       "row-preview",
     ),
   );
@@ -439,13 +595,25 @@ function renderRow(chat) {
   meta.append(
     textNode(
       "span",
-      labels[chat.status] || chat.status,
-      chat.status === "waiting_for_input" ? "waiting" : "",
+      queued
+        ? queued.position === 1
+          ? "Next in queue"
+          : `In queue · ${queued.position} of ${state.queue.length}`
+        : labels[chat.status] || chat.status,
+      queued || chat.status === "waiting_for_input" ? "waiting" : "",
     ),
   );
-  meta.append(textNode("span", dateLabel(chat.updated_at || chat.created_at)));
+  meta.append(
+    textNode(
+      "span",
+      dateLabel(queued ? queued.created_at : chat.updated_at || chat.created_at),
+    ),
+  );
   main.append(meta);
   main.onclick = () => selectChat(chat.task_id);
+  row.append(main);
+  // A chat that is still waiting for its first message has nothing to pin or rename yet.
+  if (!chatById(chat.task_id)) return row;
   const actions = textNode("button", "⋯", "row-menu");
   actions.type = "button";
   actions.dataset.menuFor = chat.task_id;
@@ -456,11 +624,21 @@ function renderRow(chat) {
     chat.task_id === menu.id
       ? closeChatMenu(true)
       : openChatMenu(chat.task_id, actions);
-  row.append(main, actions);
+  row.append(actions);
   return row;
 }
+/**
+ * Redraw the sidebar chat list, under Pinned and Recent headings when any chat
+ * is pinned. Does nothing when the list is unchanged; otherwise keeps the
+ * focus and an open chat actions menu on the rows that replace the old ones.
+ */
 function renderList() {
-  const signature = JSON.stringify([state.chats, state.id, menu.id]);
+  const signature = JSON.stringify([
+    state.chats,
+    state.id,
+    menu.id,
+    state.queue,
+  ]);
   if (signature === state.listSignature) return;
   state.listSignature = signature;
   const list = $("chat-list");
@@ -468,16 +646,31 @@ function renderList() {
   const focusId = focused?.dataset.taskId || focused?.dataset.menuFor;
   const focusMenu = Boolean(focused?.dataset.menuFor);
   list.replaceChildren();
-  const pinned = state.chats.filter((chat) => chat.pinned);
-  const groups = pinned.length
-    ? [
-        ["Pinned", pinned],
-        ["Recent", state.chats.filter((chat) => !chat.pinned)],
-      ]
-    : [["", state.chats]];
-  for (const [label, chats] of groups) {
-    if (label && chats.length) list.append(textNode("p", label, "list-group"));
-    for (const chat of chats) list.append(renderRow(chat));
+  // Chats with a waiting message are listed once, in the order they will start.
+  const waiting = new Set(state.queue.map((entry) => entry.task_id));
+  const chats = state.chats.filter((chat) => !waiting.has(chat.task_id));
+  const pinned = chats.filter((chat) => chat.pinned);
+  if (state.queue.length) list.append(textNode("p", "In queue", "list-group"));
+  for (const entry of state.queue)
+    list.append(
+      renderRow(
+        chatById(entry.task_id) || {
+          task_id: entry.task_id,
+          title: entry.title,
+        },
+        entry,
+      ),
+    );
+  const groups =
+    pinned.length || state.queue.length
+      ? [
+          ["Pinned", pinned],
+          ["Recent", chats.filter((chat) => !chat.pinned)],
+        ]
+      : [["", chats]];
+  for (const [label, rows] of groups) {
+    if (label && rows.length) list.append(textNode("p", label, "list-group"));
+    for (const chat of rows) list.append(renderRow(chat));
   }
   if (focusId)
     list
@@ -497,9 +690,14 @@ function renderList() {
       if (!$("chat-menu").classList.contains("sheet")) positionChatMenu();
     } else closeChatMenu();
   }
-  $("list-empty").hidden = state.chats.length > 0;
+  $("list-empty").hidden = state.chats.length + state.queue.length > 0;
   $("load-more").hidden = state.next === null;
 }
+/**
+ * Fetch the chat list from the worker: a refresh of the chats already loaded,
+ * or the next 20 when older is set. Updates state.chats and state.active,
+ * redraws the list, and opens a new chat when the open one is gone.
+ */
 async function loadList(older = false) {
   const count = older ? 20 : Math.max(20, Math.min(500, state.chats.length));
   const offset = older ? state.chats.length : 0;
@@ -515,6 +713,7 @@ async function loadList(older = false) {
   state.chats = [...merged.values()].sort(chatOrder);
   state.next = state.chats.length < data.total ? state.chats.length : null;
   state.active = data.active_task_id;
+  state.queue = Array.isArray(data.queue) ? data.queue : [];
   if (hadSelected && !merged.has(state.id)) await selectChat(null);
   renderList();
   controls();
@@ -598,6 +797,10 @@ const checkLabels = {
   invalid: "Home Assistant configuration check failed",
   unavailable: "Home Assistant could not check the configuration",
 };
+/**
+ * Build the line that says how Home Assistant's configuration check went, with
+ * any errors and warnings. Returns null when there is no known result.
+ */
 function renderConfigCheck(check) {
   if (!check || !checkLabels[check.result]) return null;
   const node = textNode("div", "", `check check-${check.result}`);
@@ -615,6 +818,84 @@ function renderConfigCheck(check) {
     node.append(textNode("pre", `Warnings: ${check.warnings}`, "check-detail"));
   return node;
 }
+/**
+ * Say which changed files have a copy of their previous version and which have
+ * none. Copies are deleted after the retention period set in the app options.
+ */
+function renderBackups(turn) {
+  const entries = Array.isArray(turn.backups) ? turn.backups : [];
+  const saved = entries.filter((entry) => entry.status === "saved");
+  const unsaved = entries.filter((entry) =>
+    ["missing", "unverified"].includes(entry.status),
+  );
+  /** Word a number of files: "1 file" or "3 files". */
+  const count = (list) =>
+    list.length === 1 ? "1 file" : `${list.length} files`;
+  const nodes = [];
+  if (saved.length) {
+    const node = textNode("div", "", "check check-valid backups-saved");
+    const days = state.catalog?.backup_retention_days;
+    node.append(
+      textNode("span", "✓", "check-mark"),
+      textNode(
+        "span",
+        turn.backups_removed
+          ? `Previous version saved for ${count(saved)}; the copies have since been removed`
+          : `Previous version saved for ${count(saved)}${days ? `, kept for ${days === 1 ? "1 day" : `${days} days`}` : ""}`,
+      ),
+    );
+    if (!turn.backups_removed)
+      node.append(
+        textNode(
+          "pre",
+          saved.map((entry) => `${entry.path} → ${entry.copy}`).join("\n"),
+          "check-detail",
+        ),
+      );
+    nodes.push(node);
+  }
+  if (unsaved.length) {
+    const node = textNode("div", "", "check backups-missing");
+    node.append(
+      textNode("span", "!", "check-mark"),
+      textNode("span", `No previous version saved for ${count(unsaved)}`),
+      textNode(
+        "pre",
+        unsaved.map((entry) => entry.path).join("\n"),
+        "check-detail",
+      ),
+    );
+    nodes.push(node);
+  }
+  return nodes;
+}
+/** "12s", "1m 05s", or "1h 02m": how long the running exchange has taken so far. */
+function elapsedLabel(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = String(total % 60);
+  if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  return minutes ? `${minutes}m ${seconds.padStart(2, "0")}s` : `${seconds}s`;
+}
+/** Show the running time next to the waiting line and the step list heading. */
+function tickElapsed() {
+  const activity = state.activity;
+  const running =
+    activity &&
+    activity.id === state.id &&
+    activity.startedAt !== null &&
+    (activity.running || taskActive());
+  for (const node of document.querySelectorAll(".elapsed"))
+    node.textContent = running
+      ? ` · ${elapsedLabel(Date.now() - activity.startedAt)}`
+      : "";
+}
+/**
+ * Build the Verification section of an answer: one expandable row per check
+ * with its result, details, and findings, then the screenshots that have not
+ * expired. Returns null when the turn has no checks.
+ */
 function renderVerification(turn, taskId) {
   const checks = turn.verification || [];
   if (!checks.length) return null;
@@ -658,18 +939,29 @@ function renderVerification(turn, taskId) {
   section.append(textNode("p", "Screenshots are evidence for visual review. State and configuration checks do not prove automation behavior.", "verification-note"));
   return section;
 }
+/** Draw the open chat: every exchange with its answer, checks, saved copies, and steps. */
 function renderTask(force = false) {
   const task = state.task;
   if (!task) return;
+  const queued = task.queued_message || null;
+  if (state.edit && state.edit.id !== queued?.queue_id) state.edit = null;
   $("chat-title").textContent = task.title || "Untitled chat";
   $("chat-status").textContent =
-    `${labels[task.status] || task.status} · ${dateLabel(task.updated_at, true)}`;
+    task.status === "in_queue"
+      ? "In queue · not sent yet"
+      : `${labels[task.status] || task.status} · ${dateLabel(task.updated_at, true)}${queued ? " · next message in queue" : ""}`;
   const signature = JSON.stringify([
     task.turns,
     task.history_incomplete,
     task.status,
+    queued && [queued.queue_id, queued.message, queued.prompt_attachments],
+    state.edit?.id,
+    state.catalog?.backup_retention_days,
   ]);
   if (!force && signature === state.signature) {
+    // Its place in line can change without the conversation being redrawn.
+    if (queued && $("queued-note"))
+      $("queued-note").textContent = queueNote(queued);
     controls();
     ensureActivity();
     return;
@@ -703,7 +995,7 @@ function renderTask(force = false) {
         ),
       );
     if (turn.message)
-      exchange.append(textNode("div", turn.message, "message user"));
+      exchange.append(renderMarkdown(turn.message, "message user"));
     const attachments = imageAttachments(turn.attachments);
     const hasAnswer =
       turn.summary || turn.details || turn.question || attachments.length || turn.verification?.length;
@@ -712,13 +1004,22 @@ function renderTask(force = false) {
       const heading = textNode("div", "", "answer-heading");
       heading.append(textNode("span", "⌘", "mark"), textNode("span", "Codex"));
       answer.append(heading);
-      if (turn.summary) answer.append(textNode("div", turn.summary, "message"));
+      if (turn.summary) answer.append(renderMarkdown(turn.summary, "message"));
       if (turn.details && turn.details !== turn.summary)
-        answer.append(textNode("div", turn.details, "message details"));
+        answer.append(renderMarkdown(turn.details, "message details"));
       if (turn.question && turn.question !== turn.summary)
-        answer.append(textNode("div", turn.question, "message question"));
+        answer.append(renderMarkdown(turn.question, "message question"));
+      // Only the question still waiting can be answered with a choice.
+      if (
+        latest &&
+        !queued &&
+        task.status === "waiting_for_input" &&
+        turn.choices?.length
+      )
+        answer.append(renderChoices(turn));
       const check = renderConfigCheck(turn.config_check);
       if (check) answer.append(check);
+      answer.append(...renderBackups(turn));
       const evidence = renderVerification(turn, task.task_id);
       if (evidence) answer.append(evidence);
       if (attachments.length)
@@ -748,16 +1049,227 @@ function renderTask(force = false) {
           : "Working on your request…",
         "pending",
       );
-      if (latest) pending.id = "pending";
+      if (latest) {
+        pending.id = "pending";
+        pending.append(textNode("span", "", "elapsed"));
+      }
       exchange.append(pending);
       if (latest) exchange.append(activityBlock());
     }
     area.append(exchange);
   }
+  if (queued) area.append(renderQueued(task.task_id, queued));
   renderActivity();
   area.scrollTop = force || nearBottom ? area.scrollHeight : oldScroll;
   controls();
   ensureActivity();
+}
+/**
+ * Build a button for each answer Codex offered with its question. A click
+ * sends that answer as the next message; the message box stays free for a
+ * different one.
+ */
+function renderChoices(turn) {
+  const group = textNode("div", "", "choices");
+  group.setAttribute("role", "group");
+  group.setAttribute("aria-label", "Answers Codex offers");
+  turn.choices.forEach((choice, index) => {
+    const button = textNode(
+      "button",
+      markdownPlain(choice) || choice,
+      "subtle choice",
+    );
+    button.type = "button";
+    button.onclick = () => sendChoice(turn.turn_id, index);
+    group.append(button);
+  });
+  return group;
+}
+/**
+ * Answer the waiting question with one of the choices Codex offered. The turn
+ * id lets the worker refuse the answer when the question was already answered
+ * somewhere else. A draft in the message box stays as it is.
+ */
+async function sendChoice(turnId, index) {
+  const id = state.id;
+  if (!id || state.busy) return;
+  state.busy = true;
+  controls();
+  showError(null);
+  try {
+    const result = await api(`tasks/${encodeURIComponent(id)}/continue`, {
+      choice: index,
+      turn_id: turnId,
+      chat_settings: selectedSettings(),
+      // If another chat is working, the worker holds this answer in its queue.
+      queue: true,
+    });
+    state.chatSettings.delete(id);
+    if (result.status !== "in_queue") state.active = result.task_id;
+    state.busy = false;
+    await selectChat(result.task_id);
+    await loadList();
+    if (result.status === "in_queue") $("chat-list").scrollTop = 0;
+  } catch (error) {
+    showError(error);
+    // The question may have been answered elsewhere; show where the chat stands.
+    await Promise.allSettled([loadList(), fetchSelected(true)]);
+  } finally {
+    state.busy = false;
+    controls();
+  }
+}
+/**
+ * Show a message that waits in the queue: outlined rather than filled, so it
+ * reads as not sent yet, with controls to edit or remove it.
+ */
+function renderQueued(taskId, entry) {
+  const exchange = textNode("section", "", "exchange queued");
+  const label = textNode("p", "", "queued-label");
+  label.append(queueIcon(), textNode("span", "In queue · not sent yet"));
+  exchange.append(label);
+  const sent = imageAttachments(entry.prompt_attachments);
+  if (sent.length) {
+    const images = renderAttachments(
+      taskId,
+      sent,
+      "Image attached to your queued message",
+      "attachments user-attachments",
+    );
+    // A loading image pushes the edit and remove buttons down; keep them in view.
+    for (const img of images.querySelectorAll("img"))
+      img.addEventListener("load", () => {
+        const area = $("messages");
+        if (
+          area.scrollHeight - area.scrollTop - area.clientHeight <
+          img.height + 100
+        )
+          area.scrollTop = area.scrollHeight;
+      });
+    exchange.append(images);
+  }
+  const edit = state.edit?.id === entry.queue_id ? state.edit : null;
+  const actions = textNode("div", "", "queued-actions");
+  const button = (text, className, onclick) => {
+    const node = textNode("button", text, className);
+    node.type = "button";
+    node.disabled = Boolean(edit?.saving);
+    node.onclick = onclick;
+    actions.append(node);
+    return node;
+  };
+  if (edit) {
+    const input = document.createElement("textarea");
+    input.id = "queued-edit";
+    input.className = "queued-edit";
+    input.rows = 2;
+    input.value = edit.text;
+    input.readOnly = Boolean(edit.saving);
+    input.setAttribute("aria-label", "Edit queued message");
+    const resize = () => {
+      input.style.height = "auto";
+      input.style.height = Math.min(320, input.scrollHeight + 2) + "px";
+    };
+    input.addEventListener("input", () => {
+      edit.text = input.value;
+      save.disabled = !input.value.trim();
+      resize();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelEdit();
+      } else if (
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !event.isComposing &&
+        !matchMedia("(max-width:700px)").matches
+      ) {
+        event.preventDefault();
+        saveEdit();
+      }
+    });
+    exchange.append(input);
+    button("Cancel", "subtle", cancelEdit);
+    const save = button("Save", "", saveEdit);
+    save.id = "queued-save";
+    save.disabled = Boolean(edit.saving) || !edit.text.trim();
+    // Size and focus the box once it is in the page.
+    requestAnimationFrame(() => {
+      if (!input.isConnected) return;
+      resize();
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  } else {
+    exchange.append(renderMarkdown(entry.message, "message user queued"));
+    const note = textNode("span", queueNote(entry), "queued-note");
+    note.id = "queued-note";
+    actions.append(note);
+    button("Edit", "subtle", () => startEdit(entry)).id = "queued-edit-button";
+    button("Remove", "subtle danger", () => removeQueued(entry)).id =
+      "queued-remove";
+  }
+  exchange.append(actions);
+  return exchange;
+}
+/** Open the editor for a waiting message, starting from its current text. */
+function startEdit(entry) {
+  state.edit = { id: entry.queue_id, text: entry.message, saving: false };
+  showError(null);
+  renderTask(true);
+}
+/** Close the editor and keep the waiting message as it was. */
+function cancelEdit() {
+  state.edit = null;
+  renderTask(true);
+}
+/** Refresh the open chat and the list after the queue changed. */
+async function reloadQueue() {
+  await Promise.allSettled([fetchSelected(true), loadList()]);
+}
+/** Save the edited text of a waiting message. */
+async function saveEdit() {
+  const edit = state.edit;
+  const message = edit?.text.trim();
+  if (!message || edit.saving) return;
+  edit.saving = true;
+  renderTask(true);
+  showError(null);
+  try {
+    await api(`queue/${encodeURIComponent(edit.id)}`, { message });
+    if (state.edit === edit) state.edit = null;
+  } catch (error) {
+    showError(error);
+    edit.saving = false;
+    // A 404 means it started while it was being edited, so there is nothing left to edit.
+    if (error.status === 404 && state.edit === edit) state.edit = null;
+    // Unlock the editor even if the refresh below cannot reach the worker.
+    renderTask(true);
+  }
+  await reloadQueue();
+}
+let removing = false;
+/** Take a waiting message out of the queue; a chat that never started goes with it. */
+async function removeQueued(entry) {
+  if (removing) return;
+  removing = true;
+  const id = state.id;
+  showError(null);
+  try {
+    await api(
+      `queue/${encodeURIComponent(entry.queue_id)}`,
+      undefined,
+      "DELETE",
+    );
+    if (state.id === id && state.task?.status === "in_queue")
+      await selectChat(null);
+  } catch (error) {
+    showError(error);
+  }
+  await reloadQueue();
+  removing = false;
 }
 // Steps Codex reports while it works on the latest message: reasoning
 // headlines, progress notes, commands, file edits, searches, and tool calls.
@@ -772,8 +1284,11 @@ const stepIcons = {
   error: "!",
   outcome: "■",
   notice: "…",
+  // What the worker itself is doing, before and after Codex runs.
+  phase: "◦",
   other: "•",
 };
+/** Return whether the open chat's task is queued or running. */
 function taskActive() {
   return Boolean(
     state.task && ["queued", "running"].includes(state.task.status),
@@ -790,6 +1305,7 @@ function resetActivity(id) {
         seq: 0,
         steps: new Map(),
         running: false,
+        startedAt: null,
         loaded: false,
         loading: false,
         expanded: null,
@@ -797,6 +1313,7 @@ function resetActivity(id) {
       }
     : null;
 }
+/** Build the empty, hidden container that renderActivity fills with steps. */
 function activityBlock() {
   const block = textNode("div", "", "activity");
   block.id = "activity";
@@ -808,6 +1325,8 @@ function ensureActivity() {
   const activity = state.activity;
   if (!activity || activity.id !== state.id || activityTimer || activity.loading)
     return;
+  // A chat that is still waiting in the queue has no steps to load yet.
+  if (state.task?.status === "in_queue") return;
   if (!activity.loaded || activity.running || taskActive()) pollActivity();
 }
 /** Fetch the steps added since the last poll and merge them by position. */
@@ -836,6 +1355,7 @@ async function pollActivity() {
       activity.expanded = null;
       activity.seq = 0;
       activity.turnId = data.turn_id;
+      activity.startedAt = null;
       restart = true;
       return;
     }
@@ -845,7 +1365,17 @@ async function pollActivity() {
     activity.seq = data.seq;
     activity.running = data.running;
     activity.loaded = true;
+    if (data.running && typeof data.elapsed_ms === "number") {
+      const startedAt = Date.now() - data.elapsed_ms;
+      // Keep the first reading unless it is clearly off, so the seconds tick evenly.
+      if (
+        activity.startedAt === null ||
+        Math.abs(startedAt - activity.startedAt) > 1500
+      )
+        activity.startedAt = startedAt;
+    } else activity.startedAt = null;
     if (data.steps.length || wasRunning !== data.running) renderActivity();
+    tickElapsed();
     if (!data.running && taskActive()) fetchSelected().catch(showError);
   } catch (error) {
     // The regular refresh reports worker problems; the steps just pause.
@@ -858,6 +1388,7 @@ async function pollActivity() {
     }
   }
 }
+/** Draw the step list of the latest exchange, with its heading, count, and timer. */
 function renderActivity() {
   const block = $("activity");
   const activity = state.activity;
@@ -882,15 +1413,14 @@ function renderActivity() {
   toggle.type = "button";
   toggle.setAttribute("aria-expanded", String(expanded));
   toggle.setAttribute("aria-controls", "activity-steps");
-  toggle.append(
-    textNode("span", "", "activity-chevron"),
-    textNode(
-      "span",
-      running
-        ? `Working on your request… · ${count}`
-        : `${expanded ? "Hide" : "Show"} activity (${count})`,
-    ),
+  const label = textNode(
+    "span",
+    running
+      ? `Working on your request… · ${count}`
+      : `${expanded ? "Hide" : "Show"} activity (${count})`,
   );
+  if (running) label.append(textNode("span", "", "elapsed"));
+  toggle.append(textNode("span", "", "activity-chevron"), label);
   toggle.onclick = () => {
     activity.expanded = !expanded;
     renderActivity();
@@ -900,8 +1430,14 @@ function renderActivity() {
   list.hidden = !expanded;
   for (const step of steps) list.append(renderStep(step, activity));
   block.replaceChildren(toggle, list);
+  tickElapsed();
   if (nearBottom) area.scrollTop = area.scrollHeight;
 }
+/**
+ * Build one row of the step list: icon, text, and a line with a failed
+ * command's exit code, the duration, and the running state. A step with
+ * output gets a button that shows or hides it.
+ */
 function renderStep(step, activity) {
   const row = textNode("div", "", `step step-${step.kind} is-${step.status}`);
   row.append(textNode("span", stepIcons[step.kind] || "•", "step-icon"));
@@ -941,11 +1477,30 @@ function renderStep(step, activity) {
   row.append(body);
   return row;
 }
+/**
+ * Fetch the open chat from the worker into state.task and draw it; force
+ * redraws it even when nothing changed. A response that arrives after another
+ * chat was opened is dropped.
+ */
 async function fetchSelected(force = false) {
   const id = state.id;
   const generation = state.generation;
   if (!id) return;
-  const data = await api(`tasks/${encodeURIComponent(id)}`);
+  let data;
+  try {
+    data = await api(`tasks/${encodeURIComponent(id)}`);
+  } catch (error) {
+    // A chat that only existed as a queued message is gone once that message
+    // is removed, here or in another tab.
+    if (
+      error.status === 404 &&
+      state.task?.status === "in_queue" &&
+      generation === state.generation &&
+      id === state.id
+    )
+      return selectChat(null);
+    throw error;
+  }
   if (generation !== state.generation || id !== state.id) return;
   state.task = data.task;
   if (!state.chatSettings.has(id))
@@ -998,6 +1553,7 @@ async function selectChat(id, restoring = false) {
   state.files = state.draftFiles.get(id) || [];
   renderPending();
   state.task = null;
+  state.edit = null;
   state.generation++;
   state.signature = "";
   resetActivity(id);
@@ -1364,6 +1920,8 @@ $("composer").addEventListener("submit", async (event) => {
         ...(id ? { message } : { prompt: message }),
         ...(attachments.length ? { attachments } : {}),
         chat_settings: selectedSettings(),
+        // If another chat is working, the worker holds this message in its queue.
+        queue: true,
       },
     );
     state.drafts.delete(id);
@@ -1371,10 +1929,12 @@ $("composer").addEventListener("submit", async (event) => {
     state.chatSettings.delete(id);
     clearUploads();
     $("message").value = "";
-    state.active = result.task_id;
+    if (result.status !== "in_queue") state.active = result.task_id;
     state.busy = false;
     await selectChat(result.task_id);
     await loadList();
+    // The queue is listed first, so bring the new entry into view.
+    if (result.status === "in_queue") $("chat-list").scrollTop = 0;
   } catch (error) {
     showError(error);
     // A failed request may have saved a terminal task; refresh status without retrying the message.
@@ -1477,6 +2037,7 @@ async function addUploads(fileList) {
   // The batch belongs to the draft it was picked in. Switching chats swaps
   // state.files for another list, so every step below works on this one.
   const target = state.files;
+  /** Redraw the pending images and controls if this draft is still open. */
   const sync = () => {
     if (target !== state.files) return;
     renderPending();
@@ -1665,6 +2226,10 @@ $("cancel").onclick = async () => {
     controls();
   }
 };
+/**
+ * Set the sidebar width in pixels, kept between 220 and 440 and leaving 360
+ * for the chat when the window allows, and remember it for the next visit.
+ */
 function setWidth(value) {
   const width = Math.max(
     220,
@@ -1710,6 +2275,11 @@ window.addEventListener("resize", () => {
   if (innerWidth > 700) setWidth($("divider").getAttribute("aria-valuenow"));
 });
 let loginTimer;
+/**
+ * Show the ChatGPT sign-in status in the settings dialog, with the sign-in
+ * code, link, and QR code when the worker provides them. Checks again every
+ * three seconds as long as the dialog is open and the sign-in is pending.
+ */
 async function loadLogin() {
   clearTimeout(loginTimer);
   const { auth } = await api("auth/status");
@@ -1740,6 +2310,7 @@ async function loadLogin() {
   )
     loginTimer = setTimeout(() => loadLogin().catch(settingsError), 3000);
 }
+/** Show an error in the result line of the settings dialog. */
 function settingsError(error) {
   $("settings-result").textContent = String(error.message || error);
 }
@@ -1811,3 +2382,4 @@ controls();
 restore = reopenLastChat();
 refresh();
 loadUsage();
+setInterval(tickElapsed, 1000);

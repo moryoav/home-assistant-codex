@@ -9,6 +9,8 @@
     <meta name="color-scheme" content="light dark" />
     <title>Codex · Home Assistant</title>
     <link rel="stylesheet" href="assets/chat.css" />
+    <script src="assets/vendor/marked.umd.js" defer></script>
+    <script src="assets/markdown.js" defer></script>
     <script src="assets/chat.js" defer></script>
   </head>
   <body>
@@ -59,8 +61,16 @@
             </button>
           </div>
           <div id="usage" class="usage" aria-label="Remaining account quota">
-            <span>5h <strong id="usage-five-hour">Unavailable</strong></span>
-            <span>7d <strong id="usage-weekly">Unavailable</strong></span>
+            <span>5h</span>
+            <span class="usage-bar unknown" aria-hidden="true"
+              ><span id="usage-five-hour-bar"></span
+            ></span>
+            <strong id="usage-five-hour">Unavailable</strong>
+            <span>7d</span>
+            <span class="usage-bar unknown" aria-hidden="true"
+              ><span id="usage-weekly-bar"></span
+            ></span>
+            <strong id="usage-weekly">Unavailable</strong>
           </div>
           <p id="usage-note" class="usage-note" role="status">Loading quota…</p>
         </div>
@@ -164,10 +174,11 @@
                     id="model-button"
                     type="button"
                     aria-label="Select model"
+                    title="Select model"
                     aria-expanded="false"
                     aria-controls="model-popover"
                   >
-                    Default
+                    Model
                   </button>
                   <button
                     id="effort-button"

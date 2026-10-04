@@ -1,4 +1,4 @@
-"""Home Assistant configuration check, recovery copies, and gated dashboard saves."""
+"""Home Assistant configuration check, pre-change copies, and gated dashboard saves."""
 from __future__ import annotations
 
 import json
@@ -16,6 +16,7 @@ class FakeResponse:
     """A minimal stand-in for a `requests` response."""
 
     def __init__(self, status_code=200, payload=None, text=""):
+        """Hold the status code, JSON payload, and body text the fake response returns."""
         self.status_code = status_code
         self._payload = payload
         self.text = text
@@ -38,6 +39,7 @@ class CheckConfigApiTests(unittest.TestCase):
         self.stack.enter_context(patch.object(server, "ha_token_source", return_value="supervisor"))
 
     def test_valid_invalid_and_unavailable_results(self):
+        """Home Assistant's reply becomes valid, invalid, or unavailable, and anything but valid carries errors."""
         cases = [
             (FakeResponse(200, {"result": "valid", "errors": None, "warnings": None}), ("valid", "", "")),
             (FakeResponse(200, {"result": "invalid", "errors": "Invalid config for 'automation'", "warnings": "deprecated"}),
@@ -60,6 +62,7 @@ class CheckConfigApiTests(unittest.TestCase):
                 self.assertEqual(post.call_args.kwargs["timeout"], server.CONFIG_CHECK_TIMEOUT)
 
     def test_connection_failure_and_missing_token(self):
+        """A failed connection or a missing token makes the check unavailable instead of raising."""
         with patch.object(server.requests, "post", side_effect=OSError("unreachable")):
             outcome = server.check_home_assistant_config()
         self.assertEqual(outcome["result"], "unavailable")
@@ -69,7 +72,7 @@ class CheckConfigApiTests(unittest.TestCase):
 
 
 class AssessChangesTests(unittest.TestCase):
-    """Validation, the configuration check, recovery copies, and dashboard saves after a run."""
+    """Validation, the configuration check, pre-change copies, and dashboard saves after a run."""
 
     def setUp(self):
         """Use a temporary config tree and run directory with the Home Assistant calls faked."""
@@ -91,7 +94,7 @@ class AssessChangesTests(unittest.TestCase):
         self.stack.enter_context(patch.object(server, "read_lovelace_registry", return_value={}))
 
     def snapshot(self, files):
-        """Write files into the config tree and record them in the run's pre-change snapshot."""
+        """Write files into the config tree and record them in the run's full snapshot."""
         with tarfile.open(self.run_dir / "snapshot-before.tar.gz", "w:gz") as tar:
             for rel, content in files.items():
                 path = self.config / rel
@@ -106,6 +109,7 @@ class AssessChangesTests(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
 
     def test_yaml_change_runs_the_check_and_passes(self):
+        """A valid YAML change runs the check and leaves no recovery copies."""
         self.snapshot({"automations.yaml": "- alias: old\n"})
         self.write("automations.yaml", "- alias: new\n")
         result = server.assess_changes("t", self.run_dir, {"added": [], "changed": ["automations.yaml"], "deleted": []})
@@ -113,9 +117,10 @@ class AssessChangesTests(unittest.TestCase):
         self.assertEqual(result["config_check"]["result"], "valid")
         self.assertEqual(result["recovery_files"], [])
         self.check.assert_called_once()
-        self.assertFalse((self.run_dir / "recovery").exists())
+        self.assertFalse((self.run_dir / "backups").exists())
 
     def test_failed_check_fails_validation_and_keeps_pre_change_copies(self):
+        """A failed check points to the previous version of each affected file."""
         self.snapshot({"automations.yaml": "- alias: old\n"})
         self.write("automations.yaml", "- alias: new\n")
         self.write("packages/new.yaml", "sensor: []\n")
@@ -123,18 +128,19 @@ class AssessChangesTests(unittest.TestCase):
         result = server.assess_changes("t", self.run_dir, {"added": ["packages/new.yaml"], "changed": ["automations.yaml"], "deleted": []})
         self.assertEqual(result["validation_errors"], ["Home Assistant configuration check failed: required key 'trigger' not provided"])
         self.assertEqual(result["config_check"]["result"], "invalid")
-        copy_path = self.run_dir / "recovery" / "automations.yaml"
+        copy_path = self.run_dir / "backups" / "automations.yaml"
         self.assertEqual(result["recovery_files"], [
             {"path": "automations.yaml", "copy": str(copy_path.resolve())},
             {"path": "packages/new.yaml", "copy": ""},
         ])
         self.assertEqual(copy_path.read_text(encoding="utf-8"), "- alias: old\n")
         details = server.validation_details(result["validation_errors"], result["config_check"], result["recovery_files"])
-        self.assertIn("Pre-change copies of the affected files are kept at: " + str(copy_path.resolve()), details)
-        self.assertIn("New files that did not exist before: packages/new.yaml", details)
+        self.assertIn(f"Pre-change copies of the affected files are kept for 7 days at: `{copy_path.resolve()}`", details)
+        self.assertIn("New files that did not exist before: `packages/new.yaml`", details)
         self.assertIn("Home Assistant warnings: w", details)
 
     def test_syntax_error_skips_the_check_and_dashboard_save(self):
+        """A syntax error skips the check and the dashboard save, and still offers copies."""
         self.snapshot({".storage/lovelace.home": json.dumps({"data": {"config": {"views": []}}}), "scripts.yaml": "a: 1\n"})
         self.write(".storage/lovelace.home", "{not json")
         self.write("scripts.yaml", "a: [\n")
@@ -148,9 +154,10 @@ class AssessChangesTests(unittest.TestCase):
             "success": False, "message": "Not saved: the file failed validation.",
         }])
         self.assertEqual({entry["path"] for entry in result["recovery_files"]}, {".storage/lovelace.home", "scripts.yaml"})
-        self.assertTrue((self.run_dir / "recovery" / ".storage" / "lovelace.home").is_file())
+        self.assertTrue((self.run_dir / "backups" / ".storage" / "lovelace.home").is_file())
 
     def test_storage_only_changes_skip_the_check_but_save_dashboards(self):
+        """A change to dashboard storage alone skips the check and still saves the dashboard."""
         self.write(".storage/lovelace.home", json.dumps({"data": {"config": {"views": []}}}))
         result = server.assess_changes("t", self.run_dir, {"added": [], "changed": [".storage/lovelace.home"], "deleted": []})
         self.assertEqual(result["config_check"]["result"], "skipped")
@@ -159,6 +166,7 @@ class AssessChangesTests(unittest.TestCase):
         self.assertEqual(result["lovelace_results"][0]["success"], True)
 
     def test_option_disables_the_check(self):
+        """With the config_check option off, a YAML change is reported as disabled and the check never runs."""
         self.options["config_check"] = False
         self.write("automations.yaml", "- alias: new\n")
         result = server.assess_changes("t", self.run_dir, {"added": [], "changed": ["automations.yaml"], "deleted": []})
@@ -166,6 +174,7 @@ class AssessChangesTests(unittest.TestCase):
         self.check.assert_not_called()
 
     def test_deleted_yaml_triggers_the_check(self):
+        """Deleting a YAML file is enough to run the check."""
         result = server.assess_changes("t", self.run_dir, {"added": [], "changed": [], "deleted": ["packages/old.yaml"]})
         self.assertEqual(result["config_check"]["result"], "valid")
         self.check.assert_called_once()
@@ -185,20 +194,23 @@ class RunTaskWiringTests(unittest.TestCase):
             )
 
     def test_failed_check_marks_the_task_failed_with_recovery_details(self):
+        """The task fails and its details and event carry the recovery copies."""
         task, events = self.run_with({
             "validation_errors": ["Home Assistant configuration check failed: bad"],
             "config_check": {"result": "invalid", "errors": "bad", "warnings": ""},
-            "recovery_files": [{"path": "automations.yaml", "copy": "/tasks/x/recovery/automations.yaml"}],
+            "recovery_files": [{"path": "automations.yaml", "copy": "/tasks/x/backups/automations.yaml"}],
             "lovelace_results": [],
         })
         self.assertEqual(task["status"], "failed")
         self.assertIn("Validation errors: Home Assistant configuration check failed: bad", task["details"])
-        self.assertIn("/tasks/x/recovery/automations.yaml", task["details"])
+        self.assertIn("/tasks/x/backups/automations.yaml", task["details"])
+        self.assertEqual(task["error"], "Validation errors: Home Assistant configuration check failed: bad")
         self.assertEqual(task["config_check"]["result"], "invalid")
         self.assertEqual(events[-1]["config_check"]["result"], "invalid")
         self.assertEqual(events[-1]["recovery_files"][0]["path"], "automations.yaml")
 
     def test_unavailable_check_keeps_success_but_notes_it(self):
+        """The task stays completed and its details note that the configuration could not be checked."""
         task, events = self.run_with({
             "validation_errors": [],
             "config_check": {"result": "unavailable", "errors": "HTTP 502", "warnings": ""},
@@ -255,6 +267,7 @@ class TerminalOutcomeResetTests(unittest.TestCase):
         self.assertEqual(record["recovery_files"], [])
 
     def test_new_turn_starts_without_the_previous_check(self):
+        """A new turn starts with an empty check and no recovery files; the earlier turn keeps its own."""
         response = self.client.post(f"/tasks/{self.task_id}/continue", json={"message": "Try again"}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         task = server.tasks[self.task_id]
@@ -263,6 +276,7 @@ class TerminalOutcomeResetTests(unittest.TestCase):
         self.assertEqual(task["turns"][0]["config_check"]["result"], "invalid")
 
     def test_failed_launch_resets_and_reports_the_fields(self):
+        """A failed launch clears the check and recovery files on the task, its turn, and the result event."""
         self.client.post(f"/tasks/{self.task_id}/continue", json={"message": "Try again"}, headers=self.headers)
         server.tasks[self.task_id].update(self.STALE)
         server.fail_task_launch(self.task_id, RuntimeError("no binary"))
@@ -271,6 +285,7 @@ class TerminalOutcomeResetTests(unittest.TestCase):
         self.assert_reset(self.events[-1])
 
     def test_cancellation_resets_and_reports_the_fields(self):
+        """A cancellation clears the check and recovery files on the task, its turn, and the result event."""
         self.client.post(f"/tasks/{self.task_id}/continue", json={"message": "Try again"}, headers=self.headers)
         server.tasks[self.task_id].update(self.STALE)
         ok, _proc, error = server.request_task_cancellation(self.task_id)

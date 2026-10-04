@@ -12,10 +12,12 @@ from test_server import server
 
 
 def item(kind, item_id, **fields):
+    """Build the event Codex emits when an item of the given kind completes."""
     return {"type": "item.completed", "item": {"id": item_id, "type": kind, **fields}}
 
 
 def command(item_id, cmd, output="", exit_code=0, status="completed"):
+    """Build a command item event: started when in progress, completed otherwise."""
     return {"type": "item.completed" if status != "in_progress" else "item.started",
             "item": {"id": item_id, "type": "command_execution", "command": cmd,
                      "aggregated_output": output, "exit_code": exit_code, "status": status}}
@@ -25,7 +27,10 @@ FINAL_ANSWER = json.dumps({"status": "completed", "summary": "Done", "question":
 
 
 class ActivityStepTests(unittest.TestCase):
+    """How the events Codex reports become the steps of the running exchange."""
+
     def setUp(self):
+        """Start collecting steps for one running exchange."""
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         for name, value in (("tasks", {}), ("task_activity", {}), ("active_task_runners", set())):
@@ -34,10 +39,12 @@ class ActivityStepTests(unittest.TestCase):
         server.start_activity("t", "turn-1")
 
     def steps(self, after=0):
+        """What the activity endpoint would return now for steps after a sequence number."""
         with server.lock:
             return server.activity_payload_locked(server.task_activity["t"], after)
 
     def test_items_map_to_steps(self):
+        """Each kind of item Codex reports becomes a readable step, without the final answer or empty messages."""
         events = [
             item("reasoning", "item_0", text="**Checking the automation**"),
             item("agent_message", "item_1", text="I'll read the automation first."),
@@ -77,6 +84,7 @@ class ActivityStepTests(unittest.TestCase):
         self.assertEqual(reasoning["id"], "item_0")
 
     def test_started_items_update_in_place_with_duration(self):
+        """An item that starts and then completes stays one step, updated with its result and duration."""
         server.record_activity_event("t", command("item_1", "/bin/sh -lc 'sleep 1'", status="in_progress", exit_code=None))
         first = self.steps()
         self.assertEqual(first["steps"][0]["status"], "running")
@@ -91,6 +99,7 @@ class ActivityStepTests(unittest.TestCase):
         self.assertEqual(self.steps(after=second["seq"])["steps"], [])
 
     def test_repeated_error_reports_become_one_step(self):
+        """An error that Codex reports as an item, an event, and a failed turn shows as one failed step."""
         message = "Your access token could not be refreshed."
         server.record_activity_event("t", item("error", "item_0", message=message))
         server.record_activity_event("t", {"type": "error", "message": message})
@@ -99,6 +108,7 @@ class ActivityStepTests(unittest.TestCase):
         self.assertEqual([(s["kind"], s["status"], s["text"]) for s in payload["steps"]], [("error", "failed", message)])
 
     def test_secrets_are_redacted_and_steps_are_capped(self):
+        """Tokens are redacted from a step's command and output, and one notice replaces the steps past the limit."""
         server.record_activity_event("t", command("item_0", "/bin/sh -lc 'curl -H \"Authorization: Bearer abcdefghijklmnop123456\" x'",
                                                   output="token=abcdefghijklmnop123456"))
         step = self.steps()["steps"][0]
@@ -116,6 +126,7 @@ class ActivityStepTests(unittest.TestCase):
         self.assertNotIn("t", server.task_activity)
 
     def test_events_without_a_running_exchange_are_ignored(self):
+        """Events for a task with no running exchange, and events that are not objects, add no steps."""
         server.record_activity_event("other", item("reasoning", "r", text="Lost"))
         server.record_activity_event("t", "not a dict")
         self.assertEqual(self.steps()["total"], 0)
@@ -123,7 +134,10 @@ class ActivityStepTests(unittest.TestCase):
 
 
 class ActivityApiTests(unittest.TestCase):
+    """The activity endpoint: live steps while an exchange runs and the stored steps afterwards."""
+
     def setUp(self):
+        """Isolate task storage and CODEX_HOME in a temp directory, save a Codex session, and mock the task runner."""
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
@@ -142,15 +156,18 @@ class ActivityApiTests(unittest.TestCase):
         (session_dir / f"rollout-2026-09-20T01-00-00-{self.session_id}.jsonl").write_text("{}\n")
 
     def get(self, task_id, after=None):
+        """Request a task's activity, optionally only the steps after a sequence number."""
         query = "" if after is None else f"?after={after}"
         return self.client.get(f"/tasks/{task_id}/activity{query}", headers=self.headers)
 
     def create(self):
+        """Create a queued task through the API and return its id."""
         response = self.client.post("/tasks", json={"prompt": "Review my automation"}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         return response.json["task_id"]
 
     def test_live_steps_then_stored_steps_then_new_turn(self):
+        """Activity shows live steps during a run, the stored steps after it, and none once a new exchange starts."""
         task_id = self.create()
         turn_id = server.tasks[task_id]["current_turn_id"]
         self.assertEqual(self.get(task_id).json, {"ok": True, "turn_id": turn_id, "seq": 0, "running": False, "total": 0, "steps": []})
@@ -187,6 +204,7 @@ class ActivityApiTests(unittest.TestCase):
         self.assertEqual(fresh["steps"], [])
 
     def test_failed_run_records_its_summary(self):
+        """A failed run stores an outcome step that carries the task's failure summary."""
         task_id = self.create()
         server.update_task(task_id, status="running")
         server.start_activity(task_id, server.tasks[task_id]["current_turn_id"])
@@ -196,6 +214,7 @@ class ActivityApiTests(unittest.TestCase):
         self.assertEqual([step["text"] for step in steps], ["Failed: Codex timed out after 5 seconds."])
 
     def test_deleting_a_chat_forgets_its_steps(self):
+        """Deleting a chat also drops the steps held in memory for it."""
         task_id = self.create()
         server.start_activity(task_id, server.tasks[task_id]["current_turn_id"])
         server.update_task(task_id, status="completed", session_id=self.session_id, completed_at=server.utc_now())
@@ -206,7 +225,10 @@ class ActivityApiTests(unittest.TestCase):
 
 
 class ReasoningSummaryOptionTests(unittest.TestCase):
+    """The add-on option for how detailed Codex's reasoning summaries are."""
+
     def test_option_is_passed_to_codex_and_validated(self):
+        """The reasoning summary option reaches Codex, and a missing or unsupported value falls back to concise."""
         for configured, expected in (("detailed", "detailed"), ("none", "none"), (None, "concise"), ("auto", "concise"), ("  Concise ", "concise")):
             with self.subTest(configured=configured):
                 self.assertEqual(server.reasoning_summary({"reasoning_summary": configured}), expected)

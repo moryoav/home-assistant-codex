@@ -29,13 +29,17 @@ PATH_RE = re.compile(r"/[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?/?")
 
 
 class Verification:
+    """Run the bounded checks a running task may request with its capability, and record them on its current turn."""
+
     def __init__(self, worker):
+        """Keep the worker that provides tasks, options and Home Assistant access; no capability is issued yet."""
         self.worker = worker
         self.capabilities = {}
         self.lock = threading.RLock()
         self.execution_lock = threading.Lock()
 
     def begin(self, task_id):
+        """Issue a new capability for the task's turn, clear its recorded checks, and delete expired screenshots."""
         self.cleanup()
         with self.lock:
             capability = secrets.token_urlsafe(32)
@@ -44,10 +48,12 @@ class Verification:
         return capability
 
     def end(self, task_id):
+        """Withdraw the task's capability so later requests that present it are refused."""
         with self.lock:
             self.capabilities.pop(task_id, None)
 
     def dispatch(self, payload):
+        """Run a request's check for the running task that owns its capability; raise ValueError if there is none."""
         if not isinstance(payload, dict):
             raise ValueError("Expected a verification object")
         supplied = payload.get("capability", "")
@@ -74,6 +80,11 @@ class Verification:
                         and not self.worker.task_cancellation_requested(task_id))
 
     def core(self, method, path, **kwargs):
+        """Call a Core API path through the Supervisor proxy and return the JSON of its answer.
+
+        Requests to the integration's own codex_cli/ paths also carry the worker token in their JSON body.
+        Raises ValueError when no token is available, the answer is not HTTP 200, or its body exceeds 256 KiB.
+        """
         token = self.worker.ha_token()
         if not token:
             raise ValueError("Home Assistant authentication is unavailable")
@@ -94,6 +105,10 @@ class Verification:
         return json.loads(content)
 
     def ws_read(self, message):
+        """Send one command over the Core WebSocket and return its result.
+
+        Raises ValueError when authentication fails, a reply exceeds 1 MiB, or no successful result arrives.
+        """
         token = self.worker.ha_token()
         with closing(websocket.create_connection("ws://supervisor/core/websocket", timeout=15)) as ws:
             first = json.loads(ws.recv())
@@ -115,6 +130,11 @@ class Verification:
         raise ValueError("Home Assistant did not return a result")
 
     def run(self, task_id, payload, capability=None):
+        """Run one check for the task's current turn and add its redacted result to the turn's verification list.
+
+        Returns an "unavailable" result instead of raising when another check is running, the capability
+        has expired, the turn's check limit is reached, or the operation fails.
+        """
         # One inspection at a time, even if the agent launches parallel commands.
         if not self.execution_lock.acquire(blocking=False):
             return {"status": "unavailable", "message": "Another verification is running"}
@@ -166,6 +186,7 @@ class Verification:
             self.execution_lock.release()
 
     def entity(self, payload):
+        """Read an entity's state from Core, compare it with any expected_state, and keep only the named attributes."""
         entity_id = payload.get("entity_id", "")
         if not isinstance(entity_id, str) or not ENTITY_RE.fullmatch(entity_id):
             raise ValueError("Invalid entity_id")
@@ -186,6 +207,7 @@ class Verification:
                 "message": "Fresh entity state readback. This does not verify automation triggers, conditions, or actions."}
 
     def dashboard_readback(self, payload):
+        """Read a dashboard's configuration from Core and compare it with expected_config when one is given."""
         path = payload.get("path", "/lovelace/0")
         if not isinstance(path, str) or not PATH_RE.fullmatch(path):
             raise ValueError("Use a local dashboard path such as /lovelace/0")
@@ -299,6 +321,12 @@ class Verification:
                 pass  # Core independently revokes the session after 180 seconds.
 
     def after_changes(self, task_id, lovelace_results):
+        """Check each dashboard the worker saved for this turn: read its configuration back, then capture its views.
+
+        Captures stop at the turn's dashboard limit. If the saved dashboard file cannot be read, a dashboard
+        check with an empty path is run instead; it captures nothing and leaves an unavailable (or disabled)
+        result on the turn.
+        """
         for ref in lovelace_results:
             if not ref.get("success") or self.worker.task_cancellation_requested(task_id):
                 continue
@@ -358,10 +386,20 @@ class Verification:
                         path.unlink(missing_ok=True)
 
     def serve(self, path):
+        """Start a Unix socket server at path that answers verification requests in background threads, and return it.
+
+        Any existing socket file is replaced, and the new one is accessible to its owner only.
+        """
         engine = self
 
         class Handler(socketserver.StreamRequestHandler):
+            """Answer one newline-terminated JSON request per connection."""
+
             def handle(self):
+                """Read one request of at most 16384 bytes, dispatch it and write the result as a JSON line.
+
+                A request that is invalid, too large or refused gets a generic "unavailable" result.
+                """
                 self.request.settimeout(240)
                 try:
                     raw = self.rfile.readline(16385)
@@ -433,6 +471,7 @@ def browser_process_memory(pid, rss_pages):
 
 
 def kill_tracked_processes(tracked):
+    """Kill each tracked process whose start time still matches, so a reused PID is never signalled."""
     for pid, start in tracked.items():
         try:
             stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()

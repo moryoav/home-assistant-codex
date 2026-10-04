@@ -11,7 +11,7 @@
 - **Buttons on phone notifications.** With `notify_service` set to a mobile app service (`notify.mobile_app_...`), the notification for a question has a button for each answer, and tapping one sends it. This needs the **Codex** integration at 0.1.69. Other notify services and the persistent notification list the answers in the text.
 - An answer goes to the question it was given for. The buttons name the turn that asked, and the worker refuses an answer once that question is no longer the one waiting, so a button on an old notification cannot answer a newer question. The `codex_cli.reply_task` action has an optional `turn_id` for the same check, and works as before without it.
 - The `codex_cli_task_result` event and the **Last task** sensor carry `choices` and `turn_id`. The worker API accepts `turn_id`, and `choice` together with it in place of the text, on `/tasks/<task_id>/reply` and `/tasks/<task_id>/continue`.
-- An answer picked while another chat is working waits in the queue like any other message.
+- An answer picked while another chat is working waits in the queue like any other message. Its chat takes no other message until it is sent, and it is sent only if its question is still the one waiting.
 - The answers are a convenience and not a safeguard. Codex decides when to ask, as before.
 
 Update the **Codex CLI Worker** app to **0.1.69** to queue messages and to answer questions from the chat. Update the **Codex** integration to **0.1.69** as well, then restart Home Assistant, for the notification buttons, the `turn_id` field, and the sensor attributes.

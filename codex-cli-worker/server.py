@@ -3960,13 +3960,11 @@ def _run_background_task(
                         running_processes.pop(task_id, None)
         finish_activity(task_id)
         remove_run_artifacts(get_run_dir(task_id), WORKING_FILES)
-        with lock:
-            active_task_runners.discard(task_id)
+        start_next_queued(release=task_id)
         try:
             cleanup_backups()
         except Exception as exc:
             print(f"Backup cleanup failed: {redact(str(exc))}", flush=True)
-        start_next_queued()
 
 
 def start_background_task(
@@ -4110,12 +4108,13 @@ def discard_queued_files(entry: dict[str, Any]) -> None:
 
 def enqueue_message(
     task_id: str, title: str, message: str, settings: dict[str, Any],
-    uploads: list[tuple[Any, bytes]], *, new_chat: bool,
+    uploads: list[tuple[Any, bytes]], *, new_chat: bool, answers_turn_id: str = "",
 ) -> tuple[Response, int]:
     """Hold a message until the running task and the messages queued before it finish.
 
     The caller holds the lock, so the task that is running cannot finish
-    between its check and the message joining the queue.
+    between its check and the message joining the queue. An answer keeps the
+    turn whose question it answers, and is sent only while that question waits.
     """
     if len(message_queue) >= QUEUE_MAX_MESSAGES:
         return jsonify({"ok": False, "error": f"The queue is full ({QUEUE_MAX_MESSAGES} messages). Remove a queued message or wait for one to start."}), 409
@@ -4126,6 +4125,8 @@ def enqueue_message(
         "turn_id": uuid.uuid4().hex, "prompt_attachments": [],
         "created_at": now, "updated_at": now,
     }
+    if answers_turn_id:
+        entry["answers_turn_id"] = answers_turn_id
     try:
         entry["prompt_attachments"] = store_uploads(task_id, entry["turn_id"], uploads)
         message_queue.append(entry)
@@ -4171,6 +4172,13 @@ def start_queued_message(entry: dict[str, Any]) -> Exception | None:
         print(f"Skipped a queued message for {task_id}: its chat is no longer in the expected state.", flush=True)
         sync_message_queue()
         return None
+    answers = entry.get("answers_turn_id")
+    if answers and (task.get("status") != "waiting_for_input" or task.get("current_turn_id") != answers):
+        # The answer was accepted for one question; it must not land on a chat that has moved on.
+        print(f"Skipped a queued answer for {task_id}: its question is no longer waiting.", flush=True)
+        discard_queued_files(entry)
+        sync_message_queue()
+        return None
     turn = {**new_turn(message), "turn_id": entry["turn_id"], "prompt_attachments": entry.get("prompt_attachments") or []}
     try:
         turn["execution_settings"] = resolve_chat_settings(settings, read_options())
@@ -4195,14 +4203,19 @@ def start_queued_message(entry: dict[str, Any]) -> Exception | None:
     return None
 
 
-def start_next_queued() -> None:
+def start_next_queued(release: str | None = None) -> None:
     """Start the oldest queued message once no task is active.
 
+    `release` names the runner that just ended. It is freed in the same step
+    that picks the next message, so a direct request cannot start in between.
     A message that cannot start becomes a failed exchange in its chat, and the
     next one is tried.
     """
     while True:
         with lock:
+            if release is not None:
+                active_task_runners.discard(release)
+                release = None
             if not message_queue or _active_task_ids_locked():
                 return
             entry = message_queue.pop(0)
@@ -4719,7 +4732,8 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
         wait = payload.get("queue") is True and bool(active or message_queue)
         if active and not wait:
             return jsonify({"ok": False, "error": "another task is already running", "active_task_id": active}), 409
-        if wait and queue_payload_locked(task_id):
+        # This holds for a direct request too, so nothing can change the chat ahead of its waiting message.
+        if queue_payload_locked(task_id):
             return jsonify({"ok": False, "error": "This chat already has a message in the queue. Edit or remove it first."}), 409
         try:
             settings = parse_chat_settings(payload, task)
@@ -4728,7 +4742,10 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         if wait:
-            return enqueue_message(task_id, str(task.get("title") or ""), message, settings, uploads, new_chat=False)
+            return enqueue_message(
+                task_id, str(task.get("title") or ""), message, settings, uploads,
+                new_chat=False, answers_turn_id=turn_id or "",
+            )
         turn = new_turn(message)
         turn["execution_settings"] = execution
         active_task_runners.add(task_id)

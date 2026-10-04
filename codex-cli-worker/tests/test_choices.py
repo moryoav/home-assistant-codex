@@ -228,6 +228,73 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual((response.status_code, response.json["status"]), (202, "in_queue"))
         self.assertEqual([entry["message"] for entry in server.message_queue], ["Go ahead"])
         self.assertEqual(response.json["active_task_id"], working)
+        # The waiting answer remembers which question it is for.
+        self.assertEqual(server.message_queue[0]["answers_turn_id"], turn_id)
+
+    def release(self, task_id):
+        """End a working chat's run and free the worker without letting the queue move on yet."""
+        server.update_task(task_id, status="completed", session_id=self.session_id, summary="Done", completed_at=server.utc_now())
+        server.active_task_runners.discard(task_id)
+
+    def test_direct_message_cannot_overtake_a_queued_answer(self):
+        """A chat whose answer waits in the queue takes no other message, so the answer still meets its own question."""
+        task_id = self.create()
+        turn_id = self.ask(task_id)
+        working = self.create("Another request")
+        self.assertEqual(self.post(f"/tasks/{task_id}/reply", {"choice": 0, "turn_id": turn_id, "queue": True}).status_code, 202)
+        # The working chat has ended and the queue has not moved on yet: the moment a direct request could slip in.
+        self.release(working)
+        self.runner.reset_mock()
+        for path, body in (("reply", {"reply": "No, wait"}), ("continue", {"message": "Something else"}),
+                           ("reply", {"choice": 1, "turn_id": turn_id})):
+            response = self.post(f"/tasks/{task_id}/{path}", body)
+            self.assertEqual(response.status_code, 409, body)
+            self.assertIn("already has a message in the queue", response.json["error"])
+        self.assertEqual(len(server.tasks[task_id]["turns"]), 1)
+        self.runner.assert_not_called()
+        server.start_next_queued()
+        self.runner.assert_called_once_with(task_id, "Tidy up my automations", session_id=self.session_id, reply="Go ahead")
+        self.assertEqual([turn["message"] for turn in server.tasks[task_id]["turns"]], ["Tidy up my automations", "Go ahead"])
+
+    def test_queued_answer_is_dropped_when_its_question_is_gone(self):
+        """A queued answer is not sent to a chat that moved on from its question, and the queue carries on."""
+        task_id = self.create()
+        turn_id = self.ask(task_id)
+        working = self.create("Another request")
+        self.assertEqual(self.post(f"/tasks/{task_id}/reply", {"choice": 0, "turn_id": turn_id, "queue": True}).status_code, 202)
+        later = self.post("/tasks", {"prompt": "A later chat", "queue": True})
+        self.assertEqual(later.status_code, 202)
+        before = len(server.tasks[task_id]["turns"])
+        # However the chat got there, its question is no longer the one waiting.
+        server.update_task(task_id, status="completed", question="", choices=[])
+        self.runner.reset_mock()
+        server.update_task(working, status="completed", session_id=self.session_id, summary="Done", completed_at=server.utc_now())
+        with patch("builtins.print") as log:
+            server.start_next_queued(release=working)
+        self.assertIn("its question is no longer waiting", log.call_args_list[0].args[0])
+        self.assertEqual(len(server.tasks[task_id]["turns"]), before)
+        self.assertEqual(server.message_queue, [])
+        self.assertEqual(json.loads(server.MESSAGE_QUEUE_FILE.read_text()), [])
+        # The message behind it started, on the worker the ended run freed in the same step.
+        self.runner.assert_called_once_with(later.json["task_id"], "A later chat")
+        self.assertNotIn(working, server.active_task_runners)
+
+    def test_queued_answer_survives_a_restart_with_its_question(self):
+        """After a restart a queued answer still names its question, and is sent while that question waits."""
+        task_id = self.create()
+        turn_id = self.ask(task_id)
+        working = self.create("Another request")
+        self.assertEqual(self.post(f"/tasks/{task_id}/reply", {"choice": 1, "turn_id": turn_id, "queue": True}).status_code, 202)
+        self.release(working)
+        self.runner.reset_mock()
+        server.tasks.clear()
+        server.active_task_runners.clear()
+        server.message_queue.clear()
+        server.load_task_index()
+        server.load_message_queue()
+        self.assertEqual([entry.get("answers_turn_id") for entry in server.message_queue], [turn_id])
+        server.start_next_queued()
+        self.runner.assert_called_once_with(task_id, "Tidy up my automations", session_id=self.session_id, reply="Don't change anything")
 
     def test_mobile_app_notification_has_a_button_per_choice(self):
         """A mobile app notify service gets each choice as a button whose action names the position, turn, and task."""

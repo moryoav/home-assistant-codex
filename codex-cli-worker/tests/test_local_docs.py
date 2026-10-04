@@ -342,6 +342,30 @@ class ActivationTests(LocalDocsTestCase):
 
         self.assertIn("1" * 40, self.page(self.active))
 
+    def test_a_failed_switch_puts_back_the_copy_in_use(self) -> None:
+        """When the download cannot be moved into place, the old copy is restored and the download waits."""
+        self.write_copy(self.active, fetched_at=hours_ago(30), commit="1" * 40)
+        self.write_copy(self.staged, fetched_at=hours_ago(1), commit="2" * 40)
+        rename = Path.rename
+
+        def failing_rename(path: Path, target: Path) -> Path:
+            """Refuse to move the waiting download and move everything else."""
+            if path == self.staged:
+                raise OSError("input/output error")
+            return rename(path, target)
+
+        with patch.object(Path, "rename", autospec=True, side_effect=failing_rename):
+            with self.assertRaises(OSError):
+                server.activate_ha_docs()
+
+        self.assertIn("1" * 40, self.page(self.active))
+        self.assertIn("2" * 40, self.page(self.staged))
+        self.assertFalse(server.ha_docs_sibling("old").exists())
+
+        server.activate_ha_docs()
+
+        self.assertIn("2" * 40, self.page(self.active))
+
     def started_threads(self) -> list[object]:
         """Replace thread creation and return the list of requested threads."""
         thread = self.stack.enter_context(patch.object(server.threading, "Thread"))

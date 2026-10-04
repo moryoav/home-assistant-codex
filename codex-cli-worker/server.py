@@ -3151,7 +3151,13 @@ def activate_ha_docs() -> None:
         shutil.rmtree(old, ignore_errors=True)
         if HA_DOCS_ROOT.exists():
             HA_DOCS_ROOT.rename(old)
-        staged.rename(HA_DOCS_ROOT)
+        try:
+            staged.rename(HA_DOCS_ROOT)
+        except OSError:
+            # Put back the copy that was in use. The download stays and is tried again.
+            if old.exists():
+                old.rename(HA_DOCS_ROOT)
+            raise
         shutil.rmtree(old, ignore_errors=True)
 
 

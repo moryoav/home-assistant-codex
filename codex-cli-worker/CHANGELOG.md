@@ -7,8 +7,14 @@
 - The worker stores the queue, so it continues after a restart. Attached images wait with their message.
 - The worker API accepts `"queue": true` when starting or continuing a task, and has new `/queue` endpoints to list, edit, and remove waiting messages. Requests without it are still refused with HTTP 409 while a task runs, so automations and Home Assistant actions behave as before.
 - A chat that was accepted and is about to run is now labelled **Starting** in the web UI instead of **Queued**.
+- **Answer Codex's questions with one tap.** When Codex stops to ask for a decision, it can now offer up to three short answers, such as **Go ahead** and **Don't change anything**. In the chat they are buttons under the question. Picking one sends it as your next message, and you can still type a different answer. When Codex asks whether to go ahead with a change, it is told to say exactly what it would change.
+- **Buttons on phone notifications.** With `notify_service` set to a mobile app service (`notify.mobile_app_...`), the notification for a question has a button for each answer, and tapping one sends it. This needs the **Codex** integration at 0.1.69. Other notify services and the persistent notification list the answers in the text.
+- An answer goes to the question it was given for. The buttons name the turn that asked, and the worker refuses an answer once that question is no longer the one waiting, so a button on an old notification cannot answer a newer question. The `codex_cli.reply_task` action has an optional `turn_id` for the same check, and works as before without it.
+- The `codex_cli_task_result` event and the **Last task** sensor carry `choices` and `turn_id`. The worker API accepts `turn_id`, and `choice` in place of the text, on `/tasks/<task_id>/reply` and `/tasks/<task_id>/continue`.
+- An answer picked while another chat is working waits in the queue like any other message.
+- The answers are a convenience and not a safeguard. Codex decides when to ask, as before.
 
-Update the **Codex CLI Worker** app to **0.1.69** to queue messages. The **Codex** integration is also released as **0.1.69** so that both carry the same version; its code is unchanged.
+Update the **Codex CLI Worker** app to **0.1.69** to queue messages and to answer questions from the chat. Update the **Codex** integration to **0.1.69** as well, then restart Home Assistant, for the notification buttons, the `turn_id` field, and the sensor attributes.
 
 ## 0.1.68
 

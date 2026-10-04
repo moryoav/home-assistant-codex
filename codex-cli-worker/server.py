@@ -86,6 +86,7 @@ HA_DOCS_FOLDERS = (
 HA_DOCS_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
 HA_DOCS_RETRY_INTERVAL_SECONDS = 60 * 60
 HA_DOCS_GIT_TIMEOUT_SECONDS = 300
+HA_DOCS_GIT_STALL_SECONDS = 60
 
 # Home Assistant's own address inside the app network. A Home Assistant token, such
 # as the HA_TOKEN option, works there and not at the Supervisor's Core proxy.
@@ -3048,9 +3049,15 @@ def _ha_docs_git(*args: str) -> str:
     for key in ("HA_TOKEN", "HA_URL"):
         env.pop(key, None)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # Git ends a stalled transfer itself. The time limit below stops only the main
+    # process and would leave its network helpers running.
+    env["GIT_HTTP_LOW_SPEED_LIMIT"] = "1000"
+    env["GIT_HTTP_LOW_SPEED_TIME"] = str(HA_DOCS_GIT_STALL_SECONDS)
     proc = subprocess.run(
         ["git", *args],
         env=env,
+        # The worker's own input carries Supervisor messages.
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=HA_DOCS_GIT_TIMEOUT_SECONDS,

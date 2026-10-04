@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -141,6 +142,18 @@ class DownloadTests(LocalDocsTestCase):
         self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(run.call_args.kwargs["timeout"], server.HA_DOCS_GIT_TIMEOUT_SECONDS)
 
+    def test_git_gives_up_on_a_stalled_transfer_and_does_not_read_the_worker_input(self) -> None:
+        """Git ends a transfer that stops moving, and its input is not the worker's Supervisor channel."""
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.object(server.subprocess, "run", return_value=completed) as run:
+            server._ha_docs_git("clone")
+
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["GIT_HTTP_LOW_SPEED_LIMIT"], "1000")
+        self.assertEqual(env["GIT_HTTP_LOW_SPEED_TIME"], str(server.HA_DOCS_GIT_STALL_SECONDS))
+        self.assertLess(server.HA_DOCS_GIT_STALL_SECONDS, server.HA_DOCS_GIT_TIMEOUT_SECONDS)
+        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
     def test_git_failure_reports_the_error_output(self) -> None:
         """A failing Git command raises with what Git wrote to standard error."""
         failed = subprocess.CompletedProcess([], 128, stdout="", stderr="fatal: could not resolve host\n")
@@ -149,7 +162,8 @@ class DownloadTests(LocalDocsTestCase):
                 server._ha_docs_git("clone")
 
 
-@unittest.skipUnless(shutil.which("git"), "git is not installed")
+# The worker runs on Linux. On Windows the fixture's symbolic link and Git's read-only pack files get in the way.
+@unittest.skipUnless(os.name == "posix" and shutil.which("git"), "needs Git on a POSIX system")
 class RealGitDownloadTests(LocalDocsTestCase):
     """A download from a local repository with the installed Git."""
 

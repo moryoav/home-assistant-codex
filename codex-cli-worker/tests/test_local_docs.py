@@ -30,6 +30,8 @@ def hours_ago(hours: float) -> str:
 
 
 class LocalDocsTestCase(unittest.TestCase):
+    """Shared setup: documentation folders in a temp directory and options the tests can change."""
+
     def setUp(self) -> None:
         """Isolate the documentation storage and options in a temp directory."""
         self.stack = ExitStack()
@@ -63,6 +65,8 @@ class LocalDocsTestCase(unittest.TestCase):
 
 
 class DownloadTests(LocalDocsTestCase):
+    """The Git commands of a download and the environment they run in."""
+
     def fake_git(self, *, pages: bool = True):
         """Return recorded calls and a stand-in for Git that creates the files a clone would."""
         calls: list[tuple[str, ...]] = []
@@ -120,8 +124,9 @@ class DownloadTests(LocalDocsTestCase):
         self.assertIsNone(server.ha_docs_info(self.download))
 
     def test_git_runs_without_home_assistant_credentials_or_prompts(self) -> None:
-        """Git gets no Supervisor or Home Assistant token, cannot prompt, and has a time limit."""
+        """Git gets no Supervisor or Home Assistant token or address, cannot prompt, and has a time limit."""
         self.options["HA_TOKEN"] = "long-lived-token"
+        self.assertIn("HA_URL", server.codex_env())
         completed = subprocess.CompletedProcess([], 0, stdout="abc\n", stderr="")
         with (
             patch.dict(server.os.environ, {"SUPERVISOR_TOKEN": "supervisor", "HASSIO_TOKEN": "hassio"}),
@@ -131,7 +136,7 @@ class DownloadTests(LocalDocsTestCase):
 
         self.assertEqual(run.call_args.args[0], ["git", "rev-parse", "HEAD"])
         env = run.call_args.kwargs["env"]
-        for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN"):
+        for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_URL"):
             self.assertNotIn(key, env)
         self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(run.call_args.kwargs["timeout"], server.HA_DOCS_GIT_TIMEOUT_SECONDS)
@@ -146,6 +151,8 @@ class DownloadTests(LocalDocsTestCase):
 
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class RealGitDownloadTests(LocalDocsTestCase):
+    """A download from a local repository with the installed Git."""
+
     def git(self, *args: str) -> str:
         """Run Git in the fixture repository and return its output."""
         return subprocess.run(
@@ -193,6 +200,8 @@ class RealGitDownloadTests(LocalDocsTestCase):
 
 
 class RefreshTests(LocalDocsTestCase):
+    """When a new copy is downloaded, and what a finished or failed download leaves behind."""
+
     def test_refresh_is_due_without_a_copy_and_after_a_day(self) -> None:
         """A missing copy and a copy older than a day are due; a recent one is not."""
         self.assertTrue(server.ha_docs_refresh_due())
@@ -289,6 +298,8 @@ class RefreshTests(LocalDocsTestCase):
 
 
 class ActivationTests(LocalDocsTestCase):
+    """Switching to a finished download, and what a task start does with the copy."""
+
     def test_activation_replaces_the_current_copy_with_the_waiting_download(self) -> None:
         """The waiting download becomes the copy and no working folder is left."""
         self.write_copy(self.active, fetched_at=hours_ago(30), commit="1" * 40)
@@ -358,6 +369,8 @@ class ActivationTests(LocalDocsTestCase):
 
 
 class PromptTests(LocalDocsTestCase):
+    """The paragraph in the task prompt and the entry in the health response."""
+
     def test_prompt_points_to_the_local_copy_when_it_is_complete(self) -> None:
         """The prompt names the folder, the download date, and the fallback to web search."""
         self.write_copy(self.active, fetched_at="2026-10-01T08:30:00+00:00")

@@ -3045,7 +3045,8 @@ def ha_docs_info(root: Path) -> dict[str, Any] | None:
 def _ha_docs_git(*args: str) -> str:
     """Run one Git command without Home Assistant credentials or prompts and return its output."""
     env = codex_env()
-    env.pop("HA_TOKEN", None)
+    for key in ("HA_TOKEN", "HA_URL"):
+        env.pop(key, None)
     env["GIT_TERMINAL_PROMPT"] = "0"
     proc = subprocess.run(
         ["git", *args],
@@ -3090,7 +3091,7 @@ def download_ha_docs(target: Path) -> dict[str, Any]:
 
 def ha_docs_refresh_due() -> bool:
     """Return whether the newest copy is missing or a day old, unless a download failed recently."""
-    failed =float(ha_docs_state.get("_failed_monotonic") or 0.0)
+    failed = float(ha_docs_state.get("_failed_monotonic") or 0.0)
     if failed and (time.monotonic() - failed) < HA_DOCS_RETRY_INTERVAL_SECONDS:
         return False
     info = ha_docs_info(ha_docs_sibling("staged")) or ha_docs_info(HA_DOCS_ROOT)
@@ -3161,7 +3162,7 @@ def prepare_ha_docs() -> None:
 
 def ha_docs_status() -> dict[str, Any]:
     """Describe the copy in use and the last download error for /health."""
-    info =ha_docs_info(HA_DOCS_ROOT) or {}
+    info = ha_docs_info(HA_DOCS_ROOT) or {}
     with ha_docs_lock:
         error = str(ha_docs_state["error"])
     return {

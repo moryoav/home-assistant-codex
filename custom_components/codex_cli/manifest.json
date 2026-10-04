@@ -3,11 +3,11 @@
   "name": "Codex",
   "codeowners": ["@moryoav"],
   "config_flow": true,
-  "dependencies": ["hassio", "http"],
+  "dependencies": ["hassio", "http", "persistent_notification"],
   "documentation": "https://github.com/moryoav/home-assistant-codex",
   "integration_type": "service",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/moryoav/home-assistant-codex/issues",
   "single_config_entry": true,
-  "version": "0.1.68"
+  "version": "0.1.69"
 }

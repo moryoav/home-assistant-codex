@@ -18,6 +18,10 @@ Open an existing chat to continue with its saved Codex context, or choose **New 
 
 The chat formats Markdown in your messages and in Codex's answers. Wrap code in triple backticks to send it as a code block; inline code, headings, lists, tables, and links are formatted too.
 
+While one chat is working, messages you send in other chats wait in a queue and start in order when it finishes. You can edit or remove a waiting message until it starts.
+
+When Codex needs a decision, it can offer up to three answers as buttons under its question, and on the notification if you use a mobile app notify service. Pick one, or type a different answer.
+
 Ask for an image and Codex shows the generated picture in the chat, with a full-size link and a download button. Images stay with their conversation across restarts.
 
 Attach screenshots, photos, or design mockups to a message with the paperclip button, by pasting, or by dropping files onto the composer. Codex sees them with your message, and they stay with the conversation.

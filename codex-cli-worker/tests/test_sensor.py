@@ -244,6 +244,21 @@ class LastTaskSensorTests(unittest.TestCase):
         self.assertEqual(last_task.native_value, "unknown")
         self.assertIsNone(last_task.extra_state_attributes["error"])
 
+    def test_waiting_task_reports_its_question_choices_and_turn(self) -> None:
+        """A task that waits for an answer exposes the choices Codex offered and the turn to reply to."""
+        latest = {"task_id": "chat", "status": "waiting_for_input", "question": "Remove the duplicate?",
+                  "choices": ["Go ahead", "Don't change anything"], "current_turn_id": "0123456789abcdef0123456789abcdef"}
+        coordinator = SimpleNamespace(data={"latest_task": latest, "active_task_id": None})
+        entry = SimpleNamespace(entry_id="test-entry", data={"base_url": "http://codex-worker.test"})
+        attributes = sensor.CodexLastTaskSensor(coordinator, entry).extra_state_attributes
+
+        self.assertEqual(attributes["question"], "Remove the duplicate?")
+        self.assertEqual(attributes["choices"], ["Go ahead", "Don't change anything"])
+        self.assertEqual(attributes["turn_id"], "0123456789abcdef0123456789abcdef")
+        # A task from a worker without choices reports an empty list, not a missing attribute.
+        coordinator.data = {"latest_task": {"task_id": "chat", "status": "completed"}}
+        self.assertEqual(sensor.CodexLastTaskSensor(coordinator, entry).extra_state_attributes["choices"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

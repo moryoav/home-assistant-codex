@@ -167,11 +167,27 @@ Because Codex does not currently provide a stable non-interactive usage command,
 
 Leave `notify_service` unset or empty to use Home Assistant persistent notifications for task completion, failures, and questions. If you want push notifications, set it to a Home Assistant notify service such as `notify.mobile_app_your_phone`.
 
+From **0.1.69**, a question sent to a mobile app notify service has a button for each answer Codex offers. See [Human Input](#human-input).
+
 Home Assistant app configuration schemas do not currently provide a Home Assistant service autocomplete selector, so this option remains a plain text field.
 
 ## Human Input
 
-Runs are non-interactive. If Codex needs a decision, it should return `needs_input`; Home Assistant marks the task as waiting and you can continue it with `codex_cli.reply_task`.
+Runs are non-interactive. If Codex needs a decision, it returns `needs_input` with a question. The task is marked as waiting, and your answer continues it as the next message.
+
+From **0.1.69**, Codex can offer up to three short answers with its question, for example **Go ahead** and **Don't change anything**. When it asks whether to go ahead with a change, it is told to say in the summary exactly what it would change.
+
+- **In the chat**, the choices are buttons under the question. Picking one sends it as your next message. You can still type a different answer in the message box, and a draft there stays as it is. Once the question is answered the buttons are gone, and the question stays in the history.
+- **In a notification**, a mobile app notify service (`notify.mobile_app_...`) shows a button for each choice, and tapping one sends that answer. The **Codex** integration receives the tap, so it has to be installed and at **0.1.69** or later. Any other notify service, and the persistent notification, lists the choices in the text instead.
+- **In automations**, the `codex_cli_task_result` event carries `choices` (a list, empty when Codex offered none) and `turn_id`, and the **Last task** sensor has the same two attributes. Answer with `codex_cli.reply_task`. Its reply is free text, so to pick a choice, send that choice's text.
+
+An answer goes to the question it was given for. `codex_cli.reply_task` accepts an optional `turn_id`. When it is set, the worker takes the reply only while that turn's question is the one waiting, and refuses it otherwise. The buttons in the chat and in notifications always send it, so a button on an old notification cannot answer a newer question in the same chat. A tap the worker refuses shows a Home Assistant notification that says why. A reply without `turn_id` works as before.
+
+If another chat is working when you pick a choice, the answer waits in the [queue](#queueing-messages-while-another-chat-works) and is sent when that chat finishes. Until then the chat takes no other message, and the answer is sent only if its question is still the one waiting.
+
+The choices are a convenience and not a safeguard. Codex decides when to ask, and nothing stops it from changing files without asking. Use `/config/AGENTS.md` to tell it when you want to be asked first.
+
+API: `POST /tasks/<task_id>/reply` and `POST /tasks/<task_id>/continue` accept `turn_id`, and `choice` in place of the text: the position of one of that turn's choices, counted from 0. `choice` needs `turn_id`, because a position means nothing without its question. A `turn_id` that is not the waiting turn returns HTTP 409. A `choice` without `turn_id`, or one the question does not offer, returns HTTP 400. Each turn in `GET /tasks/<task_id>` has `choices`, and `latest_task` in `GET /status` has `choices` and `current_turn_id`. The action of a notification button is `CODEX_CLI_CHOICE_<position>_<turn_id>_<task_id>`, which Home Assistant delivers in the `mobile_app_notification_action` event.
 
 ## Saved conversations
 
@@ -209,6 +225,18 @@ Messages are treated as untrusted text:
 - A message longer than 50,000 characters, or one that takes unusually long to format, is shown as plain text.
 
 The Markdown parser, [marked](https://github.com/markedjs/marked) 18.0.14, is bundled with the app under `web/assets/vendor/` with its MIT license, so the chat does not load scripts from another server. Codex decides how it writes its answers; to ask for Markdown, add an instruction to `/config/AGENTS.md` as described under [Task Output](https://github.com/moryoav/home-assistant-codex/blob/main/README.md#task-output).
+
+### Queueing messages while another chat works
+
+From **0.1.69**, you can send the next request without waiting for a working chat to finish. The worker still runs one task at a time, because two runs could edit the same files, reload automations, or restart Home Assistant under each other. While a chat is working, a message sent in a new chat or in another saved chat is placed in a queue instead of being refused. The note above the message box says so before you send, and the send button has a dashed outline.
+
+Queued messages are listed under **In queue** at the top of the sidebar, in the order they will start, with their place in line. Opening one shows the message with a dashed outline and an **In queue · not sent yet** label. Until it starts, choose **Edit** to change its text (Enter saves, Escape cancels) or **Remove** to take it out of the queue. Removing the message of a chat that has not started removes that chat. Attached images wait with the message and are removed with it.
+
+Up to 50 messages can wait at once. Each chat can have one waiting message, and the chat that is working cannot queue a follow-up to itself. The model and reasoning pickers are locked for a chat while its message waits, because the message keeps the settings it was sent with.
+
+When the running task ends, whether it completed, failed, was stopped, or needs your reply, the oldest queued message starts on its own. This also happens when the web UI is closed. The queue is stored in `/data/message_queue.json` and continues after a worker restart. A message leaves the stored queue only after its chat or exchange is saved, so if the worker stops at that moment the message is either still waiting or recorded as an interrupted exchange, never lost. If a queued follow-up can no longer start, for example because its saved session was removed, it is recorded as a failed exchange in its chat and the next message starts. Deleting a chat removes its waiting message.
+
+API: `POST /tasks`, `POST /tasks/<task_id>/continue`, and `POST /tasks/<task_id>/reply` accept `"queue": true`. With it, a request made while another task is active returns HTTP 202 with `status: "in_queue"`, `task_id`, `queue_id`, `position`, and `active_task_id` instead of HTTP 409. A request made while messages are still waiting joins the queue behind them in the same way. When nothing is running and the queue is empty, the task starts as usual. Without it the endpoints behave as before, so automations and the Home Assistant actions are unchanged. `GET /queue` and the `queue` list in `GET /tasks` return the waiting messages in order, each with `queue_id`, `task_id`, `new_chat`, `title`, `message`, `chat_settings`, `prompt_attachments`, `position`, `created_at`, and `updated_at`. `POST /queue/<queue_id>` with `{"message": "..."}` replaces the text, and `DELETE /queue/<queue_id>` removes the message. Both return HTTP 404 once the message has started. `GET /tasks/<task_id>` includes `queued_message` for a chat with a waiting message. For a chat that has not started, it returns a placeholder with `status: "in_queue"` and no turns; that chat joins the `tasks` list under the same `task_id` when its message starts. `GET /status` reports `queued_message_count`. A second message for a chat that has one waiting, whether it asks for the queue or not, a full queue, and a settings change for a chat with a waiting message return HTTP 409.
 
 ### Per-conversation model and reasoning
 

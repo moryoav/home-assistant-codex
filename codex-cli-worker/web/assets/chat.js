@@ -2,7 +2,8 @@
 /** Return the page element with the given id. */
 const $ = (id) => document.getElementById(id);
 const labels = {
-  queued: "Queued",
+  queued: "Starting",
+  in_queue: "In queue",
   running: "Working",
   waiting_for_input: "Needs your reply",
   completed: "Completed",
@@ -18,6 +19,8 @@ const state = {
   id: null,
   task: null,
   chats: [],
+  queue: [],
+  edit: null,
   files: [],
   draftFiles: new Map(),
   next: null,
@@ -157,7 +160,9 @@ function renderPicker() {
     state.loading ||
     state.busy ||
     state.settingsBusy ||
-    Boolean(state.task && ["queued", "running"].includes(state.task.status));
+    Boolean(state.task && ["queued", "running"].includes(state.task.status)) ||
+    // A waiting message keeps the settings it was sent with.
+    Boolean(state.task?.queued_message);
   for (const id of [
     "model-button",
     "effort-button",
@@ -443,25 +448,47 @@ function resizeInput() {
   $("message").style.height = "auto";
   $("message").style.height = Math.min(180, $("message").scrollHeight) + "px";
 }
+/** Say when a waiting message will start, from its place in the queue. */
+function queueNote(entry) {
+  const ahead = entry.position - 1;
+  return ahead > 0
+    ? `Starts on its own after the running chat and the ${ahead === 1 ? "message" : `${ahead} messages`} ahead of it in the queue.`
+    : "Next in line. Starts on its own when the running chat finishes.";
+}
 /**
  * Update the controls around the open chat from state: whether Send, Stop
- * task, New chat, and Attach can be used, the notice above the composer, the
- * hint below it, and the picker.
+ * task, New chat, and Attach can be used, whether sending means queueing, the
+ * notice above the composer, the hint below it, and the picker.
  */
 function controls() {
   const task = state.task;
-  const active =
-    Boolean(state.active) ||
-    Boolean(task && ["queued", "running"].includes(task.status));
-  $("send").disabled =
+  const working =
+    Boolean(task && ["queued", "running"].includes(task.status)) ||
+    (Boolean(state.active) && state.active === state.id);
+  const waiting = Boolean(task?.queued_message);
+  // While another chat works, a message sent here waits in the queue instead.
+  const queueing = Boolean(state.active) && state.active !== state.id;
+  // What stops any message to this chat, whether typed or picked from choices.
+  const blocked =
     !state.catalog ||
     state.settingsBusy ||
     state.busy ||
     state.loading ||
-    active ||
-    (state.id !== null && !task?.can_continue) ||
-    preparingCount(state.files) > 0 ||
-    !$("message").value.trim();
+    working ||
+    waiting ||
+    (state.id !== null && !task?.can_continue);
+  $("send").disabled =
+    blocked || preparingCount(state.files) > 0 || !$("message").value.trim();
+  for (const button of document.querySelectorAll("#messages .choice"))
+    button.disabled = blocked;
+  $("send").setAttribute(
+    "aria-label",
+    queueing ? "Add message to queue" : "Send message",
+  );
+  $("send").title = queueing
+    ? "Add to the queue. It starts when the running chat finishes."
+    : "";
+  $("send").classList.toggle("queueing", queueing);
   $("cancel").hidden = !task || !["queued", "running"].includes(task.status);
   $("cancel").disabled = state.busy;
   $("new-chat").disabled = state.busy || state.settingsBusy;
@@ -470,18 +497,26 @@ function controls() {
     state.busy ||
     state.files.length + preparingCount(state.files) >= UPLOADS_PER_MESSAGE;
   $("compose-hint").textContent = state.id
-    ? "Continue this conversation with its saved context."
+    ? task?.status === "in_queue"
+      ? "This chat starts when its message leaves the queue."
+      : "Continue this conversation with its saved context."
     : "A new chat starts a separate conversation.";
   let notice = "";
-  if (state.active && state.active !== state.id)
+  if (waiting)
     notice =
-      "Another chat is working. You can send this message when it finishes.";
-  else if (active)
+      "This chat's message is waiting in the queue and has not been sent yet. You can edit or remove it above.";
+  else if (working)
     notice =
       "Codex is working. Your response will appear here when it finishes.";
   else if (task && !task.can_continue)
     notice =
       "This chat has no saved session to continue. Start a new chat and include the context you need.";
+  else if (queueing)
+    notice = `Another chat is working. You can send this message now; it will wait in the queue and start on its own when the running chat ${
+      state.queue.length
+        ? `and the ${state.queue.length === 1 ? "message" : `${state.queue.length} messages`} already in the queue finish`
+        : "finishes"
+    }.`;
   $("notice").textContent = notice;
   $("notice").hidden = !notice;
   renderPicker();
@@ -500,6 +535,17 @@ function pinIcon() {
   svg.append(path);
   return svg;
 }
+/** Build the small clock icon that marks a message waiting in the queue. */
+function queueIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("queue-icon");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 4.5V12l3 2");
+  svg.append(path);
+  return svg;
+}
 /** Find a loaded sidebar chat by task id. */
 function chatById(id) {
   return state.chats.find((chat) => chat.task_id === id);
@@ -514,26 +560,34 @@ function chatOrder(a, b) {
     b.task_id.localeCompare(a.task_id)
   );
 }
-/** Build one sidebar row with its title, summary, status, and actions button. */
-function renderRow(chat) {
+/**
+ * Build one sidebar row with its title, summary, status, and actions button.
+ * A row for a message waiting in the queue shows that message and its place
+ * in line instead of the chat's last answer.
+ */
+function renderRow(chat, queued = null) {
   const title = chat.title || "Untitled chat";
   const row = textNode("div", "", "chat-row");
   row.classList.toggle("current", chat.task_id === state.id);
   row.classList.toggle("menu-open", chat.task_id === menu.id);
+  row.classList.toggle("queued", Boolean(queued));
   const main = textNode("button", "", "row-main");
   main.type = "button";
   main.dataset.taskId = chat.task_id;
   main.setAttribute("aria-current", String(chat.task_id === state.id));
   const heading = textNode("span", "", "row-title");
-  if (chat.pinned) heading.append(pinIcon());
+  if (queued) heading.append(queueIcon());
+  else if (chat.pinned) heading.append(pinIcon());
   heading.append(textNode("span", title));
   main.append(heading);
   main.append(
     textNode(
       "span",
-      markdownPlain(chat.summary || chat.question) ||
-        labels[chat.status] ||
-        chat.status,
+      queued
+        ? markdownPlain(queued.message) || queued.message
+        : markdownPlain(chat.summary || chat.question) ||
+            labels[chat.status] ||
+            chat.status,
       "row-preview",
     ),
   );
@@ -541,13 +595,25 @@ function renderRow(chat) {
   meta.append(
     textNode(
       "span",
-      labels[chat.status] || chat.status,
-      chat.status === "waiting_for_input" ? "waiting" : "",
+      queued
+        ? queued.position === 1
+          ? "Next in queue"
+          : `In queue · ${queued.position} of ${state.queue.length}`
+        : labels[chat.status] || chat.status,
+      queued || chat.status === "waiting_for_input" ? "waiting" : "",
     ),
   );
-  meta.append(textNode("span", dateLabel(chat.updated_at || chat.created_at)));
+  meta.append(
+    textNode(
+      "span",
+      dateLabel(queued ? queued.created_at : chat.updated_at || chat.created_at),
+    ),
+  );
   main.append(meta);
   main.onclick = () => selectChat(chat.task_id);
+  row.append(main);
+  // A chat that is still waiting for its first message has nothing to pin or rename yet.
+  if (!chatById(chat.task_id)) return row;
   const actions = textNode("button", "⋯", "row-menu");
   actions.type = "button";
   actions.dataset.menuFor = chat.task_id;
@@ -558,7 +624,7 @@ function renderRow(chat) {
     chat.task_id === menu.id
       ? closeChatMenu(true)
       : openChatMenu(chat.task_id, actions);
-  row.append(main, actions);
+  row.append(actions);
   return row;
 }
 /**
@@ -567,7 +633,12 @@ function renderRow(chat) {
  * focus and an open chat actions menu on the rows that replace the old ones.
  */
 function renderList() {
-  const signature = JSON.stringify([state.chats, state.id, menu.id]);
+  const signature = JSON.stringify([
+    state.chats,
+    state.id,
+    menu.id,
+    state.queue,
+  ]);
   if (signature === state.listSignature) return;
   state.listSignature = signature;
   const list = $("chat-list");
@@ -575,16 +646,31 @@ function renderList() {
   const focusId = focused?.dataset.taskId || focused?.dataset.menuFor;
   const focusMenu = Boolean(focused?.dataset.menuFor);
   list.replaceChildren();
-  const pinned = state.chats.filter((chat) => chat.pinned);
-  const groups = pinned.length
-    ? [
-        ["Pinned", pinned],
-        ["Recent", state.chats.filter((chat) => !chat.pinned)],
-      ]
-    : [["", state.chats]];
-  for (const [label, chats] of groups) {
-    if (label && chats.length) list.append(textNode("p", label, "list-group"));
-    for (const chat of chats) list.append(renderRow(chat));
+  // Chats with a waiting message are listed once, in the order they will start.
+  const waiting = new Set(state.queue.map((entry) => entry.task_id));
+  const chats = state.chats.filter((chat) => !waiting.has(chat.task_id));
+  const pinned = chats.filter((chat) => chat.pinned);
+  if (state.queue.length) list.append(textNode("p", "In queue", "list-group"));
+  for (const entry of state.queue)
+    list.append(
+      renderRow(
+        chatById(entry.task_id) || {
+          task_id: entry.task_id,
+          title: entry.title,
+        },
+        entry,
+      ),
+    );
+  const groups =
+    pinned.length || state.queue.length
+      ? [
+          ["Pinned", pinned],
+          ["Recent", chats.filter((chat) => !chat.pinned)],
+        ]
+      : [["", chats]];
+  for (const [label, rows] of groups) {
+    if (label && rows.length) list.append(textNode("p", label, "list-group"));
+    for (const chat of rows) list.append(renderRow(chat));
   }
   if (focusId)
     list
@@ -604,7 +690,7 @@ function renderList() {
       if (!$("chat-menu").classList.contains("sheet")) positionChatMenu();
     } else closeChatMenu();
   }
-  $("list-empty").hidden = state.chats.length > 0;
+  $("list-empty").hidden = state.chats.length + state.queue.length > 0;
   $("load-more").hidden = state.next === null;
 }
 /**
@@ -627,6 +713,7 @@ async function loadList(older = false) {
   state.chats = [...merged.values()].sort(chatOrder);
   state.next = state.chats.length < data.total ? state.chats.length : null;
   state.active = data.active_task_id;
+  state.queue = Array.isArray(data.queue) ? data.queue : [];
   if (hadSelected && !merged.has(state.id)) await selectChat(null);
   renderList();
   controls();
@@ -856,16 +943,25 @@ function renderVerification(turn, taskId) {
 function renderTask(force = false) {
   const task = state.task;
   if (!task) return;
+  const queued = task.queued_message || null;
+  if (state.edit && state.edit.id !== queued?.queue_id) state.edit = null;
   $("chat-title").textContent = task.title || "Untitled chat";
   $("chat-status").textContent =
-    `${labels[task.status] || task.status} · ${dateLabel(task.updated_at, true)}`;
+    task.status === "in_queue"
+      ? "In queue · not sent yet"
+      : `${labels[task.status] || task.status} · ${dateLabel(task.updated_at, true)}${queued ? " · next message in queue" : ""}`;
   const signature = JSON.stringify([
     task.turns,
     task.history_incomplete,
     task.status,
+    queued && [queued.queue_id, queued.message, queued.prompt_attachments],
+    state.edit?.id,
     state.catalog?.backup_retention_days,
   ]);
   if (!force && signature === state.signature) {
+    // Its place in line can change without the conversation being redrawn.
+    if (queued && $("queued-note"))
+      $("queued-note").textContent = queueNote(queued);
     controls();
     ensureActivity();
     return;
@@ -913,6 +1009,14 @@ function renderTask(force = false) {
         answer.append(renderMarkdown(turn.details, "message details"));
       if (turn.question && turn.question !== turn.summary)
         answer.append(renderMarkdown(turn.question, "message question"));
+      // Only the question still waiting can be answered with a choice.
+      if (
+        latest &&
+        !queued &&
+        task.status === "waiting_for_input" &&
+        turn.choices?.length
+      )
+        answer.append(renderChoices(turn));
       const check = renderConfigCheck(turn.config_check);
       if (check) answer.append(check);
       answer.append(...renderBackups(turn));
@@ -954,10 +1058,218 @@ function renderTask(force = false) {
     }
     area.append(exchange);
   }
+  if (queued) area.append(renderQueued(task.task_id, queued));
   renderActivity();
   area.scrollTop = force || nearBottom ? area.scrollHeight : oldScroll;
   controls();
   ensureActivity();
+}
+/**
+ * Build a button for each answer Codex offered with its question. A click
+ * sends that answer as the next message; the message box stays free for a
+ * different one.
+ */
+function renderChoices(turn) {
+  const group = textNode("div", "", "choices");
+  group.setAttribute("role", "group");
+  group.setAttribute("aria-label", "Answers Codex offers");
+  turn.choices.forEach((choice, index) => {
+    const button = textNode(
+      "button",
+      markdownPlain(choice) || choice,
+      "subtle choice",
+    );
+    button.type = "button";
+    button.onclick = () => sendChoice(turn.turn_id, index);
+    group.append(button);
+  });
+  return group;
+}
+/**
+ * Answer the waiting question with one of the choices Codex offered. The turn
+ * id lets the worker refuse the answer when the question was already answered
+ * somewhere else. A draft in the message box stays as it is.
+ */
+async function sendChoice(turnId, index) {
+  const id = state.id;
+  if (!id || state.busy) return;
+  state.busy = true;
+  controls();
+  showError(null);
+  try {
+    const result = await api(`tasks/${encodeURIComponent(id)}/continue`, {
+      choice: index,
+      turn_id: turnId,
+      chat_settings: selectedSettings(),
+      // If another chat is working, the worker holds this answer in its queue.
+      queue: true,
+    });
+    state.chatSettings.delete(id);
+    if (result.status !== "in_queue") state.active = result.task_id;
+    state.busy = false;
+    await selectChat(result.task_id);
+    await loadList();
+    if (result.status === "in_queue") $("chat-list").scrollTop = 0;
+  } catch (error) {
+    showError(error);
+    // The question may have been answered elsewhere; show where the chat stands.
+    await Promise.allSettled([loadList(), fetchSelected(true)]);
+  } finally {
+    state.busy = false;
+    controls();
+  }
+}
+/**
+ * Show a message that waits in the queue: outlined rather than filled, so it
+ * reads as not sent yet, with controls to edit or remove it.
+ */
+function renderQueued(taskId, entry) {
+  const exchange = textNode("section", "", "exchange queued");
+  const label = textNode("p", "", "queued-label");
+  label.append(queueIcon(), textNode("span", "In queue · not sent yet"));
+  exchange.append(label);
+  const sent = imageAttachments(entry.prompt_attachments);
+  if (sent.length) {
+    const images = renderAttachments(
+      taskId,
+      sent,
+      "Image attached to your queued message",
+      "attachments user-attachments",
+    );
+    // A loading image pushes the edit and remove buttons down; keep them in view.
+    for (const img of images.querySelectorAll("img"))
+      img.addEventListener("load", () => {
+        const area = $("messages");
+        if (
+          area.scrollHeight - area.scrollTop - area.clientHeight <
+          img.height + 100
+        )
+          area.scrollTop = area.scrollHeight;
+      });
+    exchange.append(images);
+  }
+  const edit = state.edit?.id === entry.queue_id ? state.edit : null;
+  const actions = textNode("div", "", "queued-actions");
+  const button = (text, className, onclick) => {
+    const node = textNode("button", text, className);
+    node.type = "button";
+    node.disabled = Boolean(edit?.saving);
+    node.onclick = onclick;
+    actions.append(node);
+    return node;
+  };
+  if (edit) {
+    const input = document.createElement("textarea");
+    input.id = "queued-edit";
+    input.className = "queued-edit";
+    input.rows = 2;
+    input.value = edit.text;
+    input.readOnly = Boolean(edit.saving);
+    input.setAttribute("aria-label", "Edit queued message");
+    const resize = () => {
+      input.style.height = "auto";
+      input.style.height = Math.min(320, input.scrollHeight + 2) + "px";
+    };
+    input.addEventListener("input", () => {
+      edit.text = input.value;
+      save.disabled = !input.value.trim();
+      resize();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelEdit();
+      } else if (
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !event.isComposing &&
+        !matchMedia("(max-width:700px)").matches
+      ) {
+        event.preventDefault();
+        saveEdit();
+      }
+    });
+    exchange.append(input);
+    button("Cancel", "subtle", cancelEdit);
+    const save = button("Save", "", saveEdit);
+    save.id = "queued-save";
+    save.disabled = Boolean(edit.saving) || !edit.text.trim();
+    // Size and focus the box once it is in the page.
+    requestAnimationFrame(() => {
+      if (!input.isConnected) return;
+      resize();
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  } else {
+    exchange.append(renderMarkdown(entry.message, "message user queued"));
+    const note = textNode("span", queueNote(entry), "queued-note");
+    note.id = "queued-note";
+    actions.append(note);
+    button("Edit", "subtle", () => startEdit(entry)).id = "queued-edit-button";
+    button("Remove", "subtle danger", () => removeQueued(entry)).id =
+      "queued-remove";
+  }
+  exchange.append(actions);
+  return exchange;
+}
+/** Open the editor for a waiting message, starting from its current text. */
+function startEdit(entry) {
+  state.edit = { id: entry.queue_id, text: entry.message, saving: false };
+  showError(null);
+  renderTask(true);
+}
+/** Close the editor and keep the waiting message as it was. */
+function cancelEdit() {
+  state.edit = null;
+  renderTask(true);
+}
+/** Refresh the open chat and the list after the queue changed. */
+async function reloadQueue() {
+  await Promise.allSettled([fetchSelected(true), loadList()]);
+}
+/** Save the edited text of a waiting message. */
+async function saveEdit() {
+  const edit = state.edit;
+  const message = edit?.text.trim();
+  if (!message || edit.saving) return;
+  edit.saving = true;
+  renderTask(true);
+  showError(null);
+  try {
+    await api(`queue/${encodeURIComponent(edit.id)}`, { message });
+    if (state.edit === edit) state.edit = null;
+  } catch (error) {
+    showError(error);
+    edit.saving = false;
+    // A 404 means it started while it was being edited, so there is nothing left to edit.
+    if (error.status === 404 && state.edit === edit) state.edit = null;
+    // Unlock the editor even if the refresh below cannot reach the worker.
+    renderTask(true);
+  }
+  await reloadQueue();
+}
+let removing = false;
+/** Take a waiting message out of the queue; a chat that never started goes with it. */
+async function removeQueued(entry) {
+  if (removing) return;
+  removing = true;
+  const id = state.id;
+  showError(null);
+  try {
+    await api(
+      `queue/${encodeURIComponent(entry.queue_id)}`,
+      undefined,
+      "DELETE",
+    );
+    if (state.id === id && state.task?.status === "in_queue")
+      await selectChat(null);
+  } catch (error) {
+    showError(error);
+  }
+  await reloadQueue();
+  removing = false;
 }
 // Steps Codex reports while it works on the latest message: reasoning
 // headlines, progress notes, commands, file edits, searches, and tool calls.
@@ -1013,6 +1325,8 @@ function ensureActivity() {
   const activity = state.activity;
   if (!activity || activity.id !== state.id || activityTimer || activity.loading)
     return;
+  // A chat that is still waiting in the queue has no steps to load yet.
+  if (state.task?.status === "in_queue") return;
   if (!activity.loaded || activity.running || taskActive()) pollActivity();
 }
 /** Fetch the steps added since the last poll and merge them by position. */
@@ -1172,7 +1486,21 @@ async function fetchSelected(force = false) {
   const id = state.id;
   const generation = state.generation;
   if (!id) return;
-  const data = await api(`tasks/${encodeURIComponent(id)}`);
+  let data;
+  try {
+    data = await api(`tasks/${encodeURIComponent(id)}`);
+  } catch (error) {
+    // A chat that only existed as a queued message is gone once that message
+    // is removed, here or in another tab.
+    if (
+      error.status === 404 &&
+      state.task?.status === "in_queue" &&
+      generation === state.generation &&
+      id === state.id
+    )
+      return selectChat(null);
+    throw error;
+  }
   if (generation !== state.generation || id !== state.id) return;
   state.task = data.task;
   if (!state.chatSettings.has(id))
@@ -1225,6 +1553,7 @@ async function selectChat(id, restoring = false) {
   state.files = state.draftFiles.get(id) || [];
   renderPending();
   state.task = null;
+  state.edit = null;
   state.generation++;
   state.signature = "";
   resetActivity(id);
@@ -1591,6 +1920,8 @@ $("composer").addEventListener("submit", async (event) => {
         ...(id ? { message } : { prompt: message }),
         ...(attachments.length ? { attachments } : {}),
         chat_settings: selectedSettings(),
+        // If another chat is working, the worker holds this message in its queue.
+        queue: true,
       },
     );
     state.drafts.delete(id);
@@ -1598,10 +1929,12 @@ $("composer").addEventListener("submit", async (event) => {
     state.chatSettings.delete(id);
     clearUploads();
     $("message").value = "";
-    state.active = result.task_id;
+    if (result.status !== "in_queue") state.active = result.task_id;
     state.busy = false;
     await selectChat(result.task_id);
     await loadList();
+    // The queue is listed first, so bring the new entry into view.
+    if (result.status === "in_queue") $("chat-list").scrollTop = 0;
   } catch (error) {
     showError(error);
     // A failed request may have saved a terminal task; refresh status without retrying the message.

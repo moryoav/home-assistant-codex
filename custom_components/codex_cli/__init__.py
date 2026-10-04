@@ -19,6 +19,7 @@ from .const import (
     ATTR_PROMPT,
     ATTR_REPLY,
     ATTR_TASK_ID,
+    ATTR_TURN_ID,
     ATTR_FORCE,
     CONF_BASE_URL,
     DOMAIN,
@@ -34,6 +35,7 @@ from .const import (
 )
 from .coordinator import CodexCliCoordinator
 from .discovery import async_discover_worker
+from .notification_actions import async_listen_for_choices
 from .browser_auth import STORAGE_KEY, BrowserSessions, BrowserSessionView, DiagnosticView
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
@@ -45,7 +47,9 @@ START_TASK_SCHEMA = vol.Schema(
     }
 )
 TASK_ID_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): str})
-REPLY_TASK_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): str, vol.Required(ATTR_REPLY): str})
+REPLY_TASK_SCHEMA = vol.Schema(
+    {vol.Required(ATTR_TASK_ID): str, vol.Required(ATTR_REPLY): str, vol.Optional(ATTR_TURN_ID): str}
+)
 CONTINUE_TASK_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): str, vol.Required("message"): str})
 LIST_TASKS_SCHEMA = vol.Schema({
     vol.Optional("limit"): vol.All(vol.Coerce(int), vol.Range(min=1, max=500)),
@@ -92,6 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await broker.setup()
     hass.data.setdefault(DOMAIN, {})["browser_sessions"] = broker
     entry.async_on_unload(broker.close)
+    entry.async_on_unload(async_listen_for_choices(hass, client, coordinator))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -214,10 +219,15 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return result
 
     async def handle_reply_task(call: ServiceCall) -> dict[str, Any]:
-        """Send a reply to a task that is waiting for input and refresh the coordinator."""
+        """Send a reply to a task that is waiting for input and refresh the coordinator.
+
+        With a turn ID, the worker takes the reply only while that turn's question is the one waiting.
+        """
         runtime_data = _first_runtime(hass)
         try:
-            result = await runtime_data.client.reply_task(call.data[ATTR_TASK_ID], call.data[ATTR_REPLY])
+            result = await runtime_data.client.reply_task(
+                call.data[ATTR_TASK_ID], call.data[ATTR_REPLY], call.data.get(ATTR_TURN_ID)
+            )
         except CodexCliApiError as exc:
             raise HomeAssistantError(str(exc)) from exc
         await runtime_data.coordinator.async_request_refresh()

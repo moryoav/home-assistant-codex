@@ -554,6 +554,74 @@ h1 {
   border-radius: 18px 18px 4px 18px;
   margin-bottom: 28px;
 }
+/* A message waiting in the queue is outlined, not filled: it has not been sent. */
+.exchange.queued {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.queue-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.queued-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 8px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.message.user.queued {
+  background: transparent;
+  border: 1.5px dashed var(--muted);
+  margin-bottom: 10px;
+}
+.queued-edit {
+  width: 100%;
+  max-width: 88%;
+  min-height: 52px;
+  margin-bottom: 10px;
+  padding: 13px 19px;
+  border: 1.5px dashed var(--accent);
+  border-radius: 18px 18px 4px 18px;
+  resize: none;
+}
+.queued-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 88%;
+}
+.queued-note {
+  margin-right: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: right;
+}
+.queued-actions button {
+  padding: 5px 12px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+.queued-actions .danger {
+  color: var(--error);
+}
+.chat-row.queued {
+  outline: 1px dashed var(--line);
+  outline-offset: -1px;
+}
 .answer {
   padding: 0 3px;
 }
@@ -575,6 +643,21 @@ h1 {
 .answer .question {
   margin-top: 14px;
   font-weight: 500;
+}
+/* The answers Codex offers with a question, one button each. */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.choice {
+  padding: 8px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  border-color: var(--accent);
+  overflow-wrap: anywhere;
 }
 /* Messages formatted as Markdown. A message shown as plain text keeps pre-wrap. */
 .markdown {
@@ -709,6 +792,11 @@ h1 {
 .message.user .md-code,
 .message.user th {
   background: var(--bg);
+}
+.message.user.queued :not(pre) > code,
+.message.user.queued .md-code,
+.message.user.queued th {
+  background: var(--surface);
 }
 .check {
   display: flex;
@@ -1349,6 +1437,12 @@ textarea::placeholder {
   padding: 0;
   flex-shrink: 0;
 }
+/* Sending now adds the message to the queue behind the running chat. */
+#send.queueing {
+  background: transparent;
+  color: var(--text);
+  border: 1.5px dashed var(--muted);
+}
 .footnote {
   text-align: center;
   color: var(--muted);
@@ -1558,7 +1652,9 @@ dialog label {
   .suggestions small {
     font-size: 10px;
   }
-  .message.user {
+  .message.user,
+  .queued-edit,
+  .queued-actions {
     max-width: 94%;
   }
   #compose-hint {
@@ -1578,7 +1674,8 @@ dialog label {
     font-size: 14px;
   }
   #message,
-  #rename-input {
+  #rename-input,
+  .queued-edit {
     font-size: 16px;
   }
 }

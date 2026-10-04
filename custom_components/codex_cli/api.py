@@ -72,9 +72,21 @@ class CodexCliApiClient:
         """Cancel a task."""
         return await self._request("POST", f"/tasks/{task_id}/cancel")
 
-    async def reply_task(self, task_id: str, reply: str) -> dict[str, Any]:
-        """Reply to a waiting Codex task."""
-        return await self._request("POST", f"/tasks/{task_id}/reply", json={"reply": reply})
+    async def reply_task(self, task_id: str, reply: str, turn_id: str | None = None) -> dict[str, Any]:
+        """Reply to a waiting Codex task; with a turn ID, only while that turn's question is the one waiting."""
+        payload = {"reply": reply}
+        if turn_id:
+            payload["turn_id"] = turn_id
+        return await self._request("POST", f"/tasks/{task_id}/reply", json=payload)
+
+    async def reply_choice(self, task_id: str, turn_id: str, choice: int) -> dict[str, Any]:
+        """Answer a waiting question with one of the choices it offered, by position.
+
+        The answer waits in the worker's queue when another task is running.
+        """
+        return await self._request(
+            "POST", f"/tasks/{task_id}/reply", json={"choice": choice, "turn_id": turn_id, "queue": True}
+        )
 
     async def continue_task(self, task_id: str, message: str) -> dict[str, Any]:
         """Continue a saved conversation."""

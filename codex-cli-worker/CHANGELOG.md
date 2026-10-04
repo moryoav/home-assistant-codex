@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.69
+
+- **Queue messages while another chat is working.** The worker runs one task at a time, and the web UI used to make you wait for it before sending anything else. You can now send a message in a new chat or in another saved chat right away. It waits in a queue and starts on its own when the running chat finishes, even if the web UI is closed. Several chats can wait in line.
+- Waiting messages are listed under **In queue** at the top of the sidebar with their place in line. In the chat they have a dashed outline and an **In queue · not sent yet** label, so they are not mistaken for sent ones. Until a message starts you can **Edit** its text or **Remove** it.
+- The worker stores the queue, so it continues after a restart. Attached images wait with their message.
+- The worker API accepts `"queue": true` when starting or continuing a task, and has new `/queue` endpoints to list, edit, and remove waiting messages. Requests without it are still refused with HTTP 409 while a task runs, so automations and Home Assistant actions behave as before.
+- A chat that was accepted and is about to run is now labelled **Starting** in the web UI instead of **Queued**.
+- **Answer Codex's questions with one tap.** When Codex stops to ask for a decision, it can now offer up to three short answers, such as **Go ahead** and **Don't change anything**. In the chat they are buttons under the question. Picking one sends it as your next message, and you can still type a different answer. When Codex asks whether to go ahead with a change, it is told to say exactly what it would change.
+- **Buttons on phone notifications.** With `notify_service` set to a mobile app service (`notify.mobile_app_...`), the notification for a question has a button for each answer, and tapping one sends it. This needs the **Codex** integration at 0.1.69. Other notify services and the persistent notification list the answers in the text.
+- An answer goes to the question it was given for. The buttons name the turn that asked, and the worker refuses an answer once that question is no longer the one waiting, so a button on an old notification cannot answer a newer question. The `codex_cli.reply_task` action has an optional `turn_id` for the same check, and works as before without it.
+- The `codex_cli_task_result` event and the **Last task** sensor carry `choices` and `turn_id`. The worker API accepts `turn_id`, and `choice` together with it in place of the text, on `/tasks/<task_id>/reply` and `/tasks/<task_id>/continue`.
+- An answer picked while another chat is working waits in the queue like any other message. Its chat takes no other message until it is sent, and it is sent only if its question is still the one waiting.
+- The answers are a convenience and not a safeguard. Codex decides when to ask, as before.
+
+Update the **Codex CLI Worker** app to **0.1.69** to queue messages and to answer questions from the chat. Update the **Codex** integration to **0.1.69** as well, then restart Home Assistant, for the notification buttons, the `turn_id` field, and the sensor attributes.
+
 ## 0.1.68
 
 - **Codex reaches Home Assistant with your token.** With the `HA_TOKEN` option set, Codex was given the token but no address, and tended to use `http://supervisor/core`, which rejects a Home Assistant token with HTTP 401. A reload or restart you asked for then failed, and Codex asked you to do it. Codex now also gets `HA_URL`, the address the token works at, and is told to use the two together.

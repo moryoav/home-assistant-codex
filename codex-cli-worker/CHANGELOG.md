@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.63
+## 0.1.69
 
 - **Queue messages while another chat is working.** The worker runs one task at a time, and the web UI used to make you wait for it before sending anything else. You can now send a message in a new chat or in another saved chat right away. It waits in a queue and starts on its own when the running chat finishes, even if the web UI is closed. Several chats can wait in line.
 - Waiting messages are listed under **In queue** at the top of the sidebar with their place in line. In the chat they have a dashed outline and an **In queue · not sent yet** label, so they are not mistaken for sent ones. Until a message starts you can **Edit** its text or **Remove** it.
@@ -8,7 +8,73 @@
 - The worker API accepts `"queue": true` when starting or continuing a task, and has new `/queue` endpoints to list, edit, and remove waiting messages. Requests without it are still refused with HTTP 409 while a task runs, so automations and Home Assistant actions behave as before.
 - A chat that was accepted and is about to run is now labelled **Starting** in the web UI instead of **Queued**.
 
-Update the **Codex CLI Worker** app to **0.1.63** to queue messages. The **Codex** integration remains at **0.1.62** and does not need an update.
+Update the **Codex CLI Worker** app to **0.1.69** to queue messages. The **Codex** integration is also released as **0.1.69** so that both carry the same version; its code is unchanged.
+
+## 0.1.68
+
+- **Codex reaches Home Assistant with your token.** With the `HA_TOKEN` option set, Codex was given the token but no address, and tended to use `http://supervisor/core`, which rejects a Home Assistant token with HTTP 401. A reload or restart you asked for then failed, and Codex asked you to do it. Codex now also gets `HA_URL`, the address the token works at, and is told to use the two together.
+- The **Home Assistant API URL** option (`ha_url`) is that address. Its default is now `http://homeassistant:8123`, Home Assistant's own address inside the app network; change it only if your Home Assistant uses HTTPS or another port. An installation that still has the earlier default `http://supervisor/core` saved gets the new default, so nothing has to be changed after the update. The app's own calls to Home Assistant are unchanged.
+- **The weekly quota shows its reset time again.** Since 0.1.65 the 7d bar had no reset time on hover, and the **Weekly reset** sensor was unknown most of the time. With Codex CLI 0.160.0 the status line follows the weekly limit on the same line, and the worker took the limit from there, where it has no reset time.
+- **File names in the worker's notes keep their underscores.** The chat formats the details as Markdown, so a path such as `custom_components/foo/__init__.py` in the notes about saved copies and failed validation showed as a bold "init". Paths in those notes are now inline code. This changes the `details` text that actions and the `codex_cli_task_result` event return: each path is wrapped in backticks.
+
+Update the **Codex CLI Worker** app to **0.1.68**. The **Codex** integration is also released as **0.1.68** so that both carry the same version; its code is unchanged.
+
+## 0.1.67
+
+- **The remaining quota is shown as bars.** Below **Home Assistant workspace** in the sidebar, the 5h and 7d quotas each have a bar next to the percentage. The filled part is the quota left: green, and red when less than 5% is left. Hover over a bar to see when the quota resets. A limit the worker has no value for, such as the 5h limit on a plan without one, keeps reading **Unavailable** and its bar is an empty outline.
+- **The model button names the model.** A chat without a model of its own used to show **Default**. It now shows the model it runs on: the one set in the app's **Codex model** option or, when that option is `default`, the one Codex picks for your account. The worker reads that from Codex's own status report when it checks the quota, and shows the model the bundled CLI recommends, GPT-6.1 Sol, until the first report.
+- The model menu no longer has a separate **Default** entry. The list marks the model the chat runs on, and choosing the model the app is set to makes the chat follow the app setting again.
+- With the **Codex model** option on `default`, such a chat can use every reasoning level of the model Codex picks, including Max and Ultra where the model has them, instead of only Low through Extra High.
+- When the model such a chat follows changes to one without the chat's saved reasoning level, the chat runs Medium, as it already showed, instead of answering with an error.
+- `GET /chat-options` returns that model as `default_model`. Runs start as before: with the option on `default`, the worker names no model and Codex chooses it.
+- The task log route, `GET /tasks/<task_id>/log`, answers only for a saved task. It used to return the `codex.log` of any folder name it was given, which included the sign-in log under `auth`.
+- **The Last task sensor's `error` attribute says why the latest task failed.** The integration read it from a field the worker status does not have, so it was always empty. It now reads the task's own error, and the worker records one for every failure: Codex reports a failure, exits with an error or times out, the changed files fail validation, or the worker restarts during the task. Before, it recorded one only when Codex could not be started. The attribute is empty when the task did not fail.
+- A worker that has no API token says so in its 503 answer, instead of pointing to the add-on options, where the token is no longer set.
+
+Update the **Codex CLI Worker** app to **0.1.67** for the quota bars and the model name. Update the **Codex** integration to **0.1.67** as well, then restart Home Assistant, for the sensor's `error` attribute.
+
+## 0.1.66
+
+- **Show Markdown as formatting in the chat.** The web UI used to show Markdown symbols as typed, in your messages and in Codex's answers. It now formats them: code blocks between triple backticks, inline code between single backticks, headings, bold and italic text, lists, task lists, quotes, tables, and links.
+- Code blocks have their own background and a language label, keep their indentation, and scroll sideways when a line is too long. Wide tables scroll the same way, so the chat stays readable on a phone.
+- A single Enter is still a line break. Only the display changes: Codex receives your message exactly as you typed it, and Home Assistant actions and events return the same text as before.
+- HTML in a message is shown as text and is never interpreted. Links are limited to web and mail addresses and open in a new tab. Images are not loaded from a message; they appear as links instead.
+- The preview of each chat in the sidebar shows the answer without Markdown symbols.
+- The Markdown parser, [marked](https://github.com/markedjs/marked) 18.0.14 (MIT), is bundled with the app, so the chat does not load scripts from another server.
+
+Update the **Codex CLI Worker** app to **0.1.66** for formatted messages. The **Codex** integration is also released as **0.1.66** so that both carry the same version; its code is unchanged.
+
+## 0.1.65
+
+- **GPT-6.1 Sol can be selected.** It appears in the add-on model option and in the chat's model menu, between GPT-6 Astra and GPT-6 Sol, and supports reasoning from Low through Ultra. OpenAI describes it as close to Astra for complex work at a lower cost. GPT-6 Sol stays available as the previous version. Model availability depends on your account.
+- **GPT-5.5 moves to GPT-5.6 Sol automatically.** OpenAI retires GPT-5.5 from Codex with ChatGPT sign-in on October 14, 2026, so it is no longer in the chat's model menu. A chat that had it selected continues on GPT-5.6 Sol, the next model up, from its next message. An app whose **Codex model** option is GPT-5.5 keeps starting and runs GPT-5.6 Sol; the `gpt-5.5` value stays in the option list only for that.
+- A **Model reasoning effort** of `minimal` now runs Medium when the model is left on `default`, as it already did with an explicitly selected model. None of the current models supports `minimal`, and Codex passed it on to the model unchanged.
+- Update the bundled Codex CLI from 0.157.1 to 0.160.0. The CLI's built-in model list includes GPT-6.1 Sol from 0.159.1; with 0.157.1, Codex ran it on fallback metadata and ran Ultra as Medium. The `codex exec`, `codex exec resume`, `codex sandbox`, `codex login`, and `codex logout` options the worker uses are unchanged.
+- The new CLI's built-in model list recommends GPT-6.1 Sol instead of GPT-6 Astra, so chats that leave the model on **Default** may now run on GPT-6.1 Sol. Select a model explicitly to keep using a specific one.
+
+Update the **Codex CLI Worker** app to **0.1.65** to use GPT-6.1 Sol. The **Codex** integration is also released as **0.1.65** so that both carry the same version; its code is unchanged.
+
+## 0.1.64
+
+- Added an automatically packaged `codex_cli.zip` to GitHub releases for HACS installs and updates.
+- Aligned the worker and integration versions with the release tag and added a packaging check that rejects version mismatches.
+- Kept worker image publishing in the release workflow, including `amd64`, `aarch64`, and `latest` image tags.
+- Standardized HACS and Hassfest validation triggers, README badges, and support buttons.
+- Worker and integration runtime behavior is unchanged.
+
+Update both the **Codex CLI Worker** app and the **Codex** integration to **0.1.64**, then restart Home Assistant.
+
+## 0.1.63
+
+- **Messages start faster.** The worker used to archive the whole configuration folder before every message, which on a large configuration took longer than Codex needed to start answering. It now only records which files exist, and reads a file again only when its size or timestamps changed since the last scan.
+- **Codex saves the previous version of each file it changes.** Before changing, moving, or deleting a file, Codex copies it to the exchange's `backups` folder. When the run ends, the worker checks that each copy matches the file as it was before the run, lists the saved copies under the answer, and names changed files that have none. Credential files are never copied.
+- **New option: Full snapshot before every message** (`full_snapshot`), off by default. Turn it on to keep archiving the whole configuration folder before every message. The worker then fills in the previous version of any file Codex did not copy.
+- **New option: Keep backups for (days)** (`backup_retention_days`), 7 by default. Per-file copies and full snapshots are deleted this many days after their exchange ended. The cleanup runs when the app starts, after every exchange, and once an hour, and also removes the archives earlier versions left behind once they are older than the setting.
+- **The chat shows that work has started.** The waiting dot pulses from the moment a message is sent, a timer next to it counts how long the exchange has been running, and the worker's own steps (recording the state of the configuration, starting Codex, waiting for its first response, checking the changes) appear in the activity list before Codex reports its first step.
+- Recovery copies for a failed configuration check are now read from the `backups` folder instead of a separate `recovery` folder. The task details say how long they are kept, and name affected files that have no saved copy.
+- Worker API and the `codex_cli_task_result` event carry `backups` (`path`, `status`, and `copy`) on the task result and on each turn. `GET /tasks/<task_id>/activity` reports `elapsed_ms` while an exchange runs.
+
+Update the **Codex CLI Worker** app to **0.1.63**. The **Codex** integration remains at **0.1.62** and does not need an update. If you want the previous behavior, turn on **Full snapshot before every message** in the app's **Configuration** tab.
 
 ## 0.1.62
 

@@ -16,6 +16,8 @@ PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32).decode()
 
 
 class QueueTests(unittest.TestCase):
+    """The message queue: waiting, starting in order, editing, removing, and surviving a restart."""
+
     def setUp(self):
         """Give each test an empty worker with temporary storage and no real runs or events."""
         self.stack = ExitStack()

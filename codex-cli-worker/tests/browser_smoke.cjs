@@ -13,11 +13,13 @@ function pngBuffer(width = 8, height = 6) {
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     return c >>> 0;
   });
+  /** Return the CRC-32 checksum that a PNG chunk carries. */
   const crc = (buf) => {
     let c = 0xffffffff;
     for (const b of buf) c = table[(c ^ b) & 0xff] ^ (c >>> 8);
     return (c ^ 0xffffffff) >>> 0;
   };
+  /** Build one PNG chunk: length, tag, data, and checksum. */
   const chunk = (tag, data) => {
     const len = Buffer.alloc(4);
     len.writeUInt32BE(data.length);
@@ -56,12 +58,108 @@ function pngBuffer(width = 8, height = 6) {
     });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    const requested = [];
+    page.on("request", (request) => requested.push(request.url()));
     await page.goto("http://127.0.0.1:9137/preview/");
     await page.locator(".chat-row").first().waitFor();
     assert.equal(await page.locator(".chat-row").count(), 20);
     await page.getByRole("button", { name: "Load older chats" }).click();
     await page.waitForFunction(
       () => document.querySelectorAll(".chat-row").length === 25,
+    );
+    // The quota left is a bar next to its figure: green, and red below 5%.
+    await page.waitForFunction(
+      () => document.querySelector("#usage-weekly").textContent === "3% left",
+    );
+    assert.deepEqual(
+      await page.evaluate(() =>
+        ["usage-five-hour", "usage-weekly"].map((id) => {
+          const fill = document.getElementById(`${id}-bar`);
+          return [
+            document.getElementById(id).textContent,
+            fill.style.width,
+            fill.parentElement.className,
+            getComputedStyle(fill).backgroundColor,
+            fill.parentElement.title,
+          ];
+        }),
+      ),
+      [
+        ["64% left", "64%", "usage-bar", "rgb(12, 163, 12)", "Resets 19:20"],
+        [
+          "3% left",
+          "3%",
+          "usage-bar low",
+          "rgb(208, 59, 59)",
+          "Resets 12:00 on 8 Oct",
+        ],
+      ],
+    );
+    // An account can lack either limit, or both. A missing one reads Unavailable
+    // with an empty outline instead of an empty quota, and the other keeps its bar.
+    /**
+     * Render a quota payload in the page and return, for each limit, the text
+     * shown, the bar width, and the bar's classes.
+     */
+    const quotaRows = (usage) =>
+      page.evaluate((value) => {
+        renderUsage(value);
+        return ["usage-five-hour", "usage-weekly"].map((id) => {
+          const fill = document.getElementById(`${id}-bar`);
+          return [
+            document.getElementById(id).textContent,
+            fill.style.width,
+            fill.parentElement.className,
+          ];
+        });
+      }, usage);
+    const missing = ["Unavailable", "0px", "usage-bar unknown"];
+    assert.deepEqual(await quotaRows({ status: "ok", weekly_percent: "87" }), [
+      missing,
+      ["87% left", "87%", "usage-bar"],
+    ]);
+    assert.equal(await page.locator("#usage-note").isHidden(), true);
+    assert.deepEqual(
+      await quotaRows({ status: "ok", five_hour_percent: "2", weekly_percent: "" }),
+      [["2% left", "2%", "usage-bar low"], missing],
+    );
+    // Neither limit, values that are not percentages, and no quota data at all.
+    for (const usage of [
+      {},
+      { status: "error", five_hour_percent: "n/a", weekly_percent: 140 },
+      { status: "ok", five_hour_percent: null, weekly_percent: -1 },
+      null,
+    ]) {
+      assert.deepEqual(await quotaRows(usage), [missing, missing]);
+      assert.equal(
+        await page.locator("#usage-note").textContent(),
+        usage?.status === "ok" ? "" : "Quota is currently unavailable.",
+      );
+    }
+    await page.evaluate(() => loadUsage());
+    await page.waitForFunction(
+      () => document.querySelector("#usage-weekly").textContent === "3% left",
+    );
+    // The answer to an older chat options request does not replace a newer one.
+    assert.equal(
+      await page.evaluate(async () => {
+        const request = api;
+        const answers = [];
+        api = (path, ...rest) =>
+          path === "chat-options"
+            ? new Promise((resolve) => answers.push(resolve))
+            : request(path, ...rest);
+        const older = loadChatOptions(true);
+        const newer = loadChatOptions(true);
+        answers[1]({ ...state.catalog, default_model: "newer" });
+        answers[0]({ ...state.catalog, default_model: "older" });
+        await Promise.all([older, newer]);
+        const kept = state.catalog.default_model;
+        api = request;
+        await loadChatOptions(true);
+        return kept;
+      }),
+      "newer",
     );
     // Chat actions: hovering a row reveals its menu button; pin, rename, delete.
     await page.locator('.chat-row:has([data-task-id="preview-05"])').hover();
@@ -170,11 +268,94 @@ function pngBuffer(width = 8, height = 6) {
       fullPage: true,
       animations: "disabled",
     });
+    // Markdown in a sent message and in the answer is shown formatted.
+    await page.locator('[data-task-id="preview-04"]').click();
+    const sentMarkdown = page.locator("#messages .message.user");
+    await sentMarkdown.locator("pre").waitFor();
+    assert.equal(
+      await sentMarkdown.locator("pre code").textContent(),
+      "trigger:\n  - platform: sun\n    event: sunset",
+    );
+    assert.equal(await sentMarkdown.locator(".md-lang").textContent(), "yaml");
+    assert.equal(
+      await sentMarkdown.locator("p code").textContent(),
+      "automation.evening_lights",
+    );
+    assert.equal(
+      await sentMarkdown.locator("strong").textContent(),
+      "20 minutes before sunset",
+    );
+    const answerMarkdown = page.locator("#messages .answer");
+    assert.equal(
+      await answerMarkdown.locator(".message").first().textContent(),
+      "Done. automation.evening_lights now starts 20 minutes before sunset.",
+    );
+    assert.equal(await answerMarkdown.locator("h4").textContent(), "What changed");
+    assert.equal(await answerMarkdown.locator("h5").textContent(), "Next steps");
+    assert.equal(await answerMarkdown.locator("ul > li").count(), 2);
+    assert.equal(await answerMarkdown.locator("ol > li").count(), 2);
+    assert.equal(await answerMarkdown.locator("em").textContent(), "scene");
+    assert.match(
+      await answerMarkdown.locator("pre code").textContent(),
+      /^trigger:\n {2}- platform: sun\n[^]*now asks\."$/,
+    );
+    assert.deepEqual(await answerMarkdown.locator("th").allTextContents(), [
+      "Check",
+      "Result",
+    ]);
+    // A <br> breaks the line inside a table cell.
+    assert.equal(await answerMarkdown.locator("td br").count(), 1);
+    assert.equal(
+      await answerMarkdown.locator("blockquote").textContent(),
+      "A negative offset runs before the event, a positive one after it.",
+    );
+    const docsLink = answerMarkdown.locator("a");
+    assert.equal(
+      await docsLink.getAttribute("href"),
+      "https://www.home-assistant.io/docs/automation/trigger/#sun-trigger",
+    );
+    assert.equal(await docsLink.getAttribute("target"), "_blank");
+    assert.equal(await docsLink.getAttribute("rel"), "noreferrer noopener");
+    // None of the Markdown symbols are left in the conversation or its preview.
+    assert.doesNotMatch(
+      await page.locator("#messages").textContent(),
+      /```|\*\*|##|<br>|\]\(/,
+    );
+    assert.equal(
+      await page
+        .locator('[data-task-id="preview-04"] .row-preview')
+        .textContent(),
+      "Done. automation.evening_lights now starts 20 minutes before sunset.",
+    );
+    await page.setViewportSize({ width: 1440, height: 1400 });
+    await page.screenshot({
+      path: path.join(output, "markdown.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 1440, height: 950 });
+    // A message that would keep the parser busy, or is very long, stays plain text.
+    assert.deepEqual(
+      await page.evaluate(() => {
+        const slow = renderMarkdown("**a ".repeat(12000), "message");
+        const long = renderMarkdown("# Title\n" + "a".repeat(50000), "message");
+        return [
+          slow.className,
+          slow.childElementCount,
+          slow.textContent.length,
+          long.className,
+          long.childElementCount,
+        ];
+      }),
+      ["message", 0, 48000, "message", 0],
+    );
     await page.locator('[data-task-id="preview-00"]').click();
     await page
       .locator("#messages")
       .getByText("Your evening routine looks good.", { exact: false })
       .waitFor();
+    // The numbered suggestions of this answer are a list.
+    assert.equal(await page.locator("#messages .details ol > li").count(), 2);
     // A finished exchange keeps its steps behind a collapsed toggle.
     const storedToggle = page.locator("#activity .activity-toggle");
     await storedToggle.waitFor();
@@ -243,6 +424,15 @@ function pngBuffer(width = 8, height = 6) {
       await page.locator("#messages .check-invalid .check-detail").textContent(),
       /required key 'trigger'/,
     );
+    // The same exchange says which changed files have a saved previous version.
+    assert.match(
+      await page.locator("#messages .backups-saved").textContent(),
+      /^✓Previous version saved for 1 file, kept for 7 daysautomations\.yaml → \/config\/codex_tasks\/.*\/backups\/automations\.yaml$/,
+    );
+    assert.equal(
+      await page.locator("#messages .backups-missing").textContent(),
+      "!No previous version saved for 1 filescripts.yaml",
+    );
     await page.screenshot({
       path: path.join(output, "config-check-failed.png"),
       fullPage: true,
@@ -261,11 +451,64 @@ function pngBuffer(width = 8, height = 6) {
     await page
       .getByRole("button", { name: "Send message", exact: true })
       .click();
+    // The worker's own first step shows at once, with a pulsing dot and a timer
+    // that counts up, long before Codex reports anything.
+    await page
+      .locator("#activity.running .step-phase.is-running")
+      .waitFor({ timeout: 5000 });
+    assert.equal(
+      await page.locator("#activity .step-phase .step-text").first().textContent(),
+      "Noting the current state of your configuration files",
+    );
+    /** Return the seconds on the step list timer, checking its format. */
+    const elapsedSeconds = async () => {
+      const text = await page
+        .locator("#activity .activity-toggle .elapsed")
+        .textContent();
+      assert.match(text, /^ · \d+s$/);
+      return Number(text.match(/\d+/)[0]);
+    };
+    await page.waitForFunction(() =>
+      /\d+s$/.test(
+        document.querySelector("#activity .activity-toggle .elapsed")
+          ?.textContent || "",
+      ),
+    );
+    const firstReading = await elapsedSeconds();
+    assert.ok(firstReading <= 2, `timer started at ${firstReading}s`);
+    assert.deepEqual(
+      await page.evaluate(() => {
+        // The waiting line is only on screen for a moment, so check its dot on a copy.
+        const line = document.createElement("p");
+        line.className = "pending";
+        document.querySelector("#messages").append(line);
+        const names = [
+          getComputedStyle(line, "::before").animationName,
+          getComputedStyle(
+            document.querySelector("#activity .activity-chevron"),
+            "::before",
+          ).animationName,
+        ];
+        line.remove();
+        return names;
+      }),
+      ["activity-pulse", "activity-pulse"],
+    );
     // Steps appear one by one while the simulated run works, expanded by default.
     await page
       .locator("#activity.running .step-command.is-running")
       .waitFor({ timeout: 15000 });
     assert.equal(await page.locator("#activity-steps").isVisible(), true);
+    assert.ok((await elapsedSeconds()) > firstReading, "timer did not advance");
+    assert.deepEqual(
+      await page.locator("#activity .step-phase .step-text").allTextContents(),
+      [
+        "Noting the current state of your configuration files",
+        "Starting Codex",
+        "Codex is thinking",
+      ],
+    );
+    assert.equal(await page.locator("#activity .step-phase.is-running").count(), 0);
     await page.screenshot({
       path: path.join(output, "activity-running.png"),
       fullPage: true,
@@ -277,11 +520,13 @@ function pngBuffer(width = 8, height = 6) {
         exact: true,
       })
       .waitFor();
+    // Four steps from Codex and four from the worker; the timer stops with the run.
     await page.waitForFunction(
       () =>
         document.querySelector("#activity .activity-toggle")?.textContent ===
-        "Show activity (4 steps)",
+        "Show activity (8 steps)",
     );
+    assert.equal(await page.locator(".elapsed").count(), 0);
     assert.equal(await page.locator("#activity").count(), 1);
     assert.equal(await page.locator("#activity .step.is-running").count(), 0);
     assert.equal(await page.locator(".message.user").count(), 2);
@@ -304,16 +549,33 @@ function pngBuffer(width = 8, height = 6) {
         document.querySelector("#effort-label").textContent === "Ultra" &&
         !document.querySelector("#effort-button").disabled,
     );
+    // Choosing the model the add-on runs anyway clears the chat's own selection.
     await page.locator("#model-button").click();
-    await page.getByRole("button", { name: "GPT-5.5", exact: true }).click();
+    await page
+      .getByRole("button", { name: "GPT-6.1 Sol", exact: true })
+      .click();
     await page.waitForFunction(
       () =>
-        document.querySelector("#model-button").textContent === "GPT-5.5" &&
+        document.querySelector("#model-button").textContent === "GPT-6.1 Sol" &&
+        !document.querySelector("#model-button").disabled,
+    );
+    assert.deepEqual(
+      await page.evaluate(
+        async () =>
+          (await (await fetch("tasks/preview-00")).json()).task.chat_settings,
+      ),
+      { model: null, reasoning_effort: "ultra" },
+    );
+    await page.locator("#model-button").click();
+    await page.getByRole("button", { name: "GPT-6 Luna", exact: true }).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#model-button").textContent === "GPT-6 Luna" &&
         !document.querySelector("#model-button").disabled,
     );
     assert.equal(await page.locator("#effort-label").textContent(), "Medium");
     await page.locator("#effort-button").click();
-    assert.equal(await page.locator("#effort-slider").getAttribute("max"), "3");
+    assert.equal(await page.locator("#effort-slider").getAttribute("max"), "4");
     await page.locator("#effort-slider").fill("2");
     await page.waitForFunction(
       () =>
@@ -355,8 +617,44 @@ function pngBuffer(width = 8, height = 6) {
     });
     await page.getByRole("button", { name: "New chat", exact: false }).click();
     assert.equal(await page.locator(".answer").count(), 0);
-    assert.equal(await page.locator("#model-button").textContent(), "Default");
+    // A chat that holds a model no longer in the list can still open the menu:
+    // the button shows the id, no row is marked, and the first row has the focus.
+    await page.evaluate(() => {
+      state.chatSettings.set(null, { model: "gone", reasoning_effort: null });
+      controls();
+    });
+    assert.equal(await page.locator("#model-button").textContent(), "gone");
     await page.locator("#model-button").click();
+    assert.equal(
+      await page.locator('#model-options [aria-pressed="true"]').count(),
+      0,
+    );
+    assert.equal(
+      await page.evaluate(() => document.activeElement.textContent),
+      "GPT-6 Astra",
+    );
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => {
+      state.chatSettings.delete(null);
+      controls();
+    });
+    // A new chat names the model it runs on, and the menu marks that model.
+    assert.equal(
+      await page.locator("#model-button").textContent(),
+      "GPT-6.1 Sol",
+    );
+    await page.locator("#model-button").click();
+    assert.deepEqual(
+      await page
+        .locator("#model-options .model-option")
+        .evaluateAll((options) =>
+          options
+            .filter((option) => option.getAttribute("aria-pressed") === "true")
+            .map((option) => option.textContent),
+        ),
+      ["GPT-6.1 Sol✓"],
+    );
+    assert.equal(await page.locator("#model-options .model-option").count(), 7);
     await page
       .getByRole("button", { name: "GPT-5.6 Luna", exact: true })
       .click();
@@ -382,6 +680,84 @@ function pngBuffer(width = 8, height = 6) {
     assert.equal(
       await page.locator("#effort-button svg.picker-chevron").count(),
       1,
+    );
+    // Markdown typed into a message is formatted, but cannot add markup, load
+    // an image, or open anything other than a web or mail address.
+    await page.getByRole("button", { name: "New chat", exact: false }).click();
+    const typed = [
+      "First line",
+      "second line with `inline code`",
+      "",
+      "```",
+      "<i>code</i> **stays** as typed",
+      "```",
+      "",
+      "[script](javascript:window.untrustedRan=true) [file](/config/automations.yaml)",
+      "![remote image](https://example.invalid/pixel.png)",
+      "<b>raw</b> <script>window.untrustedRan=true</script>",
+      "[site](https://www.home-assistant.io/)",
+    ].join("\n");
+    await page.locator("#message").fill(typed);
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
+    await page.locator("#messages .answer pre").waitFor();
+    const typedMessage = page.locator("#messages .message.user");
+    // A single Enter is still a line break.
+    assert.equal(await typedMessage.locator("p").first().locator("br").count(), 1);
+    assert.equal(
+      await typedMessage.locator("p code").textContent(),
+      "inline code",
+    );
+    assert.equal(
+      await typedMessage.locator("pre code").textContent(),
+      "<i>code</i> **stays** as typed",
+    );
+    assert.match(
+      await typedMessage.textContent(),
+      /<b>raw<\/b> <script>window\.untrustedRan=true<\/script>/,
+    );
+    assert.equal(
+      await page.locator("#messages").locator("img, b, i, script").count(),
+      0,
+    );
+    // The same text is in the sent message and in the echoed answer.
+    assert.deepEqual(
+      await page
+        .locator("#messages a")
+        .evaluateAll((links) =>
+          links.map((link) => [link.textContent, link.href, link.target, link.rel]),
+        ),
+      Array(2)
+        .fill([
+          [
+            "remote image",
+            "https://example.invalid/pixel.png",
+            "_blank",
+            "noreferrer noopener",
+          ],
+          [
+            "site",
+            "https://www.home-assistant.io/",
+            "_blank",
+            "noreferrer noopener",
+          ],
+        ])
+        .flat(),
+    );
+    assert.equal(await page.evaluate(() => window.untrustedRan), undefined);
+    assert.deepEqual(
+      requested.filter((url) => url.includes("example.invalid")),
+      [],
+    );
+    // Codex receives the message exactly as it was typed.
+    assert.equal(
+      await page.evaluate(
+        async () =>
+          (await (await fetch("tasks/" + state.id)).json()).task.turns.at(-1)
+            .message,
+      ),
+      typed,
     );
     // Attach an image to a new chat: pending strip, remove, re-add, send.
     await page.getByRole("button", { name: "New chat", exact: false }).click();
@@ -458,11 +834,13 @@ function pngBuffer(width = 8, height = 6) {
       window.__restoreBitmap = () => {
         window.createImageBitmap = original;
       };
+      /** Hold each decode back until the test releases it. */
       window.createImageBitmap = (...args) =>
         new Promise((resolve) => {
           window.__bitmapGates.push(() => resolve(original(...args)));
         });
     });
+    /** Wait for a held-back image decode and let it go ahead. */
     const releaseDecode = async () => {
       await page.waitForFunction(() => window.__bitmapGates.length > 0);
       await page.evaluate(() => window.__bitmapGates.shift()());
@@ -809,7 +1187,7 @@ function pngBuffer(width = 8, height = 6) {
         exact: true,
       })
       .waitFor();
-    assert.equal(await page.locator("#model-button").textContent(), "GPT-5.5");
+    assert.equal(await page.locator("#model-button").textContent(), "GPT-6 Luna");
     assert.equal(await page.locator("#effort-label").textContent(), "Medium");
     assert.equal(await page.locator("#scrim").isHidden(), true);
     assert.equal(
@@ -862,6 +1240,29 @@ function pngBuffer(width = 8, height = 6) {
       fullPage: true,
       animations: "disabled",
     });
+    await page.keyboard.press("Escape");
+    // On a phone, a long code line scrolls inside its block instead of widening the page.
+    await page
+      .getByRole("button", { name: "Open conversations", exact: true })
+      .click();
+    await page.locator('[data-task-id="preview-04"]').click();
+    const wideCode = page.locator("#messages .answer pre");
+    await wideCode.waitFor();
+    assert.equal(
+      await wideCode.evaluate((pre) => pre.scrollWidth > pre.clientWidth),
+      true,
+    );
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+    await page.screenshot({
+      path: path.join(output, "markdown-mobile-dark.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
     // Long press on a phone opens the actions sheet without selecting the chat.
     const touch = await browser.newContext({
       viewport: { width: 390, height: 844 },
@@ -879,6 +1280,7 @@ function pngBuffer(width = 8, height = 6) {
       () => document.querySelector("#sidebar").getBoundingClientRect().x >= 0,
     );
     const input = await touch.newCDPSession(phone);
+    /** Touch the middle of the preview-01 chat row for hold milliseconds. */
     const press = async (hold) => {
       const row = phone.locator('[data-task-id="preview-01"]');
       await row.scrollIntoViewIfNeeded();
@@ -947,7 +1349,7 @@ function pngBuffer(width = 8, height = 6) {
     await webview.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: queued messages (wait behind a working chat, edit, remove, start in order), attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, saved model/reasoning choices, model compatibility, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: queued messages (wait behind a working chat, edit, remove, start in order), attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, the model a chat runs on by name, quota bars, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

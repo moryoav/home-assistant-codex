@@ -15,6 +15,7 @@ from .discovery import async_discover_worker
 
 
 def _schema() -> vol.Schema:
+    """Return the empty form schema; the worker is discovered, so the forms ask for no input."""
     return vol.Schema({})
 
 

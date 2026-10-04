@@ -25,6 +25,7 @@ class WorkerConnection:
 
 
 def _add_candidate(candidates: list[str], base_url: str) -> None:
+    """Append a URL to the candidates without its trailing slash, skipping empty and duplicate URLs."""
     base_url = base_url.rstrip("/")
     if base_url and base_url not in candidates:
         candidates.append(base_url)

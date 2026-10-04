@@ -21,6 +21,11 @@ const READ_MESSAGES = new Set([
   'energy/get_prefs', 'energy/info', 'get_panels', 'manifest/list',
 ]);
 
+/**
+ * Return whether a WebSocket message from the dashboard may be forwarded to
+ * Home Assistant. Only the read-only commands listed here and subscriptions
+ * to a fixed set of event types pass.
+ */
 function allowMessage(message) {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
   // This handler only returns frontend configuration. Do not subscribe this
@@ -48,6 +53,11 @@ function allowMessage(message) {
   return READ_MESSAGES.has(message.type);
 }
 
+/**
+ * Return whether the dashboard may send an HTTP request to Home Assistant: a
+ * same-origin GET or HEAD for the frontend's files, files under /local or
+ * /hacsfiles, the dashboard page itself, or one of a few read-only API paths.
+ */
 function allowRequest(url, origin, method, dashboardPath) {
   if (url.origin !== origin || !['GET', 'HEAD'].includes(method)) return false;
   if (/%|\\/.test(url.pathname)) return false;
@@ -60,6 +70,15 @@ function allowRequest(url, origin, method, dashboardPath) {
     || url.pathname === '/';
 }
 
+/**
+ * Load a Home Assistant dashboard in headless Chromium at a desktop and a
+ * mobile size and save a screenshot of each. Requests and WebSocket messages
+ * from the page pass only if the rules above and the resource policy allow
+ * them, and the real access token never reaches the page scripts. Returns the
+ * screenshots with the errors, blocked items, and findings; the status is
+ * unavailable, with the stage reached, when the capture could not finish.
+ * Throws for an invalid origin or dashboard path.
+ */
 async function inspect(input) {
   const target = new URL(input.url);
   const origin = target.origin;
@@ -72,10 +91,18 @@ async function inspect(input) {
   const policy = new ResourcePolicy(origin, input.resources);
   const fetchExternal = createExternalFetcher(policy);
   const blockedURLs = new Set();
+  /** Name a resource by its path, preceded by the host when it is external. */
   const resourceLabel = url => `${url.origin === origin ? '' : url.host}${url.pathname}`;
+  /** Turn an error text that says nothing by itself into a readable message. */
   const scriptError = text => text.length <= 3 || text === 'Object' ? `Unspecified dashboard script error (${text})` : text;
   let stage = 'launch';
   let browser, activePage, activeViewport;
+  /**
+   * Record a finding, counting repeats and the viewports it was seen in, and
+   * add its message to the errors or blocked list when one is given. Messages
+   * are cut to 300 characters; past 40 different findings, new ones are only
+   * counted as omitted.
+   */
   const add = (list, value, kind = list === errors ? 'dashboard' : 'policy') => {
     const message = String(value).slice(0, 300), key = `${kind}:${message}`;
     let finding = findings.get(key);
@@ -87,6 +114,7 @@ async function inspect(input) {
     finding.count++;
     if (activeViewport && !finding.viewports.includes(activeViewport.name)) finding.viewports.push(activeViewport.name);
   };
+  /** Return the errors, blocked items, and findings gathered so far. */
   const evidence = () => ({errors, blocked, findings: [...findings.values()], findings_omitted: omitted});
   try {
     browser = await chromium.launch({
@@ -197,11 +225,13 @@ async function inspect(input) {
     // short-lived token on the authenticated WebSocket, never in page scripts.
     await context.addInitScript(() => {
       window.externalApp = {
+        /** Answer the frontend's token request with the placeholder token. */
         getExternalAuth: raw => {
           const options = JSON.parse(raw);
           if (options.callback === 'externalAuthSetToken')
             window.externalAuthSetToken(true, { access_token: 'verification-session', expires_in: 180 });
         },
+        /** Confirm a token revocation to the frontend. */
         revokeExternalAuth: () => window.externalAuthRevokeToken?.(true),
       };
     });
@@ -249,6 +279,7 @@ async function inspect(input) {
       }
       const layout = await page.evaluate(() => {
         const messages = [];
+        /** Collect visible error card messages, shadow roots included. */
         function visit(root) {
           for (const el of root.querySelectorAll('*')) {
             if (el.localName === 'hui-error-card' && el.checkVisibility({visibilityProperty: true, opacityProperty: true}))

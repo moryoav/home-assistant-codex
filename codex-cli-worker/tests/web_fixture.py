@@ -51,6 +51,9 @@ def main():
         server.fire_ha_event = lambda *args: (True, "")
         server.notify = lambda *args: None
         server.refresh_usage_status_async = lambda **kwargs: None
+        # Plenty left of the 5-hour quota and almost none of the weekly one, so both bar colors show.
+        server.usage_state.update(status="ok", five_hour_percent="64", five_hour_reset="19:20",
+                                  weekly_percent="3", weekly_reset="12:00 on 8 Oct")
         session_id = "019fc242-910a-7c92-a17d-54c014e19fc4"
         sessions = server.CODEX_HOME / "sessions"
         sessions.mkdir(parents=True)
@@ -88,9 +91,17 @@ def main():
             held = (reply or prompt).startswith("Take your time")
 
             def run():
+                """Play the worker's and Codex's steps for one exchange, then finish it."""
                 server.update_task(task_id, status="running", started_at=server.utc_now())
                 server.start_activity(task_id, server.tasks[task_id].get("current_turn_id") or "")
-                for event in preview_events(summary):
+                # The worker's own steps come first, as in a real run.
+                server.start_phase(task_id, "baseline", "Noting the current state of your configuration files")
+                if live:
+                    time.sleep(1.5)
+                server.finish_phase(task_id, "baseline")
+                server.start_phase(task_id, "launch", "Starting Codex")
+                started = [{"type": "thread.started", "thread_id": session_id}, {"type": "turn.started"}]
+                for event in started + preview_events(summary):
                     if live:
                         time.sleep(0.4)
                     server.record_activity_event(task_id, event)
@@ -100,6 +111,10 @@ def main():
                 if held:
                     release.wait(120)
                     release.clear()
+                server.start_phase(task_id, "review", "Checking the changes")
+                if live:
+                    time.sleep(0.4)
+                server.finish_phase(task_id, "review")
                 server.update_task(task_id, status="completed", session_id=session_id, summary=summary,
                                    details="", question="", completed_at=server.utc_now())
                 server.finish_activity(task_id)
@@ -128,8 +143,28 @@ def main():
         ]
         image_example = ("A sheep for the garden dashboard", "Generate a small cartoon image of a sheep on grass for my dashboard.",
                          "Here is a cartoon sheep standing on grass. It is attached below.", "")
+        # Markdown in a sent message and in an answer, as the chat formats both.
+        markdown_example = (
+            "Sunset offset for the evening lights",
+            "Make `automation.evening_lights` start **20 minutes before sunset**. This is the trigger I have now:\n\n"
+            "```yaml\ntrigger:\n  - platform: sun\n    event: sunset\n```",
+            "**Done.** `automation.evening_lights` now starts 20 minutes before sunset.",
+            "## What changed\n\n"
+            "- Added an `offset` to the sun trigger in `automations.yaml`.\n"
+            "- Left the *scene* and brightness settings as they were.\n\n"
+            "```yaml\ntrigger:\n  - platform: sun\n    event: sunset\n    offset: \"-00:20:00\"\n"
+            "action:\n  - service: notify.mobile_app\n    data:\n"
+            "      message: \"The evening lights came on 20 minutes before sunset, as the routine now asks.\"\n```\n\n"
+            "| Check | Result |\n|:--|:--|\n| Configuration | Valid |\n| `automation.evening_lights` | `on`<br>since 18:42 |\n\n"
+            "### Next steps\n\n"
+            "1. Reload automations from **Developer tools**.\n"
+            "2. Watch the lights at sunset tonight.\n\n"
+            "> A negative offset runs before the event, a positive one after it.\n\n"
+            "See the [sun trigger documentation](https://www.home-assistant.io/docs/automation/trigger/#sun-trigger).",
+        )
         for index in range(25):
-            title, message, summary, details = image_example if index == 2 else examples[index % 3]
+            title, message, summary, details = (
+                image_example if index == 2 else markdown_example if index == 4 else examples[index % 3])
             # Each saved chat owns its session, as in production, so deleting one leaves the others resumable.
             task_session = f"{session_id[:-4]}{index:04x}"
             (sessions / f"rollout-preview-{task_session}.jsonl").write_text("{}\n")
@@ -176,17 +211,21 @@ def main():
                     "preview-01", shot_id, shot, "image/png", name="dashboard-mobile.png", origin="verification",
                     viewport="mobile", expires_at=time.time() + 3600)]
             if index == 3:
-                # A YAML edit that Home Assistant rejected; the worker kept the previous file.
+                # A YAML edit that Home Assistant rejected. Codex saved the previous
+                # version of one file it changed, and none of the other.
+                saved_copy = "/config/codex_tasks/preview-03/turns/x/backups/automations.yaml"
                 extra.update(config_check={"result": "invalid", "warnings": "",
                                            "errors": "Invalid config for 'automation' at automations.yaml, line 12: required key 'trigger' not provided"},
                              validation_errors=["Home Assistant configuration check failed: required key 'trigger' not provided"],
-                             recovery_files=[{"path": "automations.yaml", "copy": "/config/codex_tasks/preview-03/turns/x/recovery/automations.yaml"}])
-            server.update_task(f"preview-{index:02}", title=title if index < 3 else f"Earlier chat {index}",
+                             recovery_files=[{"path": "automations.yaml", "copy": saved_copy}],
+                             backups=[{"path": "automations.yaml", "status": "saved", "copy": saved_copy},
+                                      {"path": "scripts.yaml", "status": "missing", "copy": ""}])
+            server.update_task(f"preview-{index:02}", title=title if index < 3 or index == 4 else f"Earlier chat {index}",
                                prompt=message, created_at=f"2026-09-{20 - index % 19:02}T10:00:00+00:00",
                                turns=[turn], current_turn_id=turn["turn_id"],
                                status="failed" if index == 3 else "completed",
                                session_id=task_session, summary=summary, question="",
-                               details="Validation errors: Home Assistant configuration check failed. Pre-change copies of the affected files are kept at: /config/codex_tasks/preview-03/turns/x/recovery/automations.yaml" if index == 3 else details,
+                               details="Validation errors: Home Assistant configuration check failed. Pre-change copies of the affected files are kept for 7 days at: `/config/codex_tasks/preview-03/turns/x/backups/automations.yaml`" if index == 3 else details,
                                attachments=attachments, **extra)
             server.tasks[f"preview-{index:02}"]["updated_at"] = f"2026-09-{20 - index % 19:02}T10:00:00+00:00"
             if index == 0:

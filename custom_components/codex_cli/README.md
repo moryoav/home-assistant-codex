@@ -26,7 +26,7 @@ There is no worker URL or API token to enter.
 - 5-hour limit: Shows the 5-hour window when Codex reports one. The entity remains for compatibility and is `unknown` with `reported: false` when the account only reports a weekly window.
 - Weekly limit: Shows the weekly window when Codex reports one.
 - Active tasks: Shows the number of currently running Codex tasks.
-- Last task: Shows the latest known task status and related attributes.
+- Last task: Shows the latest known task status and related attributes. When that task failed, the `error` attribute gives the reason.
 - Task running: Binary sensor that is on while a task is active.
 
 All entities are diagnostic entities on the Codex device.

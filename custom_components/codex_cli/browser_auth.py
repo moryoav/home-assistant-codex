@@ -65,6 +65,7 @@ class BrowserSessions:
     """Keep renewal credentials in Core and revoke every issued session."""
 
     def __init__(self, hass: HomeAssistant, worker_token: str) -> None:
+        """Keep the paired worker's token and start with no browser identity and no issued sessions."""
         self.hass = hass
         self.worker_token = worker_token
         self.user = None
@@ -73,6 +74,10 @@ class BrowserSessions:
         self.closed = False
 
     async def setup(self) -> None:
+        """Load or create the read-only, local-only system user for browser sessions and remove its leftover tokens.
+
+        Raises ValueError if the stored user ID belongs to an account that is not a system user.
+        """
         store = Store(self.hass, 1, STORAGE_KEY)
         stored = await store.async_load() or {}
         user = await self.hass.auth.async_get_user(stored.get("user_id", ""))
@@ -93,6 +98,11 @@ class BrowserSessions:
         self.user = user
 
     async def issue(self) -> dict[str, Any]:
+        """Issue one browser session: its ID, an access token, the Core URL and the static resources it may load.
+
+        The session is revoked after SESSION_SECONDS. Raises HTTPTooManyRequests while another session
+        is active, and HTTPServiceUnavailable when the broker is closed or not set up.
+        """
         async with self.lock:
             if self.closed or self.user is None:
                 raise web.HTTPServiceUnavailable()
@@ -121,12 +131,14 @@ class BrowserSessions:
                     "resources": resources}
 
     def revoke(self, session_id: str) -> None:
+        """Remove the session's refresh token and cancel its expiry timer; unknown session IDs are ignored."""
         if session := self.sessions.pop(session_id, None):
             refresh, timer = session
             timer.cancel()
             self.hass.auth.async_remove_refresh_token(refresh)
 
     def close(self) -> None:
+        """Stop issuing sessions and revoke every session that is still active."""
         self.closed = True
         for session_id in list(self.sessions):
             self.revoke(session_id)
@@ -140,9 +152,14 @@ class BrowserSessionView(HomeAssistantView):
     requires_auth = True
 
     def __init__(self, hass: HomeAssistant) -> None:
+        """Keep the Home Assistant instance whose session broker the view uses."""
         self.hass = hass
 
     def broker(self, request: web.Request, data: dict[str, Any]) -> BrowserSessions:
+        """Return the session broker if the caller is an administrator and the body carries the paired worker token.
+
+        Raises HTTPServiceUnavailable when no broker is open, and HTTPForbidden for any other caller.
+        """
         broker = self.hass.data.get(DOMAIN, {}).get("browser_sessions")
         if broker is None or broker.closed:
             raise web.HTTPServiceUnavailable()
@@ -154,11 +171,13 @@ class BrowserSessionView(HomeAssistantView):
         return broker
 
     async def post(self, request: web.Request) -> web.Response:
+        """Issue a browser session to the paired worker, in a response that must not be cached."""
         data = await self.payload(request)
         result = await self.broker(request, data).issue()
         return self.json(result, headers={"Cache-Control": "no-store"})
 
     async def delete(self, request: web.Request) -> web.Response:
+        """Revoke the browser session named by session_id in the request body."""
         data = await self.payload(request)
         broker = self.broker(request, data)
         if not isinstance(data, dict) or not isinstance(data.get("session_id"), str):
@@ -167,6 +186,7 @@ class BrowserSessionView(HomeAssistantView):
         return self.json({"ok": True})
 
     async def payload(self, request: web.Request) -> dict[str, Any]:
+        """Read the request body as a JSON object, refusing bodies over 4096 bytes or anything that is not an object."""
         # The Supervisor proxy only forwards selected headers, so pairing travels
         # in the authenticated JSON body, never a URL/query string.
         if request.content_length is not None and request.content_length > 4096:
@@ -192,6 +212,10 @@ class DiagnosticView(BrowserSessionView):
     name = "api:codex_cli:diagnostic_logs"
 
     async def post(self, request: web.Request) -> web.Response:
+        """Return the last 100 Core log lines from Supervisor, cut off at 32768 bytes, to the paired worker.
+
+        Only the "core" target is accepted. A Supervisor answer other than HTTP 200 is reported as HTTP 502.
+        """
         data = await self.payload(request)
         self.broker(request, data)
         target = data.get("target") if isinstance(data, dict) else None
@@ -217,4 +241,5 @@ class DiagnosticView(BrowserSessionView):
                           "truncated": len(content) > 32768}, headers={"Cache-Control": "no-store"})
 
     async def delete(self, request: web.Request) -> web.Response:
+        """Refuse DELETE, which the parent view handles but this view does not support."""
         raise web.HTTPMethodNotAllowed("DELETE", ["POST"])

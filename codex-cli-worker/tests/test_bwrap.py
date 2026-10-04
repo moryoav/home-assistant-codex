@@ -23,7 +23,10 @@ PROBE = [
 
 
 class BubblewrapCompatibilityTests(unittest.TestCase):
+    """The Bubblewrap wrapper rewrites only the failed /proc probe diagnostic and passes everything else through."""
+
     def setUp(self) -> None:
+        """Create a fake Bubblewrap that records its call, plus copies of the wrapper and helper that point at it."""
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         root = Path(self.directory.name)
@@ -68,6 +71,7 @@ class BubblewrapCompatibilityTests(unittest.TestCase):
         self, args: list[str], *, stderr: bytes = PROC_ERROR,
         stdout: bytes = b"", exit_code: int = 1, **extra: str,
     ) -> tuple[subprocess.CompletedProcess[bytes], dict]:
+        """Run the wrapper against the fake Bubblewrap and return the result with what the fake recorded."""
         result = subprocess.run(
             [str(self.wrapper), *args],
             env={**os.environ, "TEST_RECORD": str(self.record),
@@ -78,6 +82,7 @@ class BubblewrapCompatibilityTests(unittest.TestCase):
         return result, json.loads(self.record.read_text(encoding="utf-8"))
 
     def test_normalizes_only_recognized_failed_probe_lines(self) -> None:
+        """A failed probe's known /proc error is rewritten to /newroot/proc, with stdout and the exit code unchanged."""
         for true in ("/bin/true", "/usr/bin/true"):
             for error in (b"Operation not permitted", b"Permission denied", b"Invalid argument"):
                 for newline in (b"\n", b"\r\n", b""):
@@ -93,6 +98,7 @@ class BubblewrapCompatibilityTests(unittest.TestCase):
                         self.assertEqual(record["args"], ["--cap-drop", "ALL", *PROBE[:-1], true])
 
     def test_success_and_unrelated_errors_are_unchanged(self) -> None:
+        """A successful probe and any error line other than the known ones keep their stderr and exit code."""
         cases = [
             (PROC_ERROR, 0), (RECOGNIZED_ERROR, 1),
             (b"bwrap: Creating new namespace failed: Operation not permitted\n", 1),
@@ -107,10 +113,12 @@ class BubblewrapCompatibilityTests(unittest.TestCase):
                 self.assertEqual(result.returncode, code)
 
     def test_preserves_other_lines_around_recognized_failure(self) -> None:
+        """Only the recognized line is rewritten; the stderr lines before and after it are kept as they are."""
         result, _ = self.run_wrapper(PROBE, stderr=b"before\n" + PROC_ERROR + b"after")
         self.assertEqual(result.stderr, b"before\n" + RECOGNIZED_ERROR + b"after")
 
     def test_real_commands_and_lookalikes_bypass_helper(self) -> None:
+        """Real commands and near-matches of the probe go straight to Bubblewrap with their stderr unchanged."""
         separator = PROBE.index("--")
         cases = [
             [*PROBE[:separator + 1], "/usr/local/bin/codex", "--apply-seccomp-then-exec", "--", "/bin/true"],
@@ -131,6 +139,7 @@ class BubblewrapCompatibilityTests(unittest.TestCase):
                 self.assertEqual(record["args"], ["--cap-drop", "ALL", *args])
 
     def test_version_and_help_remain_usable(self) -> None:
+        """The --version and --help options still reach Bubblewrap and return its output."""
         for option in ("--version", "--help"):
             result, record = self.run_wrapper([option], stderr=b"", stdout=b"supported options\n", exit_code=0)
             self.assertEqual(result.returncode, 0)
@@ -139,6 +148,7 @@ class BubblewrapCompatibilityTests(unittest.TestCase):
             self.assertEqual(record["args"], expected)
 
     def test_normal_path_exec_preserves_pid(self) -> None:
+        """A normal command replaces the wrapper process, so Bubblewrap runs under the same process id."""
         with subprocess.Popen(
             [str(self.wrapper), "--", "/bin/true"],
             env={**os.environ, "TEST_RECORD": str(self.record)},
@@ -149,6 +159,7 @@ class BubblewrapCompatibilityTests(unittest.TestCase):
             self.assertEqual(json.loads(self.record.read_text())["pid"], child.pid)
 
     def test_probe_preserves_inherited_mount_descriptors(self) -> None:
+        """The probe path keeps inherited file descriptors open, so Bubblewrap can read descriptor-backed mounts."""
         with tempfile.TemporaryFile() as file:
             file.write(b"mount descriptor")
             file.seek(0)
@@ -161,6 +172,7 @@ class BubblewrapCompatibilityTests(unittest.TestCase):
         self.assertEqual(json.loads(self.record.read_text())["fd"], "mount descriptor")
 
     def test_probe_preserves_signal_termination(self) -> None:
+        """When Bubblewrap is killed by a signal during the probe, the wrapper ends by the same signal."""
         result, _ = self.run_wrapper(PROBE, TEST_SIGNAL=str(signal.SIGTERM))
         self.assertEqual(result.returncode, -signal.SIGTERM)
         self.assertEqual(result.stderr, PROC_ERROR)

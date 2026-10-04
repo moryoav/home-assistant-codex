@@ -16,8 +16,9 @@ from server import verification_mcp_args
 
 
 def main():
+    """Run the pinned CLI in both sandbox modes: the shell cannot reach the verification socket, the MCP tool can."""
     binary = os.environ.get("HA_TEST_CODEX", "/usr/local/bin/codex")
-    assert "0.157.1" in subprocess.check_output([binary, "--version"], text=True)
+    assert "0.160.0" in subprocess.check_output([binary, "--version"], text=True)
     with tempfile.TemporaryDirectory(prefix="ha-mcp-test-") as root:
         root = Path(root)
         checks = []
@@ -26,6 +27,7 @@ def main():
             task_cancellation_requested=lambda _: False, utc_now=lambda: "fixture", redact=lambda value: value,
         )
         def update(task_id, **fields):
+            """Apply the fields to the fixture task and collect the verification checks among them."""
             worker.tasks[task_id].update(fields)
             checks.extend(fields.get("verification", []))
         worker.update_task = update
@@ -37,10 +39,17 @@ def main():
         received = []
 
         class Provider(BaseHTTPRequestHandler):
+            """Fixture model provider that requests one verify call and then gives the final answer."""
+
             def log_message(self, *_args):
+                """Keep request logging out of the smoke test's output."""
                 pass
 
             def do_POST(self):
+                """Stream a verify tool call for each odd model request and the final message for each even one.
+
+                Prewarm requests get an empty completion and are not counted.
+                """
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if request.get("generate") is False:
                     self.send_response(200)

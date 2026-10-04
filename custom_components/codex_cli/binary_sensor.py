@@ -34,6 +34,7 @@ class CodexRunningBinarySensor(CoordinatorEntity[CodexCliCoordinator], BinarySen
     _attr_translation_key = "task_running"
 
     def __init__(self, coordinator: CodexCliCoordinator, entry: ConfigEntry) -> None:
+        """Set the unique ID and attach the sensor to the Codex device of the config entry."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_task_running"
         self._attr_device_info = {
@@ -46,4 +47,5 @@ class CodexRunningBinarySensor(CoordinatorEntity[CodexCliCoordinator], BinarySen
 
     @property
     def is_on(self) -> bool:
+        """Return true if the worker status names an active task."""
         return bool((self.coordinator.data or {}).get("active_task_id"))

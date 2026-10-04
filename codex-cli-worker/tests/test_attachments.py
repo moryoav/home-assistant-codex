@@ -39,6 +39,8 @@ def rollout_line(item_id, saved_path="", result=b"", status="completed", failure
 
 
 class AttachmentTests(unittest.TestCase):
+    """Images in a chat: those Codex generates and those the user attaches to a message."""
+
     def setUp(self):
         """Isolate task storage, CODEX_HOME and Home Assistant calls in a temp directory."""
         self.stack = ExitStack()
@@ -91,6 +93,8 @@ class AttachmentTests(unittest.TestCase):
         final = final or {"status": "completed", "summary": "Here is your sheep.", "details": "", "question": ""}
 
         class FakeProcess:
+            """A stand-in for the Codex process that reports the session and writes the final response."""
+
             def __init__(self, args, **kwargs):
                 """Record the final-response path Codex was asked to write."""
                 self.stdin = io.StringIO()

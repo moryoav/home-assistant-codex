@@ -187,7 +187,7 @@ If another chat is working when you pick a choice, the answer waits in the [queu
 
 The choices are a convenience and not a safeguard. Codex decides when to ask, and nothing stops it from changing files without asking. Use `/config/AGENTS.md` to tell it when you want to be asked first.
 
-API: `POST /tasks/<task_id>/reply` and `POST /tasks/<task_id>/continue` accept `turn_id`, and `choice` in place of the text: the position of one of the waiting question's choices, counted from 0. A `turn_id` that is not the waiting turn returns HTTP 409, and a `choice` the question does not offer returns HTTP 400. Each turn in `GET /tasks/<task_id>` has `choices`, and `latest_task` in `GET /status` has `choices` and `current_turn_id`. The action of a notification button is `CODEX_CLI_CHOICE_<position>_<turn_id>_<task_id>`, which Home Assistant delivers in the `mobile_app_notification_action` event.
+API: `POST /tasks/<task_id>/reply` and `POST /tasks/<task_id>/continue` accept `turn_id`, and `choice` in place of the text: the position of one of that turn's choices, counted from 0. `choice` needs `turn_id`, because a position means nothing without its question. A `turn_id` that is not the waiting turn returns HTTP 409. A `choice` without `turn_id`, or one the question does not offer, returns HTTP 400. Each turn in `GET /tasks/<task_id>` has `choices`, and `latest_task` in `GET /status` has `choices` and `current_turn_id`. The action of a notification button is `CODEX_CLI_CHOICE_<position>_<turn_id>_<task_id>`, which Home Assistant delivers in the `mobile_app_notification_action` event.
 
 ## Saved conversations
 

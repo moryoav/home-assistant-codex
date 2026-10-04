@@ -10,7 +10,7 @@
 - **Answer Codex's questions with one tap.** When Codex stops to ask for a decision, it can now offer up to three short answers, such as **Go ahead** and **Don't change anything**. In the chat they are buttons under the question. Picking one sends it as your next message, and you can still type a different answer. When Codex asks whether to go ahead with a change, it is told to say exactly what it would change.
 - **Buttons on phone notifications.** With `notify_service` set to a mobile app service (`notify.mobile_app_...`), the notification for a question has a button for each answer, and tapping one sends it. This needs the **Codex** integration at 0.1.69. Other notify services and the persistent notification list the answers in the text.
 - An answer goes to the question it was given for. The buttons name the turn that asked, and the worker refuses an answer once that question is no longer the one waiting, so a button on an old notification cannot answer a newer question. The `codex_cli.reply_task` action has an optional `turn_id` for the same check, and works as before without it.
-- The `codex_cli_task_result` event and the **Last task** sensor carry `choices` and `turn_id`. The worker API accepts `turn_id`, and `choice` in place of the text, on `/tasks/<task_id>/reply` and `/tasks/<task_id>/continue`.
+- The `codex_cli_task_result` event and the **Last task** sensor carry `choices` and `turn_id`. The worker API accepts `turn_id`, and `choice` together with it in place of the text, on `/tasks/<task_id>/reply` and `/tasks/<task_id>/continue`.
 - An answer picked while another chat is working waits in the queue like any other message.
 - The answers are a convenience and not a safeguard. Codex decides when to ask, as before.
 

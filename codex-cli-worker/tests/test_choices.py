@@ -198,20 +198,25 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual((response.status_code, response.json["error"]), (409, server.QUESTION_NOT_WAITING))
 
     def test_invalid_choice_and_turn_values_are_rejected(self):
-        """A choice must be the position of an offered answer to a waiting question, and a turn id must be text."""
+        """A choice must be the position of an answer the named question offers, and a turn id must be text."""
         task_id = self.create()
         turn_id = self.ask(task_id)
-        for body in ({"choice": 2}, {"choice": -1}, {"choice": "0"}, {"choice": True}, {"choice": 1.0},
-                     {"reply": "Yes", "turn_id": 7}, {"choice": 0, "turn_id": ["x"]}):
+        for choice in (2, -1, "0", True, 1.0):
+            self.assertEqual(self.post(f"/tasks/{task_id}/reply", {"choice": choice, "turn_id": turn_id}).status_code, 400, choice)
+        for body in ({"reply": "Yes", "turn_id": 7}, {"choice": 0, "turn_id": ["x"]}):
             self.assertEqual(self.post(f"/tasks/{task_id}/reply", body).status_code, 400, body)
+        # A position says nothing without the question it belongs to.
+        for path, body in (("reply", {"choice": 0}), ("continue", {"choice": 0}), ("reply", {"choice": 0, "turn_id": ""})):
+            response = self.post(f"/tasks/{task_id}/{path}", body)
+            self.assertEqual((response.status_code, response.json["error"]),
+                             (400, "choice needs the turn_id of the question it answers"))
         self.assertEqual(len(server.tasks[task_id]["turns"]), 1)
-        self.runner.reset_mock()
+        self.runner.assert_called_once()  # Only the chat's first message ever started.
         server.update_task(task_id, status="completed")
         for path in ("reply", "continue"):
-            response = self.post(f"/tasks/{task_id}/{path}", {"choice": 0})
-            self.assertEqual((response.status_code, response.json["error"]), (409, "task is not waiting for input"))
-        self.runner.assert_not_called()
-        self.assertEqual(self.post(f"/tasks/{task_id}/reply", {"choice": 0, "turn_id": turn_id}).status_code, 409)
+            response = self.post(f"/tasks/{task_id}/{path}", {"choice": 0, "turn_id": turn_id})
+            self.assertEqual((response.status_code, response.json["error"]), (409, server.QUESTION_NOT_WAITING))
+        self.runner.assert_called_once()
 
     def test_choice_waits_in_the_queue_behind_a_working_chat(self):
         """A choice picked while another chat works joins the queue with its text, when the request allows queueing."""

@@ -4679,6 +4679,8 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
     position counted from 0, in place of typed text. `turn_id` names the
     question being answered: the request is refused once that question is no
     longer the one waiting, so a late answer cannot land on a newer question.
+    A position means nothing without its question, so `choice` needs `turn_id`;
+    typed text may come without it, as before.
     """
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
@@ -4691,6 +4693,8 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
         return jsonify({"ok": False, "error": "choice must be the position of an offered choice, counted from 0"}), 400
     if turn_id is not None and not isinstance(turn_id, str):
         return jsonify({"ok": False, "error": "turn_id must be text"}), 400
+    if choice is not None and not turn_id:
+        return jsonify({"ok": False, "error": "choice needs the turn_id of the question it answers"}), 400
     message = "" if choice is not None else payload[field].strip()
     with lock:
         task = tasks.get(task_id)
@@ -4699,7 +4703,7 @@ def continue_task_request(task_id: str, field: str, *, waiting_only: bool = Fals
         waiting = task.get("status") == "waiting_for_input"
         if turn_id and (not waiting or task.get("current_turn_id") != turn_id):
             return jsonify({"ok": False, "error": QUESTION_NOT_WAITING}), 409
-        if (waiting_only or choice is not None) and not waiting:
+        if waiting_only and not waiting:
             return jsonify({"ok": False, "error": "task is not waiting for input"}), 409
         if choice is not None:
             choices = task.get("choices") or []

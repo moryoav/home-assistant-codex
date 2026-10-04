@@ -125,7 +125,7 @@ class DownloadTests(LocalDocsTestCase):
         self.assertIsNone(server.ha_docs_info(self.download))
 
     def test_git_runs_without_home_assistant_credentials_or_prompts(self) -> None:
-        """Git gets no Supervisor or Home Assistant token or address, cannot prompt, and has a time limit."""
+        """Git gets no Home Assistant token or address and no saved Git settings, cannot prompt, and has a time limit."""
         self.options["HA_TOKEN"] = "long-lived-token"
         self.assertIn("HA_URL", server.codex_env())
         completed = subprocess.CompletedProcess([], 0, stdout="abc\n", stderr="")
@@ -140,6 +140,8 @@ class DownloadTests(LocalDocsTestCase):
         for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_URL"):
             self.assertNotIn(key, env)
         self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(run.call_args.kwargs["timeout"], server.HA_DOCS_GIT_TIMEOUT_SECONDS)
 
     def test_git_gives_up_on_a_stalled_transfer_and_does_not_read_the_worker_input(self) -> None:

@@ -3049,6 +3049,9 @@ def _ha_docs_git(*args: str) -> str:
     for key in ("HA_TOKEN", "HA_URL"):
         env.pop(key, None)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # Git settings saved under the app's home folder, such as credentials, do not apply.
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
     # Git ends a stalled transfer itself. The time limit below stops only the main
     # process and would leave its network helpers running.
     env["GIT_HTTP_LOW_SPEED_LIMIT"] = "1000"

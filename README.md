@@ -89,7 +89,7 @@ This repository contains two pieces:
 - Uses Home Assistant Ingress for the app UI; the worker HTTP port is not exposed to the LAN.
 - Inspects dashboards in a real browser at desktop and mobile sizes, with screenshots and check results in the conversation.
 - Fetches fresh entity states, checks saved dashboard configuration, and reads Core logs to help verify changes and diagnose problems.
-- Keeps a local copy of the official Home Assistant documentation, refreshed in the background, so Codex can look things up without a web search.
+- Keeps a local copy of the official Home Assistant documentation, refreshed after each Home Assistant update, so Codex can look things up without a web search.
 
 ## Dashboard browser verification
 

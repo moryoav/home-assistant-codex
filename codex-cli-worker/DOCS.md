@@ -59,22 +59,30 @@ downloaded. The copy has about 3,600 files and uses about 25 MB in
 
 When the copy is downloaded:
 
-- **At startup**, in the background, if there is no copy yet or it is more than
-  a day old. Startup does not wait for it.
-- **When a task starts** and the copy is more than a day old, again in the
-  background. That task keeps the copy it started with; the next task uses the
-  new one. An idle app makes no documentation requests.
-- **After a failed download**, the worker keeps the existing copy and waits at
-  least an hour before trying again.
+- **When the app first starts**, in the background. Startup does not wait for it.
+- **After a Home Assistant update.** Every five minutes, and when the app
+  starts, the worker compares the version of Home Assistant Core with the one
+  the copy was downloaded under. It reads that version from a file in the
+  configuration folder, so the check makes no network request. When the version
+  has changed, it downloads a new copy in the background.
+- **After a failed download**, the worker keeps the existing copy and tries
+  again an hour later.
 
-Until the first download finishes, tasks use web search as before. The
-documentation follows the latest Home Assistant release, so it can describe
-features that an older installation does not have yet.
+The copy is not refreshed on a schedule. While Home Assistant stays on the same
+version, the worker keeps the copy it has and makes no documentation requests.
+A new copy is put to use when the next message starts, never while a task is
+reading the old one. Until the first download finishes, tasks use web search as
+before.
+
+Each download brings the documentation of the latest Home Assistant release. If
+you update to a version that is not the latest, the documentation can describe
+features your installation does not have yet.
 
 **Local Home Assistant documentation** (`local_docs`) in the app's
 **Configuration** tab is on by default. Turn it off to stop the downloads and
 have Codex use web search only. The authenticated `/health` response reports the
-copy under `local_docs`: `enabled`, `available`, `commit`, `fetched_at`, and the
+copy under `local_docs`: `enabled`, `available`, `commit`, `fetched_at`,
+`ha_version` (the Home Assistant version the copy was downloaded under), and the
 last download `error`.
 
 The download is an anonymous Git request to GitHub. It sends no Home Assistant

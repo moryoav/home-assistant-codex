@@ -3,9 +3,9 @@
 ## 0.1.70
 
 - **Codex searches a local copy of the Home Assistant documentation.** The worker keeps a copy of the official documentation in private app storage, and Codex searches those files directly instead of searching the web for documentation. Local lookups are faster, and web search stays available for custom integrations, custom cards, and anything the documentation does not cover.
-- The copy is downloaded from GitHub in the background when the app starts, and refreshed when a task starts and the copy is more than a day old. Tasks and startup never wait for a download, and a failed download keeps the existing copy.
+- The copy is downloaded from GitHub in the background when the app first starts, and again after each Home Assistant update. Nothing is downloaded while Home Assistant stays on the same version. Tasks and startup never wait for a download, and a failed download keeps the existing copy.
 - **New option: Local Home Assistant documentation** (`local_docs`), on by default. Turn it off to stop the downloads; Codex then uses web search as before. The copy uses about 25 MB and is left out of app backups. See [how it works](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#local-home-assistant-documentation).
-- `GET /health` reports the copy under `local_docs`: whether it is enabled and available, its commit and download time, and the last download error.
+- `GET /health` reports the copy under `local_docs`: whether it is enabled and available, its commit and download time, the Home Assistant version it was downloaded under, and the last download error.
 
 Update the **Codex CLI Worker** app to **0.1.70** for the local documentation. The **Codex** integration is also released as **0.1.70** so that both carry the same version; its code is unchanged.
 

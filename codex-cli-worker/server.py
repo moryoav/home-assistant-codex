@@ -83,7 +83,9 @@ HA_DOCS_FOLDERS = (
     "source/more-info",
     "source/voice_control",
 )
-HA_DOCS_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
+# Home Assistant Core writes its version here when it starts on a new one.
+HA_VERSION_FILE = CONFIG_ROOT / ".HA_VERSION"
+HA_DOCS_VERSION_CHECK_SECONDS = 5 * 60
 HA_DOCS_RETRY_INTERVAL_SECONDS = 60 * 60
 HA_DOCS_GIT_TIMEOUT_SECONDS = 300
 HA_DOCS_GIT_STALL_SECONDS = 60
@@ -3070,8 +3072,18 @@ def _ha_docs_git(*args: str) -> str:
     return proc.stdout.strip()
 
 
+def installed_ha_version() -> str:
+    """Return the Home Assistant Core version recorded in the configuration folder, or an empty string."""
+    try:
+        return HA_VERSION_FILE.read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return ""
+
+
 def download_ha_docs(target: Path) -> dict[str, Any]:
     """Fetch the documentation text folders into target, without Git metadata."""
+    # Read first, so that an update of Home Assistant during the download is noticed afterwards.
+    ha_version = installed_ha_version()
     shutil.rmtree(target, ignore_errors=True)
     # A blobless clone without a checkout transfers only the files selected below.
     # Symbolic links are written as plain files so the copy cannot point outside itself.
@@ -3093,6 +3105,7 @@ def download_ha_docs(target: Path) -> dict[str, Any]:
         "branch": HA_DOCS_BRANCH,
         "commit": commit,
         "fetched_at": utc_now(),
+        "ha_version": ha_version,
         "license": "CC BY-NC-SA 4.0",
     }
     atomic_json_write(target / HA_DOCS_INFO_FILE, info)
@@ -3100,18 +3113,16 @@ def download_ha_docs(target: Path) -> dict[str, Any]:
 
 
 def ha_docs_refresh_due() -> bool:
-    """Return whether the newest copy is missing or a day old, unless a download failed recently."""
+    """Return whether there is no copy or Home Assistant was updated since the newest one, unless a download failed recently."""
     failed = float(ha_docs_state.get("_failed_monotonic") or 0.0)
     if failed and (time.monotonic() - failed) < HA_DOCS_RETRY_INTERVAL_SECONDS:
         return False
     info = ha_docs_info(ha_docs_sibling("staged")) or ha_docs_info(HA_DOCS_ROOT)
     if info is None:
         return True
-    try:
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(info["fetched_at"])).total_seconds()
-    except (TypeError, ValueError):
-        return True
-    return not 0 <= age < HA_DOCS_REFRESH_INTERVAL_SECONDS
+    # A copy is kept until Home Assistant changes version. Without a readable version there is nothing to compare.
+    version = installed_ha_version()
+    return bool(version) and version != info.get("ha_version")
 
 
 def _refresh_ha_docs_worker() -> None:
@@ -3165,15 +3176,30 @@ def activate_ha_docs() -> None:
 
 
 def prepare_ha_docs() -> None:
-    """Use the newest finished download and refresh it in the background when due."""
-    # Outside the app container there is no private storage to download into.
-    if not ha_docs_enabled() or not HA_DOCS_ROOT.parent.is_dir():
+    """Before Codex starts, switch to a finished download if one is waiting. Nothing is downloaded here."""
+    if not ha_docs_enabled():
         return
     try:
         activate_ha_docs()
     except OSError as exc:
         print(f"Could not switch to the downloaded Home Assistant documentation: {exc}", flush=True)
-    threading.Thread(target=_refresh_ha_docs_worker, daemon=True).start()
+
+
+def refresh_ha_docs() -> None:
+    """Download the documentation when there is no copy or Home Assistant was updated."""
+    # Outside the app container there is no private storage to download into.
+    if ha_docs_enabled() and HA_DOCS_ROOT.parent.is_dir():
+        _refresh_ha_docs_worker()
+
+
+def ha_docs_refresh_loop() -> None:
+    """Check when the worker starts whether a new copy is needed, and keep checking while it runs."""
+    while True:
+        try:
+            refresh_ha_docs()
+        except Exception as exc:
+            print(f"Home Assistant documentation check failed: {redact(str(exc))}", flush=True)
+        time.sleep(HA_DOCS_VERSION_CHECK_SECONDS)
 
 
 def ha_docs_status() -> dict[str, Any]:
@@ -3186,6 +3212,7 @@ def ha_docs_status() -> dict[str, Any]:
         "available": bool(info),
         "commit": str(info.get("commit") or ""),
         "fetched_at": str(info.get("fetched_at") or ""),
+        "ha_version": str(info.get("ha_version") or ""),
         "error": error,
     }
 
@@ -5050,6 +5077,7 @@ def main() -> None:
     for leftover in ("download", "old"):
         shutil.rmtree(ha_docs_sibling(leftover), ignore_errors=True)
     prepare_ha_docs()
+    threading.Thread(target=ha_docs_refresh_loop, daemon=True).start()
     auto_start_login_if_needed()
     threading.Thread(target=stdin_reader, daemon=True).start()
     # Messages that were waiting when the worker stopped carry on in order.

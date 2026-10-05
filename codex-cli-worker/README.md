@@ -14,7 +14,7 @@ For setup, security notes, and action examples, see the [repository README](http
 
 ## Local Home Assistant documentation
 
-The app keeps a local copy of the official Home Assistant documentation, refreshed in the background, so Codex can look things up without a web search. Web search stays available for custom integrations and cards. See [local documentation](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#local-home-assistant-documentation).
+The app keeps a local copy of the official Home Assistant documentation, refreshed after each Home Assistant update, so Codex can look things up without a web search. Web search stays available for custom integrations and cards. See [local documentation](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#local-home-assistant-documentation).
 
 ## Conversations
 

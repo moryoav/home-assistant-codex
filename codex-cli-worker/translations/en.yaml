@@ -43,7 +43,7 @@ configuration:
     description: Memory budget for dashboard screenshots, from 512 to 8192 MiB. Default is 1536 MiB (1.5 GiB). Increase it for larger dashboards if your system has enough free memory for Home Assistant and other apps. This sets a limit for browser captures; it does not reserve RAM or limit the whole app.
   local_docs:
     name: Local Home Assistant documentation
-    description: Download the official Home Assistant documentation from GitHub into private app storage, about 25 MB, so Codex can search it directly instead of searching the web for documentation. The copy is fetched in the background when the app starts and refreshed when a task starts and the copy is more than a day old. Turn this off to stop the downloads; Codex then uses web search as before.
+    description: Download the official Home Assistant documentation from GitHub into private app storage, about 25 MB, so Codex can search it directly instead of searching the web for documentation. The copy is fetched in the background when the app first starts and again after each Home Assistant update. Turn this off to stop the downloads; Codex then uses web search as before.
   HA_TOKEN:
     name: HA_TOKEN
     description: Optional Home Assistant token exposed to Codex subprocesses as the HA_TOKEN environment variable, together with HA_URL, the address above. Codex can then call Home Assistant's API with the rights of the token's user, for example to reload automations or restart Home Assistant.

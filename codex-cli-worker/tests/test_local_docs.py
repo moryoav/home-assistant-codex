@@ -25,21 +25,28 @@ server = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(server)
 
 
+INSTALLED = "2026.10.1"
+EARLIER = "2026.9.4"
+
+
 def hours_ago(hours: float) -> str:
     """Return a download time the given number of hours before now."""
     return (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(microsecond=0).isoformat()
 
 
 class LocalDocsTestCase(unittest.TestCase):
-    """Shared setup: documentation folders in a temp directory and options the tests can change."""
+    """Shared setup: documentation folders, the Home Assistant version file, and options the tests can change."""
 
     def setUp(self) -> None:
-        """Isolate the documentation storage and options in a temp directory."""
+        """Isolate the documentation storage, the version file, and the options in a temp directory."""
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.data = Path(self.stack.enter_context(tempfile.TemporaryDirectory())) / "data"
         self.data.mkdir()
         self.options = {"local_docs": True}
+        self.version_file = self.data.parent / ".HA_VERSION"
+        self.version_file.write_text(INSTALLED, encoding="utf-8")
+        self.stack.enter_context(patch.object(server, "HA_VERSION_FILE", self.version_file))
         self.stack.enter_context(patch.object(server, "HA_DOCS_ROOT", self.data / "ha-docs"))
         self.stack.enter_context(patch.object(server, "read_options", side_effect=lambda: dict(self.options)))
         self.stack.enter_context(
@@ -50,15 +57,27 @@ class LocalDocsTestCase(unittest.TestCase):
         self.staged = server.ha_docs_sibling("staged")
         self.download = server.ha_docs_sibling("download")
 
-    def write_copy(self, root: Path, *, fetched_at: str | None = None, commit: str = "a" * 40) -> None:
-        """Write one integration page, and the download record when a time is given."""
+    def write_copy(
+        self,
+        root: Path,
+        *,
+        fetched_at: str | None = None,
+        commit: str = "a" * 40,
+        ha_version: str | None = INSTALLED,
+    ) -> None:
+        """Write one integration page, and the download record when a time is given.
+
+        The record names the Home Assistant version the copy was downloaded
+        under, unless ha_version is None.
+        """
         page = root / "source" / "_integrations" / "light.markdown"
         page.parent.mkdir(parents=True)
         page.write_text(f"Light documentation from {commit}\n", encoding="utf-8")
         if fetched_at is not None:
-            (root / server.HA_DOCS_INFO_FILE).write_text(
-                json.dumps({"commit": commit, "fetched_at": fetched_at}), encoding="utf-8"
-            )
+            record = {"commit": commit, "fetched_at": fetched_at}
+            if ha_version is not None:
+                record["ha_version"] = ha_version
+            (root / server.HA_DOCS_INFO_FILE).write_text(json.dumps(record), encoding="utf-8")
 
     def page(self, root: Path) -> str:
         """Return the integration page of a copy."""
@@ -68,8 +87,11 @@ class LocalDocsTestCase(unittest.TestCase):
 class DownloadTests(LocalDocsTestCase):
     """The Git commands of a download and the environment they run in."""
 
-    def fake_git(self, *, pages: bool = True):
-        """Return recorded calls and a stand-in for Git that creates the files a clone would."""
+    def fake_git(self, *, pages: bool = True, during_clone=None):
+        """Return recorded calls and a stand-in for Git that creates the files a clone would.
+
+        during_clone, when given, is called while the clone runs.
+        """
         calls: list[tuple[str, ...]] = []
 
         def run(*args: str) -> str:
@@ -77,6 +99,8 @@ class DownloadTests(LocalDocsTestCase):
             calls.append(args)
             if args[0] == "clone":
                 (Path(args[-1]) / ".git").mkdir(parents=True)
+                if during_clone is not None:
+                    during_clone()
             elif "checkout" in args and pages:
                 self.write_copy(Path(args[1]))
             elif "rev-parse" in args:
@@ -103,7 +127,25 @@ class DownloadTests(LocalDocsTestCase):
         self.assertEqual(checkout[2:], ("checkout", "--quiet", "current"))
         self.assertFalse((self.download / ".git").exists())
         self.assertEqual(info["commit"], "b" * 40)
+        self.assertEqual(info["ha_version"], INSTALLED)
         self.assertEqual(server.ha_docs_info(self.download), info)
+
+    def test_download_records_the_version_home_assistant_had_when_it_started(self) -> None:
+        """An update of Home Assistant during a download leaves the copy due for another one."""
+        _, run = self.fake_git(during_clone=lambda: self.version_file.write_text("2026.11.0", encoding="utf-8"))
+        with patch.object(server, "_ha_docs_git", side_effect=run):
+            info = server.download_ha_docs(self.active)
+
+        self.assertEqual(info["ha_version"], INSTALLED)
+        self.assertTrue(server.ha_docs_refresh_due())
+
+    def test_installed_version_is_read_from_the_configuration_folder(self) -> None:
+        """The version is the content of the version file without surrounding whitespace, or empty without the file."""
+        self.version_file.write_text("2026.10.2\n", encoding="utf-8")
+        self.assertEqual(server.installed_ha_version(), "2026.10.2")
+
+        self.version_file.unlink()
+        self.assertEqual(server.installed_ha_version(), "")
 
     def test_download_replaces_an_interrupted_attempt(self) -> None:
         """Files left by an earlier attempt do not end up in the new download."""
@@ -218,35 +260,52 @@ class RealGitDownloadTests(LocalDocsTestCase):
 class RefreshTests(LocalDocsTestCase):
     """When a new copy is downloaded, and what a finished or failed download leaves behind."""
 
-    def test_refresh_is_due_without_a_copy_and_after_a_day(self) -> None:
-        """A missing copy and a copy older than a day are due; a recent one is not."""
+    def test_refresh_is_due_without_a_copy_and_after_a_home_assistant_update(self) -> None:
+        """A missing copy is due; an existing one is due only once Home Assistant has another version."""
         self.assertTrue(server.ha_docs_refresh_due())
 
         self.write_copy(self.active, fetched_at=hours_ago(2))
         self.assertFalse(server.ha_docs_refresh_due())
 
-        shutil.rmtree(self.active)
-        self.write_copy(self.active, fetched_at=hours_ago(25))
+        self.version_file.write_text("2026.10.2", encoding="utf-8")
         self.assertTrue(server.ha_docs_refresh_due())
 
+    def test_an_old_copy_stays_while_home_assistant_is_not_updated(self) -> None:
+        """The age of a copy never makes it due."""
+        self.write_copy(self.active, fetched_at=hours_ago(24 * 90))
+
+        self.assertFalse(server.ha_docs_refresh_due())
+
     def test_a_waiting_download_counts_as_the_newest_copy(self) -> None:
-        """A recent download that is not in use yet prevents another download."""
-        self.write_copy(self.active, fetched_at=hours_ago(25))
+        """A download for the installed version that is not in use yet prevents another download."""
+        self.write_copy(self.active, fetched_at=hours_ago(25), ha_version=EARLIER)
         self.write_copy(self.staged, fetched_at=hours_ago(1))
 
         self.assertFalse(server.ha_docs_refresh_due())
 
-    def test_unreadable_or_future_download_time_is_refreshed(self) -> None:
-        """A download time that cannot be compared with now counts as due."""
-        for fetched_at in ("not a time", "2026-10-01T10:00:00", hours_ago(-48)):
-            with self.subTest(fetched_at=fetched_at):
-                shutil.rmtree(self.active, ignore_errors=True)
-                self.write_copy(self.active, fetched_at=fetched_at)
-                self.assertTrue(server.ha_docs_refresh_due())
+    def test_copy_stays_when_the_installed_version_cannot_be_read(self) -> None:
+        """Without a readable version file a copy is kept, and a missing copy is still downloaded."""
+        self.write_copy(self.active, fetched_at=hours_ago(2), ha_version=EARLIER)
+        for content in ("", "  \n", None):
+            with self.subTest(content=content):
+                if content is None:
+                    self.version_file.unlink()
+                else:
+                    self.version_file.write_text(content, encoding="utf-8")
+                self.assertFalse(server.ha_docs_refresh_due())
+
+        shutil.rmtree(self.active)
+        self.assertTrue(server.ha_docs_refresh_due())
+
+    def test_a_copy_without_a_recorded_version_is_refreshed(self) -> None:
+        """A download record that names no Home Assistant version counts as made under another one."""
+        self.write_copy(self.active, fetched_at=hours_ago(2), ha_version=None)
+
+        self.assertTrue(server.ha_docs_refresh_due())
 
     def test_refresh_stages_the_download_and_leaves_the_current_copy(self) -> None:
         """A new download waits next to the copy in use instead of replacing it."""
-        self.write_copy(self.active, fetched_at=hours_ago(30), commit="1" * 40)
+        self.write_copy(self.active, fetched_at=hours_ago(30), commit="1" * 40, ha_version=EARLIER)
 
         def download(target: Path) -> dict[str, str]:
             """Stand in for a successful download of a newer commit."""
@@ -278,7 +337,7 @@ class RefreshTests(LocalDocsTestCase):
 
     def test_failed_refresh_keeps_the_copy_and_waits_before_retrying(self) -> None:
         """A failed download changes nothing, records the error, and is retried after an hour."""
-        self.write_copy(self.active, fetched_at=hours_ago(30))
+        self.write_copy(self.active, fetched_at=hours_ago(30), ha_version=EARLIER)
 
         def download(target: Path) -> dict[str, str]:
             """Stand in for a download that fails after creating its folder."""
@@ -300,8 +359,8 @@ class RefreshTests(LocalDocsTestCase):
         with patch.object(server.time, "monotonic", return_value=retry_at):
             self.assertTrue(server.ha_docs_refresh_due())
 
-    def test_refresh_does_not_run_while_fresh_or_already_running(self) -> None:
-        """Nothing is downloaded for a recent copy or while another download runs."""
+    def test_refresh_does_not_run_for_the_installed_version_or_while_already_running(self) -> None:
+        """Nothing is downloaded for a copy made under the installed version or while another download runs."""
         self.write_copy(self.active, fetched_at=hours_ago(1))
         with patch.object(server, "download_ha_docs") as download:
             server._refresh_ha_docs_worker()
@@ -373,39 +432,104 @@ class ActivationTests(LocalDocsTestCase):
         thread = self.stack.enter_context(patch.object(server.threading, "Thread"))
         return thread.call_args_list
 
-    def test_prepare_activates_and_starts_a_background_refresh(self) -> None:
-        """Preparing for a task switches to the waiting download and starts one refresh thread."""
-        self.write_copy(self.staged, fetched_at=hours_ago(1))
+    def test_prepare_switches_to_the_waiting_download_and_downloads_nothing(self) -> None:
+        """A task start only switches copies, even when Home Assistant was updated a moment ago."""
+        self.write_copy(self.active, fetched_at=hours_ago(30), commit="1" * 40, ha_version=EARLIER)
+        self.write_copy(self.staged, fetched_at=hours_ago(1), commit="2" * 40)
+        self.version_file.write_text("2026.11.0", encoding="utf-8")
         threads = self.started_threads()
 
-        server.prepare_ha_docs()
-
-        self.assertIsNotNone(server.ha_docs_info(self.active))
-        self.assertEqual(len(threads), 1)
-        self.assertIs(threads[0].kwargs["target"], server._refresh_ha_docs_worker)
-        self.assertTrue(threads[0].kwargs["daemon"])
-
-    def test_prepare_does_nothing_when_disabled_or_without_app_storage(self) -> None:
-        """With the option off or no storage folder, nothing is switched or downloaded."""
-        self.write_copy(self.staged, fetched_at=hours_ago(1))
-        threads = self.started_threads()
-
-        self.options["local_docs"] = False
-        server.prepare_ha_docs()
-        self.options["local_docs"] = True
-        with patch.object(server, "HA_DOCS_ROOT", self.data / "missing" / "ha-docs"):
+        with patch.object(server, "download_ha_docs") as download:
             server.prepare_ha_docs()
 
-        self.assertFalse(self.active.exists())
+        self.assertIn("2" * 40, self.page(self.active))
         self.assertEqual(threads, [])
+        download.assert_not_called()
+
+    def test_prepare_does_nothing_when_disabled(self) -> None:
+        """With the option off, a waiting download is not switched to."""
+        self.write_copy(self.staged, fetched_at=hours_ago(1))
+        self.options["local_docs"] = False
+
+        server.prepare_ha_docs()
+
+        self.assertFalse(self.active.exists())
+        self.assertTrue(self.staged.exists())
 
     def test_a_failed_switch_still_starts_the_task(self) -> None:
         """A filesystem error while switching copies does not stop task preparation."""
-        threads = self.started_threads()
-        with patch.object(server, "activate_ha_docs", side_effect=OSError("read-only file system")):
+        with patch.object(server, "activate_ha_docs", side_effect=OSError("read-only file system")) as switch:
             server.prepare_ha_docs()
 
-        self.assertEqual(len(threads), 1)
+        switch.assert_called_once()
+
+
+class StopLoop(Exception):
+    """Ends the background loop in a test."""
+
+
+class BackgroundCheckTests(LocalDocsTestCase):
+    """The check that runs when the worker starts and every few minutes after that."""
+
+    def fake_download(self, target: Path) -> dict[str, str]:
+        """Stand in for a download: write a copy that records the installed version, as the real one does."""
+        version = server.installed_ha_version()
+        self.write_copy(target, fetched_at=hours_ago(0), commit=version, ha_version=version)
+        return {"commit": "c" * 40}
+
+    def test_check_downloads_once_per_home_assistant_version(self) -> None:
+        """The first check downloads, later ones do nothing until Home Assistant is updated, and a task start switches."""
+        with patch.object(server, "download_ha_docs", side_effect=self.fake_download) as download:
+            server.refresh_ha_docs()
+            self.assertIn(INSTALLED, self.page(self.active))
+
+            server.refresh_ha_docs()
+            server.refresh_ha_docs()
+            self.assertEqual(download.call_count, 1)
+
+            self.version_file.write_text("2026.11.0", encoding="utf-8")
+            server.refresh_ha_docs()
+            server.refresh_ha_docs()
+            self.assertEqual(download.call_count, 2)
+
+        self.assertIn(INSTALLED, self.page(self.active))
+        self.assertIn("2026.11.0", self.page(self.staged))
+
+        server.prepare_ha_docs()
+
+        self.assertIn("2026.11.0", self.page(self.active))
+        self.assertEqual(server.ha_docs_status()["ha_version"], "2026.11.0")
+
+    def test_check_does_nothing_when_disabled_or_without_app_storage(self) -> None:
+        """With the option off or no storage folder, nothing is downloaded."""
+        with patch.object(server, "download_ha_docs") as download:
+            self.options["local_docs"] = False
+            server.refresh_ha_docs()
+            self.options["local_docs"] = True
+            with patch.object(server, "HA_DOCS_ROOT", self.data / "missing" / "ha-docs"):
+                server.refresh_ha_docs()
+
+        download.assert_not_called()
+
+    def test_loop_checks_at_once_then_every_few_minutes_and_survives_an_error(self) -> None:
+        """The loop checks before its first wait, waits the set time between checks, and goes on after a failed check."""
+        checks_before_each_wait: list[int] = []
+
+        def wait(seconds: float) -> None:
+            """Record how many checks ran before this wait, and end the loop at the second one."""
+            self.assertEqual(seconds, server.HA_DOCS_VERSION_CHECK_SECONDS)
+            checks_before_each_wait.append(check.call_count)
+            if len(checks_before_each_wait) == 2:
+                raise StopLoop
+
+        with (
+            patch.object(server, "refresh_ha_docs", side_effect=[RuntimeError("disk error"), None]) as check,
+            patch.object(server.time, "sleep", side_effect=wait),
+        ):
+            with self.assertRaises(StopLoop):
+                server.ha_docs_refresh_loop()
+
+        self.assertEqual(checks_before_each_wait, [1, 2])
 
 
 class PromptTests(LocalDocsTestCase):
@@ -436,10 +560,10 @@ class PromptTests(LocalDocsTestCase):
         self.assertNotIn("stored locally", server.build_prompt("x", "task"))
 
     def test_status_reports_the_copy_and_the_last_error(self) -> None:
-        """The health entry is empty without a copy and then carries its commit, time, and error."""
+        """The health entry is empty without a copy and then carries its commit, time, Home Assistant version, and error."""
         self.assertEqual(
             server.ha_docs_status(),
-            {"enabled": True, "available": False, "commit": "", "fetched_at": "", "error": ""},
+            {"enabled": True, "available": False, "commit": "", "fetched_at": "", "ha_version": "", "error": ""},
         )
 
         self.write_copy(self.active, fetched_at="2026-10-01T08:30:00+00:00", commit="c" * 40)
@@ -452,6 +576,7 @@ class PromptTests(LocalDocsTestCase):
                 "available": True,
                 "commit": "c" * 40,
                 "fetched_at": "2026-10-01T08:30:00+00:00",
+                "ha_version": INSTALLED,
                 "error": "fatal: could not resolve host",
             },
         )

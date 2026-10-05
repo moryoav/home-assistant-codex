@@ -237,6 +237,8 @@ In Home Assistant:
 
 The integration auto-detects the installed worker app and provisions its internal worker API token. There is no worker URL or API token to enter.
 
+Until the integration is installed and added, the app's web UI shows a line at the top of the chat that says so. It also says when the integration is older than the app needs.
+
 ## Actions
 
 The integration exposes these Home Assistant actions:

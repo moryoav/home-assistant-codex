@@ -355,10 +355,53 @@ function renderUsage(usage) {
         : "Quota is currently unavailable.";
   $("usage-note").hidden = !$("usage-note").textContent;
 }
+// Where the line at the top of the chat sends someone to install the integration.
+const INTEGRATION_INSTALL_URL =
+  "https://github.com/moryoav/home-assistant-codex#installation";
 /**
- * Fetch the worker status, show its quota, and reload the chat options, then
- * schedule the next check in a minute. Nothing is fetched while the page is
- * hidden, and a failed check shows the quota as unavailable.
+ * Show a line at the top of the chat while the Codex integration is not
+ * installed, is older than the worker needs, or is not in touch with the
+ * worker. Any other state hides the line.
+ */
+function renderIntegration(integration) {
+  const notice = $("integration-notice");
+  const state = integration?.state;
+  const minimum = integration?.minimum_version;
+  let reason = "";
+  if (state === "not_installed") reason = "is not installed.";
+  else if (state === "outdated")
+    reason = `is out of date. Update it${
+      minimum ? ` to ${minimum} or newer` : ""
+    }, then restart Home Assistant.`;
+  else if (state === "not_connected")
+    reason =
+      "is installed but not connected. Restart Home Assistant, then add Codex under Settings > Devices & services.";
+  // The status is read every minute. An unchanged line is left alone, so that
+  // a screen reader does not announce it again.
+  const signature = reason ? `${state} ${minimum || ""}` : "";
+  if (notice.dataset.shown !== signature) {
+    notice.dataset.shown = signature;
+    notice.replaceChildren();
+    if (reason) {
+      notice.append(
+        `Some features are not available because the Codex integration ${reason}`,
+      );
+      if (state === "not_installed") {
+        const link = textNode("a", "How to install it");
+        link.href = INTEGRATION_INSTALL_URL;
+        link.target = "_blank";
+        link.rel = "noreferrer noopener";
+        notice.append(" ", link);
+      }
+    }
+  }
+  notice.hidden = !reason;
+}
+/**
+ * Fetch the worker status, show its quota and the state of the Codex
+ * integration, and reload the chat options, then schedule the next check in a
+ * minute. Nothing is fetched while the page is hidden, and a failed check
+ * shows the quota as unavailable and leaves the integration line as it is.
  */
 async function loadUsage() {
   if (usageLoading) return;
@@ -368,6 +411,7 @@ async function loadUsage() {
     if (!document.hidden) {
       const data = await api("status");
       renderUsage(data.codex_usage);
+      renderIntegration(data.integration);
       // The quota check also tells the worker which model Codex picks when the add-on names none.
       // Not awaited: the quota shown must not depend on it.
       if (state.catalog) loadChatOptions(true);

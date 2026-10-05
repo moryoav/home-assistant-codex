@@ -144,6 +144,14 @@ LOG_TAIL_BYTES = 300_000
 AUTH_NOTIFY_ID = "codex_cli_login"
 AUTH_QR_DIR = CONFIG_ROOT / "www" / "codex_cli_auth"
 INGRESS_PROXY_IP = "172.30.32.2"
+# Where Home Assistant keeps the Codex integration once it is installed.
+INTEGRATION_MANIFEST_PATH = CONFIG_ROOT / "custom_components" / "codex_cli" / "manifest.json"
+# The oldest Codex integration that every feature of this worker works with. Raise it
+# only when the worker starts to rely on something a newer integration added.
+MIN_INTEGRATION_VERSION = "0.1.69"
+# The integration asks for /status every 30 seconds. It counts as connected for this
+# long after a call, and a worker that has just started gives it this long to call.
+INTEGRATION_CONTACT_SECONDS = 120
 USAGE_REFRESH_INTERVAL_SECONDS = 300
 USAGE_READY_TIMEOUT_SECONDS = 8
 USAGE_STATUS_TIMEOUT_SECONDS = 25
@@ -311,6 +319,9 @@ usage_state: dict[str, Any] = {
 }
 ha_docs_lock = threading.RLock()
 ha_docs_state: dict[str, Any] = {"error": "", "_failed_monotonic": 0.0, "_refreshing": False}
+# When the worker started, and when the Codex integration last called it with the API
+# token (None until it has), both on the monotonic clock.
+integration_state: dict[str, float | None] = {"started": time.monotonic(), "seen": None}
 
 
 @app.before_request
@@ -1956,6 +1967,56 @@ def task_cancellation_requested(task_id: str) -> bool:
         return bool(task.get("cancellation_requested"))
 
 
+def version_tuple(value: Any) -> tuple[int, ...] | None:
+    """Return a dotted version such as 0.1.69 as a tuple of numbers, or None for anything else."""
+    text = value.strip() if isinstance(value, str) else ""
+    if not re.fullmatch(r"\d+(?:\.\d+)*", text, re.ASCII):
+        return None
+    return tuple(int(part) for part in text.split("."))
+
+
+def installed_integration_version() -> str | None:
+    """Return the version in the Codex integration's manifest under /config, or None when it is not installed.
+
+    A manifest that cannot be read, or that names no version, gives an empty string.
+    """
+    try:
+        manifest = json.loads(INTEGRATION_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except (OSError, ValueError):
+        return ""
+    version = manifest.get("version") if isinstance(manifest, dict) else None
+    return version if isinstance(version, str) else ""
+
+
+def integration_status() -> dict[str, str]:
+    """Report whether the Codex integration is installed, recent enough, and in touch with this worker.
+
+    The state is "not_installed" without the integration's files in /config, "outdated" when their
+    version is below MIN_INTEGRATION_VERSION, "not_connected" when the integration has not called
+    within INTEGRATION_CONTACT_SECONDS, and "ok" otherwise. A worker that has only just started
+    reports "starting" in place of "not_connected", because the integration may still be finding it.
+    A version that cannot be read is not counted as outdated.
+    """
+    version = installed_integration_version()
+    if version is None:
+        state = "not_installed"
+    else:
+        installed = version_tuple(version)
+        now = time.monotonic()
+        seen = integration_state["seen"]
+        if installed is not None and installed < version_tuple(MIN_INTEGRATION_VERSION):
+            state = "outdated"
+        elif seen is not None and now - seen < INTEGRATION_CONTACT_SECONDS:
+            state = "ok"
+        elif now - integration_state["started"] < INTEGRATION_CONTACT_SECONDS:
+            state = "starting"
+        else:
+            state = "not_connected"
+    return {"state": state, "version": version or "", "minimum_version": MIN_INTEGRATION_VERSION}
+
+
 def require_auth(func):
     """Make a route require the worker API token, except for requests that come through Home Assistant Ingress."""
     @wraps(func)
@@ -1972,6 +2033,8 @@ def require_auth(func):
             supplied = auth[7:].strip()
         if not hmac.compare_digest(supplied, expected):
             return jsonify({"ok": False, "error": "unauthorized"}), 401
+        # Only the Codex integration holds the token; the web UI comes through Ingress.
+        integration_state["seen"] = time.monotonic()
         return func(*args, **kwargs)
 
     return wrapper
@@ -4496,7 +4559,10 @@ def health() -> Response:
 @app.get("/status")
 @require_auth
 def status() -> Response:
-    """Return the active and latest task, the login state, and the Codex usage; also starts a usage refresh if due."""
+    """Return the active and latest task, the login state, the Codex usage, and the state of the Codex integration.
+
+    Also starts a usage refresh if one is due.
+    """
     refresh_usage_status_async(force=False)
     with lock:
         task_values = sorted(tasks.values(), key=lambda task: task.get("updated_at") or task.get("created_at", ""))
@@ -4514,6 +4580,7 @@ def status() -> Response:
             "codex_login": codex_login_status(),
             "auth_flow": auth_status_payload(),
             "codex_usage": usage_status_payload(),
+            "integration": integration_status(),
         }
     )
 

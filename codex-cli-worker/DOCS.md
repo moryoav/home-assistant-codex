@@ -120,6 +120,20 @@ The API token protects the worker HTTP API. The app stores it in private app sto
 
 The token is not your OpenAI or ChatGPT credential. Codex authentication is still handled separately with `codex login`.
 
+## Integration check
+
+The app's web UI works without the **Codex** integration, but some features need it. From **0.1.71**, the web UI shows a line at the top of the chat, above the messages, in three cases:
+
+- **Not installed:** there is no `/config/custom_components/codex_cli/manifest.json`. See [Installation](https://github.com/moryoav/home-assistant-codex#installation).
+- **Out of date:** the version in that file is lower than the oldest version this app fully works with. The line names the version to update to. Restart Home Assistant after updating.
+- **Installed but not connected:** the files are there, but the integration has not called the app for two minutes. It normally calls every 30 seconds. Restart Home Assistant if you have not done so since installing the integration, then add **Codex** under **Settings** > **Devices & services**.
+
+The line cannot be dismissed. It goes away by itself, within a minute, once the integration is installed, up to date, and connected. During the first two minutes after the app starts, a missing call is not reported, because the integration may still be reconnecting.
+
+The version is read from the installed files. After an update of the integration, Home Assistant keeps running the previous version until it restarts, and the app cannot see that.
+
+API: `GET /status` has `integration` with `state` (`ok`, `starting`, `not_installed`, `outdated`, or `not_connected`), `version` (the installed version, empty when the integration is not installed or its version cannot be read), and `minimum_version`.
+
 ## Model
 
 `codex_model` is a fixed selection to avoid typo-prone free text. The default value, `default`, lets the installed Codex CLI choose its recommended model. Explicit choices are `gpt-6-astra` for the most demanding tasks, `gpt-6.1-sol` as the latest workhorse for coding and everyday work, close to Astra at a lower cost, `gpt-6-sol` as the previous workhorse, `gpt-6-luna` for fast and affordable work on easier tasks, and the older `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Model availability depends on your account. The app bundles Codex CLI 0.160.0, which includes GPT-6.1 Sol support. Older models are no longer offered in the selector. Existing installations with the legacy `gpt-5.3-codex` value remain upgrade-compatible and treat it as `default`. `gpt-5.5` is retired: OpenAI removes it from Codex with ChatGPT sign-in on October 14, 2026. It stays in the list only so that an app with it saved keeps starting, and it runs `gpt-5.6-sol`, the next model up.

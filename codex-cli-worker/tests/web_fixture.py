@@ -51,6 +51,11 @@ def main():
         server.fire_ha_event = lambda *args: (True, "")
         server.notify = lambda *args: None
         server.refresh_usage_status_async = lambda **kwargs: None
+        # Connected unless POST fixture/integration says otherwise, so the line about
+        # the integration stays out of the other checks.
+        integration = {"state": "ok", "version": server.MIN_INTEGRATION_VERSION,
+                       "minimum_version": server.MIN_INTEGRATION_VERSION}
+        server.integration_status = lambda: dict(integration)
         # Plenty left of the 5-hour quota and almost none of the weekly one, so both bar colors show.
         server.usage_state.update(status="ok", five_hour_percent="64", five_hour_reset="19:20",
                                   weekly_percent="3", weekly_reset="12:00 on 8 Oct")
@@ -142,8 +147,14 @@ def main():
             release.set()
             return {"ok": True}
 
+        def set_integration():
+            """Set the state of the Codex integration that the status reports, from the "state" of the JSON body."""
+            integration["state"] = str((server.request.get_json(silent=True) or {}).get("state") or "ok")
+            return {"ok": True}
+
         server.start_background_task = finish
         server.app.add_url_rule("/fixture/release", "fixture_release", release_held, methods=["POST"])
+        server.app.add_url_rule("/fixture/integration", "fixture_integration", set_integration, methods=["POST"])
         examples = [
             ("A quieter evening routine", "Review my evening lighting automation. Suggest improvements before making changes.",
              "Your evening routine looks good. There are two small changes that would make it easier to maintain.",

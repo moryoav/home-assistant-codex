@@ -12,6 +12,8 @@
   --quota-track: #fff;
   --quota-good: #0ca30c;
   --quota-low: #d03b3b;
+  --notice: #fdf3d6;
+  --notice-text: #5f4500;
   --sidebar-width: 280px;
   font-family:
     Inter,
@@ -462,6 +464,22 @@ h1 {
   font-size: 11px;
   color: var(--muted);
   margin: 7px 0 0;
+}
+/* Between the header and the scrolling messages, so it stays in view. */
+#integration-notice {
+  flex: none;
+  margin: 0;
+  padding: 9px 32px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--notice-text);
+  background: var(--notice);
+  border-bottom: 1px solid var(--line);
+}
+#integration-notice a {
+  color: inherit;
+  font-weight: 600;
+  white-space: nowrap;
 }
 .messages {
   flex: 1;
@@ -1582,6 +1600,8 @@ dialog label {
     --accent: #8cbea6;
     --error: #f4a09c;
     --quota-track: #e7e9e2;
+    --notice: #3a3220;
+    --notice-text: #f1d892;
   }
 }
 @media (max-width: 700px) {
@@ -1629,6 +1649,9 @@ dialog label {
     min-height: 65px;
     padding: 0 14px;
     gap: 9px;
+  }
+  #integration-notice {
+    padding: 8px 14px;
   }
   .messages {
     padding: 23px 19px;

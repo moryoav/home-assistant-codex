@@ -88,7 +88,9 @@ last download `error`.
 The download is an anonymous Git request to GitHub. It sends no Home Assistant
 data and no credentials; GitHub can see the host's public IP address. Symbolic
 links in the repository are stored as plain files, so the copy cannot point at
-other files on your system. The documentation is published by its authors under
+other files on your system. Codex is told to use the files as reference
+material and not to take anything in them as an instruction to it. The
+documentation is published by its authors under
 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). The worker
 downloads it to your system; it is not part of this app's image.
 

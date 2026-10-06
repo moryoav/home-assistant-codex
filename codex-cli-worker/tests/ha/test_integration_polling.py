@@ -1,5 +1,8 @@
 """Keep the worker informed while the integration is loaded, even without enabled entities."""
+import importlib.util
+import sys
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -8,7 +11,13 @@ from homeassistant.config_entries import ConfigEntryState, current_entry
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
-from custom_components import codex_cli as integration
+ROOT = Path(__file__).resolve().parents[3] / "custom_components" / "codex_cli"
+spec = importlib.util.spec_from_file_location(
+    "polling_ha_test", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
+)
+integration = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = integration
+spec.loader.exec_module(integration)
 
 
 @pytest.mark.parametrize("disable_polling", [False, True])

@@ -140,6 +140,107 @@ function pngBuffer(width = 8, height = 6) {
     await page.waitForFunction(
       () => document.querySelector("#usage-weekly").textContent === "3% left",
     );
+    // The line about the Codex integration is hidden while the integration is
+    // connected, and says in one sentence what to do in every other state.
+    const notice = page.locator("#integration-notice");
+    assert.equal(await notice.isHidden(), true);
+    const minimum = await page.evaluate(
+      async () => (await api("status")).integration.minimum_version,
+    );
+    assert.match(minimum, /^\d+(\.\d+)+$/);
+    /**
+     * Have the fixture report the given state of the integration, read the
+     * status again, and wait until the line shows the given text. An empty
+     * text waits for the line to be hidden.
+     */
+    const integrationLine = async (target, state, text) => {
+      await target.evaluate(async (value) => {
+        await fetch("fixture/integration", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state: value }),
+        });
+        // A read that is already under way may still carry the previous state.
+        while (usageLoading) await new Promise((done) => setTimeout(done, 20));
+        await loadUsage();
+      }, state);
+      await target.waitForFunction((expected) => {
+        const line = document.getElementById("integration-notice");
+        return expected
+          ? !line.hidden && line.textContent === expected
+          : line.hidden && line.textContent === "";
+      }, text);
+    };
+    const integrationLines = {
+      not_installed:
+        "Some features are not available because the Codex integration is not installed. How to install it",
+      outdated: `Some features are not available because the Codex integration is out of date. Update it to ${minimum} or newer, then restart Home Assistant.`,
+      not_connected:
+        "Some features are not available because the Codex integration is installed but not connected. Restart Home Assistant, then add Codex under Settings > Devices & services.",
+    };
+    for (const [state, text] of Object.entries(integrationLines)) {
+      await integrationLine(page, state, text);
+      // Only a missing integration gets the link to the installation steps.
+      assert.equal(
+        await notice.locator("a").count(),
+        state === "not_installed" ? 1 : 0,
+      );
+    }
+    // A worker that has just started, and a state this page does not know, show nothing.
+    await integrationLine(page, "starting", "");
+    await integrationLine(page, "not_installed", integrationLines.not_installed);
+    await integrationLine(page, "something_new", "");
+    await integrationLine(page, "not_installed", integrationLines.not_installed);
+    assert.deepEqual(
+      await notice
+        .locator("a")
+        .evaluate((link) => [link.href, link.target, link.rel]),
+      [
+        "https://github.com/moryoav/home-assistant-codex#installation",
+        "_blank",
+        "noreferrer noopener",
+      ],
+    );
+    // The same state read again leaves the line, and its link, as they are.
+    assert.equal(
+      await page.evaluate((version) => {
+        const line = document.getElementById("integration-notice");
+        const link = line.querySelector("a");
+        renderIntegration({ state: "not_installed", minimum_version: version });
+        return line.querySelector("a") === link;
+      }, minimum),
+      true,
+    );
+    /**
+     * Scroll the messages to the end and check that the line still fills the
+     * row between the chat header and the messages, without widening the page.
+     */
+    const integrationLineStaysOnTop = (target) =>
+      target.evaluate(() => {
+        const messages = document.getElementById("messages");
+        messages.scrollTop = messages.scrollHeight;
+        const header = document
+          .querySelector(".chat-header")
+          .getBoundingClientRect();
+        const line = document
+          .getElementById("integration-notice")
+          .getBoundingClientRect();
+        const list = messages.getBoundingClientRect();
+        return (
+          Math.abs(line.top - header.bottom) < 1 &&
+          Math.abs(line.bottom - list.top) < 1 &&
+          Math.abs(line.left - header.left) < 1 &&
+          Math.abs(line.width - header.width) < 1 &&
+          line.height > 0 &&
+          document.documentElement.scrollWidth <= innerWidth
+        );
+      });
+    assert.equal(await integrationLineStaysOnTop(page), true);
+    await page.screenshot({
+      path: path.join(output, "integration-notice.png"),
+      animations: "disabled",
+    });
+    await integrationLine(page, "ok", "");
     // The answer to an older chat options request does not replace a newer one.
     assert.equal(
       await page.evaluate(async () => {
@@ -1278,6 +1379,23 @@ function pngBuffer(width = 8, height = 6) {
       fullPage: true,
       animations: "disabled",
     });
+    // On a phone the line wraps, and stays above an open chat that is scrolled.
+    await integrationLine(page, "not_connected", integrationLines.not_connected);
+    assert.equal(await integrationLineStaysOnTop(page), true);
+    await page.screenshot({
+      path: path.join(output, "mobile-integration-notice.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 320, height: 568 });
+    assert.equal(await integrationLineStaysOnTop(page), true);
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.screenshot({
+      path: path.join(output, "mobile-integration-notice-dark.png"),
+      animations: "disabled",
+    });
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await integrationLine(page, "ok", "");
     await page.locator("#effort-button").click();
     await page.screenshot({
       path: path.join(output, "mobile-reasoning.png"),
@@ -1426,7 +1544,7 @@ function pngBuffer(width = 8, height = 6) {
     await webview.close();
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: queued messages (wait behind a working chat, edit, remove, start in order), choices under a question (pick one, draft kept, late answer refused), attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, the model a chat runs on by name, quota bars, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
+      "PASS: queued messages (wait behind a working chat, edit, remove, start in order), choices under a question (pick one, draft kept, late answer refused), attached images (pick, reject, remove, send, render, batch stays with its chat, send waits for decoding), chat actions (pin, rename, delete, long press), generated image attachments, Markdown formatting (sent messages, answers, untrusted text, slow or long text, narrow screens), saved model/reasoning choices, model compatibility, the model a chat runs on by name, quota bars, the line about the Codex integration, keyboard/reset controls, history, pagination, continuation, new chats, drafts, reopening the last chat, safe text, settings, resize, mobile and dark mode. Screenshots: " +
         output,
     );
   } finally {

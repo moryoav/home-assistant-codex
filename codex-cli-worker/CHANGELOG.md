@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.71
+
+- **The chat says when the Codex integration is missing.** The app's web UI works without the **Codex** integration, but some features need it, and it was easy to install the app alone without noticing. The web UI now shows a line at the top of the chat when the integration is not installed, when it is installed but not connected to the app, or when it is older than this app needs. The line stays in view above the messages, on desktop and on a phone, and goes away by itself once the integration is installed, up to date, and connected.
+- The app finds the integration by its files in the configuration folder and reads its version there. It knows the oldest integration version it fully works with, and the line names that version when the installed one is older. An integration counts as connected while it keeps calling the app, as it does every 30 seconds. See [how it works](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#integration-check).
+- `GET /status` reports this under `integration`: the `state` (`ok`, `starting`, `not_installed`, `outdated`, or `not_connected`), the installed `version`, and the `minimum_version`.
+- Keep the integration's status polling active when all its entities are disabled, so a working integration does not appear disconnected in the chat. Polling stops on unload and still respects the integration's system option to disable polling.
+
+Update the **Codex CLI Worker** app and the **Codex** integration to **0.1.71**, then restart Home Assistant, for the line and the status polling change.
+
 ## 0.1.70
 
 - **Codex searches a local copy of the Home Assistant documentation.** The worker keeps a copy of the official documentation in private app storage, and Codex searches those files directly instead of searching the web for documentation. Local lookups are faster, and web search stays available for custom integrations, custom cards, and anything the documentation does not cover.

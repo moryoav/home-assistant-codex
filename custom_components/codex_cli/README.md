@@ -59,6 +59,7 @@ The integration polls the worker every 30 seconds. Actions that start, cancel, o
 ## Troubleshooting
 
 - If entities are unavailable, check that the Codex CLI Worker add-on is running and that the worker URL is reachable.
+- If the app's web UI says that the integration is not installed, out of date, or not connected, do what the line says: install or update the integration, restart Home Assistant, and add it under **Settings** > **Devices & services**.
 - If setup cannot connect, restart the Codex CLI Worker app so it can generate its worker API token, then reload or add the integration again.
 - If Codex is not signed in, run `codex_cli.start_login` or use the add-on web UI to start the sign-in flow.
 - If a task needs input, use `codex_cli.reply_task` with the task ID and reply text. The answers Codex offered are in the `choices` attribute of the **Last task** sensor and in the `codex_cli_task_result` event.

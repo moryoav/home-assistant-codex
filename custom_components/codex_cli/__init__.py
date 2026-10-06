@@ -97,6 +97,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})["browser_sessions"] = broker
     entry.async_on_unload(broker.close)
     entry.async_on_unload(async_listen_for_choices(hass, client, coordinator))
+    # Keep contact with the worker even when every entity is disabled. The
+    # coordinator still respects the entry's setting to disable polling.
+    entry.async_on_unload(coordinator.async_add_listener(lambda: None))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

@@ -128,6 +128,8 @@ The app's web UI works without the **Codex** integration, but some features need
 - **Out of date:** the version in that file is lower than the oldest version this app fully works with. The line names the version to update to. Restart Home Assistant after updating.
 - **Installed but not connected:** the files are there, but the integration has not called the app for two minutes. It normally calls every 30 seconds. Restart Home Assistant if you have not done so since installing the integration, then add **Codex** under **Settings** > **Devices & services**.
 
+With integration **0.1.71** or newer, status polling keeps running even if all its entities are disabled. If you turn off polling in the integration's system options, the app can show "not connected" while the integration is still loaded. Turn polling back on for this check.
+
 The line cannot be dismissed. It goes away by itself, within a minute, once the integration is installed, up to date, and connected. During the first two minutes after the app starts, a missing call is not reported, because the integration may still be reconnecting.
 
 The version is read from the installed files. After an update of the integration, Home Assistant keeps running the previous version until it restarts, and the app cannot see that.

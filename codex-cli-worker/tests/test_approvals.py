@@ -139,6 +139,26 @@ class ApprovalTests(unittest.TestCase):
                 self.session.decide(approval_id, "allow")
             self.session.decide(approval_id, "deny")
 
+    def test_terminal_input_is_shown_but_names_why_it_can_only_be_denied(self):
+        """Input for a running command is fully visible, so its note must not call it hidden."""
+        typed = "write_stdin --session-id 7 'echo typed-into-terminal\n'"
+        approval_id = self.request(kind="writeStdin", command=typed, reason="Send input to an existing terminal.")
+        record = self.records[-1]
+        self.assertEqual(record["command"], typed)
+        self.assertFalse(record["can_allow"])
+        self.assertIn("already running outside the configured sandbox", record["scope"])
+        self.assertIn("Input to a running command cannot be allowed here", record["note"])
+        with self.assertRaises(ValueError) as refused:
+            self.session.decide(approval_id, "allow")
+        self.assertEqual(str(refused.exception), record["note"])
+        self.session.decide(approval_id, "deny")
+        self.assertEqual(self.writer.messages()[-1], {"id": 0, "result": {"decision": "decline"}})
+        self.request(request_id=1, kind="another")
+        self.assertFalse(self.records[-1]["can_allow"])
+        self.assertIn("This kind of request cannot be allowed here", self.records[-1]["note"])
+        self.request(request_id=2, command=None)
+        self.assertIn("missing, too large, or redacted", self.records[-1]["note"])
+
     def test_file_change_shows_diff_and_accepts_only_this_change(self):
         """File approvals reuse the item diff and never accept a proposed session root."""
         self.session.receive({"method": "item/started", "params": {
@@ -313,6 +333,9 @@ class ApprovalApiTests(unittest.TestCase):
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
+        notice = patch.object(server, "notify_permission_async")
+        self.notified = notice.start()
+        self.addCleanup(notice.stop)
         self.writer = Transport()
         self.proc = type("Process", (), {"stdin": self.writer, "poll": lambda _: None})()
         server.tasks["task"] = {"task_id": "task", "status": "running", "current_turn_id": "worker-turn",
@@ -343,6 +366,21 @@ class ApprovalApiTests(unittest.TestCase):
         task = server.tasks["task"]
         self.assertEqual(task["turns"][-1]["approvals"][0]["status"], "allowed")
         self.assertFalse(server.task_payload(task)["permission_required"])
+
+    def test_each_new_request_is_announced_once(self):
+        """A request that starts waiting sends one notification; its decision and its expiry send none."""
+        self.assertEqual(self.notified.call_count, 1)
+        task_id, record = self.notified.call_args.args
+        self.assertEqual((task_id, record["approval_id"], record["status"]), ("task", self.approval_id, "pending"))
+        self.assertEqual(self.answer().status_code, 200)
+        self.assertEqual(self.notified.call_count, 1)
+        self.session.receive({"id": 11, "method": COMMAND_APPROVAL, "params": {
+            "threadId": "thread", "turnId": "turn", "itemId": "second", "command": "curl https://example.test/2", "cwd": "/config"}})
+        self.assertEqual(self.notified.call_count, 2)
+        self.assertEqual(self.notified.call_args.args[1]["command"], "curl https://example.test/2")
+        server.request_task_cancellation("task")
+        self.assertEqual(server.tasks["task"]["approvals"][1]["status"], "expired")
+        self.assertEqual(self.notified.call_count, 2)
 
     def test_malformed_or_rule_grant_is_rejected(self):
         """Clients cannot request session access or submit malformed decision objects."""
@@ -427,6 +465,45 @@ class ApprovalApiTests(unittest.TestCase):
         self.assertNotIn("private password", audit)
 
 
+class PermissionNotificationTests(unittest.TestCase):
+    """The notification that tells the user a task waits for a permission decision."""
+
+    def test_notification_points_to_the_chat_and_leaves_out_the_action(self):
+        """The text names the kind of request and its reason, never the command or the diff."""
+        with patch.object(server, "notify") as notify:
+            server.notify_permission("task-1", {"kind": "command", "reason": "Read  sensor\nhistory",
+                                                "command": "curl https://example.test"})
+            server.notify_permission("task-1", {"kind": "file_change", "reason": "",
+                                                "changes": [{"path": "/other/a.yaml", "diff": "+name: After"}]})
+            server.notify_permission("task-1", {"kind": "command", "reason": "Why? " + "x" * 500})
+        first, second, third = [call.args for call in notify.call_args_list]
+        self.assertEqual(first, ("Codex needs permission",
+                                 "Codex is waiting for your decision on a command. Reason: Read sensor history. "
+                                 "Open the Codex chat to review it. Task: task-1"))
+        self.assertEqual(second[1], "Codex is waiting for your decision on a file change. "
+                                    "Open the Codex chat to review it. Task: task-1")
+        self.assertIn("x… Open the Codex chat", third[1])
+        self.assertLess(len(third[1]), server.PERMISSION_REASON_MAX + 120)
+
+    def test_notification_does_not_hold_up_the_caller(self):
+        """Requests are saved under the worker lock, so sending must not wait for Home Assistant there."""
+        release, sent = threading.Event(), threading.Event()
+
+        def slow(*_args):
+            """Stand in for a Home Assistant that answers late."""
+            release.wait(5)
+            sent.set()
+
+        record = {"kind": "command", "reason": "Read history"}
+        with patch.object(server, "notify_permission", side_effect=slow) as notice:
+            with server.lock:
+                server.notify_permission_async("task-1", record)
+            self.assertFalse(sent.is_set())
+            release.set()
+            self.assertTrue(sent.wait(5))
+        notice.assert_called_once_with("task-1", record)
+
+
 class ApprovalRunTests(unittest.TestCase):
     """Run the real worker lifecycle with a bidirectional protocol process fixture."""
 
@@ -450,6 +527,7 @@ class ApprovalRunTests(unittest.TestCase):
         self.stack.enter_context(patch.object(server, "sandbox_readiness", return_value={"required": True, "ready": True}))
         self.stack.enter_context(patch.object(server, "fire_ha_event", return_value=(True, "")))
         self.stack.enter_context(patch.object(server, "notify"))
+        self.notified = self.stack.enter_context(patch.object(server, "notify_permission_async"))
         self.stack.enter_context(patch.object(server, "refresh_usage_status_async"))
         server.tasks["task"] = {"task_id": "task", "status": "queued", "current_turn_id": "worker-turn",
                                  "turns": [{"turn_id": "worker-turn", "message": "Read history"}]}
@@ -612,6 +690,8 @@ class ApprovalRunTests(unittest.TestCase):
         runner.start()
         self.assertTrue(self.published.wait(5))
         record = server.tasks["task"]["approvals"][0]
+        self.notified.assert_called_once()
+        self.assertEqual(self.notified.call_args.args[1]["approval_id"], record["approval_id"])
         response = server.app.test_client().post(f"/tasks/task/approvals/{record['approval_id']}",
             json={"turn_id": "worker-turn", "decision": "allow"}, headers={"Authorization": "Bearer test-token"})
         self.assertEqual(response.status_code, 200)

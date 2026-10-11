@@ -3,8 +3,11 @@
 ## Unreleased
 
 - Added live permission requests in the chat for sandboxed commands and file changes, with the action, reason, and access scope shown before **Allow once** or **Deny**.
+- Added a **Codex needs permission** notification when a request starts waiting, through `notify_service` or as a persistent notification, so a task started by the integration or from a notification does not wait unnoticed. It points to the chat and has no buttons.
 - Kept approvals limited to one pending action, with authenticated decisions, redacted history, stale-request rejection, and expiration on cancellation, timeout, connection loss, or restart.
 - Blocked approval of hidden action details, displayed file rename destinations, and retained change checks and recovery information when a started exchange fails.
+- Input for a command that is already running outside the sandbox is shown and can only be denied, with a note that says so.
+- The activity list no longer reports a file change as made while it waits for permission or after it was denied.
 - Documented `danger-full-access` as the recommended mode, the existing backups, checks, and verification, and the limits of those safeguards. Kept `workspace-write` as the default.
 
 ## 0.1.71

@@ -16,7 +16,7 @@ configuration:
     description: Folder where prompts, logs, backups, status files, and change lists are saved. Keep it inside /config so Codex can save a copy of each file before changing it.
   notify_service:
     name: Notification service
-    description: Optional Home Assistant notify service for task completion, failures, and questions. Leave unset or blank to use persistent notifications. The app configuration page does not support Home Assistant service autocomplete, so this is a plain text field.
+    description: Optional Home Assistant notify service for task completion, failures, questions, and permission requests. Leave unset or blank to use persistent notifications. The app configuration page does not support Home Assistant service autocomplete, so this is a plain text field.
   task_timeout_seconds:
     name: Task timeout
     description: Maximum run time for one Codex task before the worker stops it.

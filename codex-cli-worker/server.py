@@ -1228,6 +1228,9 @@ ACTIVITY_LIMIT_NOTE = "Step limit reached. The rest of this run is only in codex
 SHELL_WRAPPER_RE = re.compile(r"^(?:/usr)?(?:/bin/)?(?:ba|z|da)?sh\s+-l?c\s+(['\"])(.*)\1\s*$", re.DOTALL)
 MARKDOWN_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 FILE_CHANGE_VERBS = {"add": "Added", "update": "Edited", "delete": "Deleted"}
+# A change that is still waiting, for permission or to finish, or that was refused has not happened.
+PENDING_FILE_CHANGE_VERBS = {"add": "Adding", "update": "Editing", "delete": "Deleting"}
+DECLINED_FILE_CHANGE_VERBS = {"add": "Did not add", "update": "Did not edit", "delete": "Did not delete"}
 task_activity: dict[str, dict[str, Any]] = {}
 
 
@@ -1336,10 +1339,15 @@ def activity_step_from_item(item: dict[str, Any]) -> dict[str, Any] | None:
             if isinstance(change, dict)
         ][:50]
         step["files"] = changes
-        labels = [f"{FILE_CHANGE_VERBS.get(change['kind'], 'Changed')} {change['path']}" for change in changes[:5]]
+        verbs, other = FILE_CHANGE_VERBS, "Changed"
+        if raw_status == "in_progress":
+            verbs, other = PENDING_FILE_CHANGE_VERBS, "Changing"
+        elif raw_status == "declined":
+            verbs, other = DECLINED_FILE_CHANGE_VERBS, "Did not change"
+        labels = [f"{verbs.get(change['kind'], other)} {change['path']}" for change in changes[:5]]
         if len(changes) > 5:
             labels.append(f"and {len(changes) - 5} more")
-        step["text"] = redact(", ".join(labels)) or "Changed files"
+        step["text"] = redact(", ".join(labels)) or f"{other} files"
     elif kind == "web_search":
         query, _ = clip_activity_text(str(item.get("query") or "").strip(), 300)
         step["text"] = f"Searched: {query}" if query else "Searched the web"
@@ -2771,6 +2779,38 @@ def notify_question(task_id: str, turn_id: str, question: str, choices: list[str
     notify(title, f"{question}{options} Task: {task_id}")
 
 
+PERMISSION_REASON_MAX = 200
+
+
+def notify_permission(task_id: str, approval: dict[str, Any]) -> None:
+    """Notify that a task waits for a permission decision.
+
+    The notification only points to the chat: the decision needs the complete
+    action, which the chat shows. It carries the already redacted reason and
+    never the command or the diff.
+    """
+    subject = "a file change" if approval.get("kind") == "file_change" else "a command"
+    reason = " ".join(str(approval.get("reason") or "").split())
+    if len(reason) > PERMISSION_REASON_MAX:
+        reason = reason[:PERMISSION_REASON_MAX].rstrip() + "…"
+    if reason and reason[-1] not in ".!?…":
+        reason += "."
+    detail = f" Reason: {reason}" if reason else ""
+    notify(
+        "Codex needs permission",
+        f"Codex is waiting for your decision on {subject}.{detail} Open the Codex chat to review it. Task: {task_id}",
+    )
+
+
+def notify_permission_async(task_id: str, approval: dict[str, Any]) -> None:
+    """Send the permission notification from its own thread.
+
+    Requests are saved while the worker lock is held, and a slow Home
+    Assistant must not hold up the lock or the exchange.
+    """
+    threading.Thread(target=notify_permission, args=(task_id, copy.deepcopy(approval)), daemon=True).start()
+
+
 def save_lovelace_dashboard(ref: dict[str, str]) -> tuple[bool, str]:
     """Save the config from a dashboard's storage file through Home Assistant's WebSocket API; return (ok, message)."""
     token = ha_token()
@@ -3585,7 +3625,7 @@ def create_approval_session(
                 and running_processes.get(task_id) is proc and proc.poll() is None)
 
     def save_approvals(records: list[dict[str, Any]]) -> None:
-        """Save display-only decisions on the matching exchange, including expiration."""
+        """Save display-only decisions on the matching exchange, including expiration, and announce a new request."""
         task = tasks.get(task_id, {})
         if str(task.get("current_turn_id") or "") != turn_id:
             return
@@ -3596,7 +3636,12 @@ def create_approval_session(
             item["requested_at"] = older.get("requested_at") or utc_now()
             if item["status"] != "pending":
                 item["resolved_at"] = older.get("resolved_at") or utc_now()
-        update_task(task_id, approvals=records, **({"status": "cancelled"} if task.get("cancellation_requested") else {}))
+        if not update_task(task_id, approvals=records, **({"status": "cancelled"} if task.get("cancellation_requested") else {})):
+            return
+        # The task now waits for the user, who may not have the chat open.
+        for item in records:
+            if item["status"] == "pending" and item["approval_id"] not in previous:
+                notify_permission_async(task_id, item)
 
     def event(event: dict[str, Any]) -> None:
         """Reuse the existing exec event consumer without logging raw RPC requests."""

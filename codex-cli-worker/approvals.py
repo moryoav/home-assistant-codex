@@ -151,6 +151,8 @@ class AppServerSession:
             raise ValueError("duplicate live permission request")
         reason, _ = self._display(params.get("reason"))
         clipped = False
+        # Anything but a new command, such as input typed into a running one, is shown but never allowed.
+        request_kind = params.get("kind", "command") if method == COMMAND_APPROVAL else ""
         record: dict[str, Any] = {
             "approval_id": uuid.uuid4().hex, "status": "pending", "reason": reason,
             "kind": "command" if method == COMMAND_APPROVAL else "file_change",
@@ -164,7 +166,9 @@ class AppServerSession:
                 "Allow this command once outside the configured sandbox. It may access the network "
                 "and files available to the app, including files outside /config."
             )
-            record["can_allow"] = bool(record["command"] and record["cwd"]) and params.get("kind", "command") == "command"
+            if request_kind == "writeStdin":
+                record["scope"] = "Send this input to a command that is already running outside the configured sandbox."
+            record["can_allow"] = bool(record["command"] and record["cwd"]) and request_kind == "command"
             network = params.get("networkApprovalContext")
             if isinstance(network, dict):
                 record["network"], _ = self._display(network.get("host"))
@@ -177,7 +181,11 @@ class AppServerSession:
             clipped |= any(change.get("truncated") or change.get("redacted") for change in record["changes"])
         if clipped:
             record["can_allow"] = False
-        if not record["can_allow"]:
+        if request_kind == "writeStdin":
+            record["note"] = "Input to a running command cannot be allowed here. Deny it and ask for the whole action as one command."
+        elif request_kind not in ("", "command"):
+            record["note"] = "This kind of request cannot be allowed here. Deny it and ask for a single command or file change."
+        elif not record["can_allow"]:
             record["note"] = "The complete action is missing, too large, or redacted. Deny it and request an action without hidden details."
         else:
             record["note"] = "Known credentials are hidden. This does not change your sandbox setting or approve future requests."
@@ -201,7 +209,8 @@ class AppServerSession:
                 raise LookupError(APPROVAL_GONE)
             record = next(item for item in self._records if item["approval_id"] == approval_id)
             if decision == "allow" and not record["can_allow"]:
-                raise ValueError("The complete action must be available before it can be allowed.")
+                # The note already says why this request can only be denied.
+                raise ValueError(record["note"])
             request_id = self._pending.pop(approval_id)
             self._pending_files.pop(approval_id, None)
             record["status"] = "allowed" if decision == "allow" else "denied"

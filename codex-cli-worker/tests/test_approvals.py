@@ -370,17 +370,53 @@ class ApprovalApiTests(unittest.TestCase):
     def test_each_new_request_is_announced_once(self):
         """A request that starts waiting sends one notification; its decision and its expiry send none."""
         self.assertEqual(self.notified.call_count, 1)
-        task_id, record = self.notified.call_args.args
+        task_id, record, withdrawn = self.notified.call_args.args
         self.assertEqual((task_id, record["approval_id"], record["status"]), ("task", self.approval_id, "pending"))
+        self.assertFalse(withdrawn.is_set())
         self.assertEqual(self.answer().status_code, 200)
+        self.assertTrue(withdrawn.is_set())
         self.assertEqual(self.notified.call_count, 1)
         self.session.receive({"id": 11, "method": COMMAND_APPROVAL, "params": {
             "threadId": "thread", "turnId": "turn", "itemId": "second", "command": "curl https://example.test/2", "cwd": "/config"}})
         self.assertEqual(self.notified.call_count, 2)
         self.assertEqual(self.notified.call_args.args[1]["command"], "curl https://example.test/2")
+        self.assertFalse(self.notified.call_args.args[2].is_set())
         server.request_task_cancellation("task")
         self.assertEqual(server.tasks["task"]["approvals"][1]["status"], "expired")
+        self.assertTrue(self.notified.call_args.args[2].is_set())
         self.assertEqual(self.notified.call_count, 2)
+
+    def test_late_alert_cannot_replace_the_result_notification(self):
+        """An alert that is delivered only after the answer and the result is dropped, however the request ended."""
+        delivered = []
+
+        def deliver(service, data):
+            """Stand in for Home Assistant and keep what it was asked to show."""
+            delivered.append((service, data["title"]))
+            return True, "ok"
+
+        def late_alert():
+            """Run the delivery that the background thread had not got to yet."""
+            server.notify_permission(*self.notified.call_args.args)
+
+        with patch.object(server, "call_ha_service", side_effect=deliver), patch.object(server, "read_options", return_value={}):
+            self.assertEqual(self.answer().status_code, 200)
+            server.notify("Codex task completed", "History read Task: task")
+            late_alert()
+            self.assertEqual(delivered, [("persistent_notification.create", "Codex task completed")])
+            self.session.receive({"id": 11, "method": COMMAND_APPROVAL, "params": {
+                "threadId": "thread", "turnId": "turn", "itemId": "second", "command": "curl https://example.test/2", "cwd": "/config"}})
+            self.session.close()
+            late_alert()
+            self.assertEqual(server.tasks["task"]["approvals"][1]["status"], "expired")
+            self.assertEqual(len(delivered), 1)
+            # A request that still waits is announced as before.
+            fresh = server.create_approval_session("task", self.proc, "Read history", Path(self.temp.name) / "final", None, {}, server.DEFAULT_OPTIONS)
+            fresh.thread_id, fresh.turn_id = "thread", "turn"
+            fresh.receive({"id": 12, "method": COMMAND_APPROVAL, "params": {
+                "threadId": "thread", "turnId": "turn", "itemId": "third", "command": "curl https://example.test/3", "cwd": "/config"}})
+            late_alert()
+            self.assertEqual(delivered[-1], ("persistent_notification.create", "Codex needs permission"))
 
     def test_malformed_or_rule_grant_is_rejected(self):
         """Clients cannot request session access or submit malformed decision objects."""
@@ -470,12 +506,13 @@ class PermissionNotificationTests(unittest.TestCase):
 
     def test_notification_points_to_the_chat_and_leaves_out_the_action(self):
         """The text names the kind of request and its reason, never the command or the diff."""
+        waiting = threading.Event()
         with patch.object(server, "notify") as notify:
             server.notify_permission("task-1", {"kind": "command", "reason": "Read  sensor\nhistory",
-                                                "command": "curl https://example.test"})
+                                                "command": "curl https://example.test"}, waiting)
             server.notify_permission("task-1", {"kind": "file_change", "reason": "",
-                                                "changes": [{"path": "/other/a.yaml", "diff": "+name: After"}]})
-            server.notify_permission("task-1", {"kind": "command", "reason": "Why? " + "x" * 500})
+                                                "changes": [{"path": "/other/a.yaml", "diff": "+name: After"}]}, waiting)
+            server.notify_permission("task-1", {"kind": "command", "reason": "Why? " + "x" * 500}, waiting)
         first, second, third = [call.args for call in notify.call_args_list]
         self.assertEqual(first, ("Codex needs permission",
                                  "Codex is waiting for your decision on a command. Reason: Read sensor history. "
@@ -494,14 +531,61 @@ class PermissionNotificationTests(unittest.TestCase):
             release.wait(5)
             sent.set()
 
-        record = {"kind": "command", "reason": "Read history"}
+        record, withdrawn = {"kind": "command", "reason": "Read history"}, threading.Event()
         with patch.object(server, "notify_permission", side_effect=slow) as notice:
             with server.lock:
-                server.notify_permission_async("task-1", record)
+                server.notify_permission_async("task-1", record, withdrawn)
             self.assertFalse(sent.is_set())
             release.set()
             self.assertTrue(sent.wait(5))
-        notice.assert_called_once_with("task-1", record)
+        notice.assert_called_once_with("task-1", record, withdrawn)
+
+    def test_result_notification_waits_for_an_alert_that_is_being_delivered(self):
+        """A slow alert and the result that follows it reach Home Assistant in that order, not reversed."""
+        entered, release = threading.Event(), threading.Event()
+        delivered = []
+
+        def deliver(_service, data):
+            """Hold the alert inside its delivery, as a slow Home Assistant would."""
+            if data["title"] == "Codex needs permission":
+                entered.set()
+                release.wait(5)
+            delivered.append(data["title"])
+            return True, "ok"
+
+        with patch.object(server, "call_ha_service", side_effect=deliver), patch.object(server, "read_options", return_value={}):
+            alert = threading.Thread(target=server.notify_permission,
+                                     args=("task-1", {"kind": "command", "reason": "Read history"}, threading.Event()))
+            alert.start()
+            self.assertTrue(entered.wait(5))
+            result = threading.Thread(target=server.notify, args=("Codex task completed", "History read Task: task-1"))
+            result.start()
+            result.join(0.3)
+            self.assertTrue(result.is_alive())
+            self.assertEqual(delivered, [])
+            release.set()
+            alert.join(5)
+            result.join(5)
+        self.assertEqual(delivered, ["Codex needs permission", "Codex task completed"])
+
+    def test_alert_is_not_retried_once_the_request_was_answered(self):
+        """A notify service that fails slowly must not make the persistent alert appear after the answer."""
+        withdrawn = threading.Event()
+        attempts = []
+
+        def deliver(service, _data):
+            """Fail the configured service, with the user answering in the chat meanwhile."""
+            attempts.append(service)
+            withdrawn.set()
+            return False, "timed out"
+
+        with (patch.object(server, "call_ha_service", side_effect=deliver),
+              patch.object(server, "read_options", return_value={"notify_service": "notify.mobile_app_phone"})):
+            server.notify_permission("task-1", {"kind": "command", "reason": "Read history"}, withdrawn)
+            self.assertEqual(attempts, ["notify.mobile_app_phone"])
+            # An ordinary notification still falls back to the persistent one.
+            server.notify("Codex task completed", "History read Task: task-1")
+        self.assertEqual(attempts, ["notify.mobile_app_phone", "notify.mobile_app_phone", "persistent_notification.create"])
 
 
 class ApprovalRunTests(unittest.TestCase):

@@ -50,7 +50,7 @@ def main():
         server.api_token = lambda: "preview-only"
         server.auth_status_payload = lambda: {"status": "authenticated", "message": "Signed in (local preview)"}
         server.fire_ha_event = lambda *args: (True, "")
-        server.notify = lambda *args: None
+        server.notify = lambda *args, **kwargs: None
         server.refresh_usage_status_async = lambda **kwargs: None
         # Connected unless POST fixture/integration says otherwise, so the line about
         # the integration stays out of the other checks.

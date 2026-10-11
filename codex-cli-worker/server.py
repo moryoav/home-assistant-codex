@@ -25,7 +25,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -2741,18 +2741,35 @@ def fire_ha_event(event_type: str, data: dict[str, Any]) -> tuple[bool, str]:
     return False, "; ".join(errors)
 
 
-def notify(title: str, message: str) -> None:
-    """Send a notification through the configured notify service; without one, or when it fails, show a persistent one."""
-    service = str(read_options().get("notify_service") or "")
-    if service:
-        ok, detail = call_ha_service(service, {"title": title, "message": message})
-        if ok:
+# Every notification replaces the same persistent notification, so the last one delivered is the
+# one the user sees. They are delivered one at a time, in the order they were asked for.
+notification_lock = threading.RLock()
+
+
+def notify(title: str, message: str, *, still_wanted: Callable[[], bool] | None = None) -> None:
+    """Send a notification through the configured notify service; without one, or when it fails, show a persistent one.
+
+    Notifications go out one at a time, so one that is slow to deliver cannot
+    arrive after a later one. `still_wanted` is asked before each attempt, and a
+    notification that is out of date by then is dropped. It is asked while the
+    notification lock is held and must not take the worker lock, which some
+    callers hold while they send their notification.
+    """
+    with notification_lock:
+        service = str(read_options().get("notify_service") or "")
+        if service:
+            if still_wanted is not None and not still_wanted():
+                return
+            ok, detail = call_ha_service(service, {"title": title, "message": message})
+            if ok:
+                return
+            print(f"Notification through {service} failed: {detail}", flush=True)
+        if still_wanted is not None and not still_wanted():
             return
-        print(f"Notification through {service} failed: {detail}", flush=True)
-    call_ha_service(
-        "persistent_notification.create",
-        {"title": title, "message": message, "notification_id": "codex_cli_worker"},
-    )
+        call_ha_service(
+            "persistent_notification.create",
+            {"title": title, "message": message, "notification_id": "codex_cli_worker"},
+        )
 
 
 def notify_question(task_id: str, turn_id: str, question: str, choices: list[str]) -> None:
@@ -2763,31 +2780,34 @@ def notify_question(task_id: str, turn_id: str, question: str, choices: list[str
     the persistent notification, lists the choices in the text.
     """
     title = "Codex needs input"
-    service = str(read_options().get("notify_service") or "")
-    if choices and turn_id and service.startswith("notify.mobile_app_"):
-        actions = [
-            {"action": f"{CHOICE_ACTION_PREFIX}{index}_{turn_id}_{task_id}", "title": choice}
-            for index, choice in enumerate(choices)
-        ]
-        ok, detail = call_ha_service(
-            service, {"title": title, "message": f"{question} Task: {task_id}", "data": {"actions": actions}}
-        )
-        if ok:
-            return
-        print(f"Notification with choices through {service} failed: {detail}", flush=True)
-    options = f" Options: {'; '.join(choices)}." if choices else ""
-    notify(title, f"{question}{options} Task: {task_id}")
+    with notification_lock:
+        service = str(read_options().get("notify_service") or "")
+        if choices and turn_id and service.startswith("notify.mobile_app_"):
+            actions = [
+                {"action": f"{CHOICE_ACTION_PREFIX}{index}_{turn_id}_{task_id}", "title": choice}
+                for index, choice in enumerate(choices)
+            ]
+            ok, detail = call_ha_service(
+                service, {"title": title, "message": f"{question} Task: {task_id}", "data": {"actions": actions}}
+            )
+            if ok:
+                return
+            print(f"Notification with choices through {service} failed: {detail}", flush=True)
+        options = f" Options: {'; '.join(choices)}." if choices else ""
+        notify(title, f"{question}{options} Task: {task_id}")
 
 
 PERMISSION_REASON_MAX = 200
 
 
-def notify_permission(task_id: str, approval: dict[str, Any]) -> None:
+def notify_permission(task_id: str, approval: dict[str, Any], withdrawn: threading.Event) -> None:
     """Notify that a task waits for a permission decision.
 
     The notification only points to the chat: the decision needs the complete
     action, which the chat shows. It carries the already redacted reason and
-    never the command or the diff.
+    never the command or the diff. `withdrawn` is set once the request no longer
+    waits; a notification not delivered by then is dropped, so it cannot replace
+    the one about the task's result.
     """
     subject = "a file change" if approval.get("kind") == "file_change" else "a command"
     reason = " ".join(str(approval.get("reason") or "").split())
@@ -2799,16 +2819,19 @@ def notify_permission(task_id: str, approval: dict[str, Any]) -> None:
     notify(
         "Codex needs permission",
         f"Codex is waiting for your decision on {subject}.{detail} Open the Codex chat to review it. Task: {task_id}",
+        still_wanted=lambda: not withdrawn.is_set(),
     )
 
 
-def notify_permission_async(task_id: str, approval: dict[str, Any]) -> None:
+def notify_permission_async(task_id: str, approval: dict[str, Any], withdrawn: threading.Event) -> None:
     """Send the permission notification from its own thread.
 
     Requests are saved while the worker lock is held, and a slow Home
     Assistant must not hold up the lock or the exchange.
     """
-    threading.Thread(target=notify_permission, args=(task_id, copy.deepcopy(approval)), daemon=True).start()
+    threading.Thread(
+        target=notify_permission, args=(task_id, copy.deepcopy(approval), withdrawn), daemon=True,
+    ).start()
 
 
 def save_lovelace_dashboard(ref: dict[str, str]) -> tuple[bool, str]:
@@ -3624,8 +3647,15 @@ def create_approval_session(
                 and str(task.get("current_turn_id") or "") == turn_id
                 and running_processes.get(task_id) is proc and proc.poll() is None)
 
+    # For each announced request: set once it no longer waits, which withdraws its notification.
+    alerts: dict[str, threading.Event] = {}
+
     def save_approvals(records: list[dict[str, Any]]) -> None:
         """Save display-only decisions on the matching exchange, including expiration, and announce a new request."""
+        # Before anything can fail: an answered or expired request must not be announced late.
+        for item in records:
+            if item["status"] != "pending" and item["approval_id"] in alerts:
+                alerts.pop(item["approval_id"]).set()
         task = tasks.get(task_id, {})
         if str(task.get("current_turn_id") or "") != turn_id:
             return
@@ -3641,7 +3671,8 @@ def create_approval_session(
         # The task now waits for the user, who may not have the chat open.
         for item in records:
             if item["status"] == "pending" and item["approval_id"] not in previous:
-                notify_permission_async(task_id, item)
+                alerts[item["approval_id"]] = threading.Event()
+                notify_permission_async(task_id, item, alerts[item["approval_id"]])
 
     def event(event: dict[str, Any]) -> None:
         """Reuse the existing exec event consumer without logging raw RPC requests."""

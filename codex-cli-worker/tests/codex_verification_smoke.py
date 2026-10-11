@@ -42,8 +42,8 @@ def data_receipts(request):
                 visit(item)
 
     visit(request["input"])
-    assert set(results) == {"history", "statistics"}, request
-    assert "tokens truncated" not in json.dumps(request["input"]), request
+    assert set(results) == {"history", "statistics"}, f"Missing data receipts: found {list(results)}"
+    assert "tokens truncated" not in json.dumps(request["input"]), "CLI truncated a tool result"
     return results
 
 
@@ -75,11 +75,11 @@ def assert_data_results(request):
     # Look at actual shell output separately from the echoed command text.
     outputs = [item for item in request["input"] if item.get("type") == "function_call_output"
                and item.get("call_id") == "analyze_files"]
-    assert len(outputs) == 1, request
-    text = json.dumps(outputs[0])
-    assert '\\"count\\": 1000' in text and '\\"count\\": 5000' in text, outputs
-    assert "499500" in text and "12497500" in text, outputs
-    assert '\\"middle\\": 500' in text and '\\"middle\\": 2500' in text, outputs
+    assert len(outputs) == 1, f"Expected one analysis output, received {len(outputs)}"
+    text = outputs[0]["output"]
+    calculations = [json.loads(line) for line in text.splitlines() if line.startswith('{"history":')]
+    assert calculations == [{"history": {"count": 1000, "sum": 499500, "middle": 500},
+                             "statistics": {"count": 5000, "sum": 12497500, "middle": 2500}}], text[:2000]
 
 
 def main():
@@ -128,6 +128,7 @@ def main():
         data_path = str(root / "data.sock")
         data_service = data.serve(data_path)
         received = []
+        fixture_errors = []
 
         class Provider(BaseHTTPRequestHandler):
             """Call both data tools, then analyze their large files through a real sandboxed shell."""
@@ -182,7 +183,12 @@ def main():
                     if namespace:
                         item["namespace"] = namespace
                 else:
-                    assert_data_results(request)
+                    try:
+                        assert_data_results(request)
+                    except AssertionError as exc:
+                        # Finish the fixture turn so the caller reports the real
+                        # failure immediately, without HTTP retries and huge logs.
+                        fixture_errors.append(str(exc)[:2000])
                     item = {"type": "message", "role": "assistant", "status": "completed",
                             "content": [{"type": "output_text", "text": "Verified", "annotations": []}]}
                 self.send_response(200)
@@ -208,8 +214,10 @@ def main():
                                    HA_DATA_CAPABILITY=data_capability)
                 for private_path in (path, data_path):
                     probe = subprocess.run([binary, "sandbox", "-c", f'sandbox_mode="{mode}"', "--", sys.executable, "-c",
-                        "import socket; s=socket.socket(socket.AF_UNIX); s.connect(" + repr(private_path) + ")"],
+                        "import socket; print('socket-probe-started', flush=True); "
+                        "s=socket.socket(socket.AF_UNIX); s.connect(" + repr(private_path) + ")"],
                         cwd=workspace, env=environment, capture_output=True, text=True, timeout=30)
+                    assert "socket-probe-started" in probe.stdout, probe
                     assert probe.returncode != 0 and "Operation not permitted" in probe.stderr, probe
                 # The test supplies the private socket path to the trusted MCP process.
                 config_args = ["-c", 'model_provider="fixture"',
@@ -224,6 +232,7 @@ def main():
                 args = [binary, "exec", "--sandbox", mode, "--skip-git-repo-check", "--json", "--model", "gpt-5.1-codex",
                         "-c", 'approval_policy="never"', *config_args, "Check the kitchen light with the verification tool."]
                 result = subprocess.run(args, cwd=workspace, env=environment, capture_output=True, text=True, timeout=90)
+                assert not fixture_errors, fixture_errors
                 assert result.returncode == 0, (result.stdout, result.stderr)
                 assert "Fresh entity state" in json.dumps(received[-1]["input"]), (result.stdout, result.stderr)
                 assert_data_results(received[-1])
@@ -231,8 +240,10 @@ def main():
                 assert len(received) % 5 == 0, received
                 export = Path(data_receipts(received[-1])["history"]["file"]["path"])
                 probe = subprocess.run([binary, "sandbox", "-c", f'sandbox_mode="{mode}"', "--", sys.executable, "-c",
-                    "from pathlib import Path; Path(" + repr(str(export)) + ").write_text('tampered')"],
+                    "from pathlib import Path; print('write-probe-started', flush=True); "
+                    "Path(" + repr(str(export)) + ").write_text('tampered')"],
                     cwd=workspace, env=environment, capture_output=True, text=True, timeout=30)
+                assert "write-probe-started" in probe.stdout, probe
                 assert probe.returncode != 0 and export.read_text().startswith('{"status": "observed"'), probe
                 # Sandboxed production tasks now use app-server. Verify the
                 # trusted MCP bridge still works without shell networking.
@@ -265,6 +276,7 @@ def main():
                     errors.seek(0)
                     assert approval.returncode == 0 and finals, (approval.error, errors.read())
                     assert not any(approvals), approvals
+                    assert not fixture_errors, fixture_errors
                 assert "Fresh entity state" in json.dumps(received[-1]["input"]), received[-1]
                 assert_data_results(received[-1])
                 assert checks[-1]["status"] == "passed", checks

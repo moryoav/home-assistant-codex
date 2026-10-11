@@ -35,6 +35,11 @@ jobs:
           python codex-cli-worker/tests/install_frontend_test_deps.py
           npm install --prefix "$RUNNER_TEMP/codex-test" @openai/codex@0.160.0
           echo "HA_TEST_CODEX=$RUNNER_TEMP/codex-test/node_modules/.bin/codex" >> "$GITHUB_ENV"
+          # Use the pinned CLI's bundled helper rather than the runner's system
+          # bwrap, which can fail loopback setup before a sandboxed command runs.
+          codex_resources="$RUNNER_TEMP/codex-test/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-resources"
+          test -x "$codex_resources/bwrap"
+          echo "$codex_resources" >> "$GITHUB_PATH"
           npm install --prefix "$RUNNER_TEMP/browser-deps" playwright@1.63.0 ws@8.18.3
           "$RUNNER_TEMP/browser-deps/node_modules/.bin/playwright" install --with-deps chromium
           echo "NODE_PATH=$RUNNER_TEMP/browser-deps/node_modules" >> "$GITHUB_ENV"

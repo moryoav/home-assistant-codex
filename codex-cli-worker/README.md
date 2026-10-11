@@ -14,6 +14,10 @@ Browser sign-in is automatic and uses a temporary, local, read-only identity. Up
 
 For setup, security notes, and action examples, see the [repository README](https://github.com/moryoav/home-assistant-codex/blob/main/README.md) and [app documentation](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md).
 
+## History and statistics
+
+Codex can analyze Home Assistant state history and recorder statistics through separate read-only MCP tools. They use the worker's automatic authentication and work in sandboxed modes without shell approval or the `HA_TOKEN` option. Queries support multiple IDs, explicit time windows, and hourly/daily/weekly/monthly statistics, with bounded results and explicit truncation. See [the tools and limits](DOCS.md#historical-data-and-statistics).
+
 ## Local Home Assistant documentation
 
 The app keeps a local copy of the official Home Assistant documentation, refreshed after each Home Assistant update, so Codex can look things up without a web search. Web search stays available for custom integrations and cards. See [local documentation](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#local-home-assistant-documentation).

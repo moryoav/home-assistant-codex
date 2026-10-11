@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added separate read-only MCP tools for Home Assistant state history and recorder statistics, available in sandboxed modes without shell approval or a manually supplied API token.
+- Bounded historical queries by IDs, time range, response size and exchange budget, with explicit truncation, missing-statistics results, timezone-aware timestamps and display units.
+
 ## 0.1.72
 
 - Added live permission requests in the chat for sandboxed commands and file changes, with the action, reason, and access scope shown before **Allow once** or **Deny**.

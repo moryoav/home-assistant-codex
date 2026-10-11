@@ -44,7 +44,7 @@ jobs:
         env:
           HA_BROWSER_NODE: node
         run: pytest
-      - name: Test verification through the pinned CLI with shell networking disabled
+      - name: Test verification, history and statistics through the pinned CLI without shell networking
         run: python codex-cli-worker/tests/codex_verification_smoke.py
       - name: Test single-action user approvals through the pinned CLI
         run: python codex-cli-worker/tests/codex_approval_smoke.py
@@ -82,6 +82,9 @@ jobs:
         run: |
           docker run --rm --entrypoint /usr/bin/chromium-browser verification-test --version
           docker run --rm --entrypoint node verification-test -e 'const {chromium}=require("playwright-core"); (async()=>{const browser=await chromium.launch({executablePath:"/usr/bin/chromium-browser",headless:true,chromiumSandbox:false,args:["--disable-dev-shm-usage"]}); const page=await browser.newPage(); await page.setContent("<h1>Verification</h1>"); if(await page.locator("h1").innerText()!=="Verification") throw Error("Render failed"); await browser.close();})().catch(e=>{console.error(e);process.exit(1);})'
+      - name: Smoke test packaged historical data tools
+        run: |
+          docker run --rm --workdir / --entrypoint python3 verification-test -c 'import server, ha_data, ha_data_mcp; assert {tool["name"] for tool in ha_data_mcp.TOOLS} == {"history", "statistics"}; assert server.ha_data is not server.verification'
       - name: Download the Home Assistant documentation and read it from the Codex sandbox
         # Bubblewrap needs namespace privileges that the runner's default container profile withholds.
         run: |

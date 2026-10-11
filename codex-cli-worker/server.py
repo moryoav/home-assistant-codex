@@ -37,17 +37,19 @@ from flask import Flask, Response, jsonify, request, send_file
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification
 from approvals import APPROVAL_GONE, AppServerSession
+from ha_data import HomeAssistantData
 
 
-class _VerificationWorker:
-    """Let the verification code reach this module's functions and state by name."""
+class _ToolWorker:
+    """Let worker-owned tools reach this module's functions and state by name."""
 
     def __getattr__(self, name):
         """Return the module global with that name, as it is at the time of the call."""
         return globals()[name]
 
 
-verification = Verification(_VerificationWorker())
+verification = Verification(_ToolWorker())
+ha_data = HomeAssistantData(_ToolWorker())
 
 
 CONFIG_ROOT = Path("/config")
@@ -807,14 +809,15 @@ def expire_saved_approvals(task: dict[str, Any]) -> None:
 
 
 def redact(text: str) -> str:
-    """Replace Supervisor tokens, verification capabilities, and values that look like keys or tokens with [redacted]."""
+    """Replace Supervisor tokens, tool capabilities, and values that look like keys or tokens with [redacted]."""
     redacted = text
     for value in (os.environ.get("SUPERVISOR_TOKEN"), os.environ.get("HASSIO_TOKEN")):
         if value:
             redacted = redacted.replace(value, "[redacted]")
-    with verification.lock:
-        for value in verification.capabilities.values():
-            redacted = redacted.replace(value, "[redacted]")
+    for engine in (verification, ha_data):
+        with engine.lock:
+            for value in engine.capabilities.values():
+                redacted = redacted.replace(value, "[redacted]")
     for pattern, replacement in SENSITIVE_REPLACEMENTS:
         redacted = pattern.sub(replacement, redacted)
     return redacted
@@ -3391,12 +3394,12 @@ def codex_ha_url(options: dict[str, Any]) -> str:
 def codex_env() -> dict[str, str]:
     """Return the environment Codex processes run in.
 
-    The Supervisor tokens and the verification capability are removed, HOME and
+    The Supervisor tokens and inherited tool capabilities are removed, HOME and
     CODEX_HOME point into the add-on's data folder, and HA_TOKEN is set only
     from the add-on option, together with HA_URL, the address it works at.
     """
     env = dict(os.environ)
-    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_URL", "HA_VERIFICATION_CAPABILITY"):
+    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_TOKEN", "HA_URL", "HA_VERIFICATION_CAPABILITY", "HA_DATA_CAPABILITY", "HA_DATA_SOCKET"):
         env.pop(key, None)
     env["CODEX_HOME"] = str(CODEX_HOME)
     env["HOME"] = str(DATA_ROOT)
@@ -3494,6 +3497,8 @@ The MCP tool runs through the worker outside the shell network sandbox. Use it f
 Use fresh entity readback after any user-authorized reload or change. These tools do not perform reloads or device actions. Only perform those when authorized by the user. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
 After an authorized storage-dashboard edit, add "save_pending":true to the dashboard request to have the worker save that turn's pending dashboard edit and verify API readback before capturing it. This requires auto_save_lovelace to be enabled. Without save_pending, the browser inspects only the dashboard currently loaded in Home Assistant.
 
+Use the separate home_assistant_data MCP history and statistics tools for read-only historical analysis. They use the worker's automatic authentication, need no HA_TOKEN option, and work without shell network approval in all sandbox modes. history takes entity_ids, start_time and end_time (at most seven days); statistics takes statistic_ids, start_time, end_time and period (5minute, hour, day, week or month, at most 366 days). Use explicit ISO timestamps with timezone offsets. Request only relevant IDs and start with small windows or coarser statistics. Both return bounded results with explicit truncation; never treat truncated data as the complete period. Narrow the window or use fewer IDs before drawing conclusions. Missing statistics and empty periods are reported separately. Raw history preserves unknown/unavailable states and omits attributes; use entity verification to read units if needed. Statistics include display units, and sum is cumulative; use change for consumption within a bucket. Historical data describes observations, not proof of automation behavior, and these tools never perform device actions or change configuration.
+
 {api}{docs}At the end, return only an object matching the provided JSON schema:
 - status: "completed", "needs_input", or "failed"
 - summary: concise result
@@ -3521,6 +3526,23 @@ def verification_mcp_args() -> list[str]:
     for name, value in settings.items():
         args.extend(["--config", f"mcp_servers.home_assistant.{name}={json.dumps(value)}"])
     return args
+
+
+def data_mcp_args() -> list[str]:
+    """Register the separate read-only recorder tools, approved without granting shell networking."""
+    settings = {
+        "command": sys.executable,
+        "args": [str(Path(__file__).with_name("ha_data_mcp.py"))],
+        "env_vars": ["HA_DATA_CAPABILITY"],
+        "enabled": True,
+        "required": True,
+        "startup_timeout_sec": 10,
+        "tool_timeout_sec": 90,
+        "tools.history.approval_mode": "approve",
+        "tools.statistics.approval_mode": "approve",
+    }
+    return [argument for name, value in settings.items()
+            for argument in ("--config", f"mcp_servers.home_assistant_data.{name}={json.dumps(value)}")]
 
 
 def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_id: str | None) -> list[str]:
@@ -3565,6 +3587,7 @@ def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_
     args.extend(["--config", f'model_reasoning_effort="{execution["reasoning_effort"]}"'])
     args.extend(["--config", f'model_reasoning_summary="{reasoning_summary(options)}"'])
     args.extend(verification_mcp_args())
+    args.extend(data_mcp_args())
     if session_id:
         # `resume` has its own single-value --image option, so the flags go after the subcommand.
         args.extend(["resume", session_id])
@@ -3598,7 +3621,7 @@ def reader_thread(task_id: str, stream_name: str, handle, session_holder: dict[s
 def build_app_server_args() -> list[str]:
     """Start the bidirectional CLI transport with approvals routed to the user."""
     return [CODEX_BINARY, "app-server", "--config", 'approval_policy="on-request"',
-            "--config", 'approvals_reviewer="user"', *verification_mcp_args()]
+            "--config", 'approvals_reviewer="user"', *verification_mcp_args(), *data_mcp_args()]
 
 
 def uses_user_approvals(options: dict[str, Any]) -> bool:
@@ -4033,6 +4056,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
 
     update_task(task_id, status="running", started_at=utc_now(), error="")
     verification_capability = verification.begin(task_id)
+    data_capability = ha_data.begin(task_id)
     with lock:
         current_turn_id = str(tasks.get(task_id, {}).get("current_turn_id") or "")
     start_activity(task_id, current_turn_id)
@@ -4115,7 +4139,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         proc = subprocess.Popen(
             args,
             cwd="/config",
-            env={**codex_env(), "HA_VERIFICATION_CAPABILITY": verification_capability},
+            env={**codex_env(), "HA_VERIFICATION_CAPABILITY": verification_capability, "HA_DATA_CAPABILITY": data_capability},
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -4496,6 +4520,7 @@ def _run_background_task(
         fail_task_launch(task_id, exc, session_id=session_id, summary="The Codex task could not finish.")
     finally:
         verification.end(task_id)
+        ha_data.end(task_id)
         with lock:
             approval_session = approval_sessions.pop(task_id, None)
             if approval_session:
@@ -5415,6 +5440,7 @@ def main() -> None:
     verification.cleanup()
     threading.Thread(target=backup_cleanup_loop, daemon=True).start()
     verification.serve(DATA_ROOT / "verification.sock")
+    ha_data.serve(DATA_ROOT / "ha-data.sock")
     # Nothing else is running yet, so interrupted work from the last run can go.
     for leftover in ("download", "old"):
         shutil.rmtree(ha_docs_sibling(leftover), ignore_errors=True)

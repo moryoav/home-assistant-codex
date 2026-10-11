@@ -91,6 +91,10 @@ This repository contains two pieces:
 - Fetches fresh entity states, checks saved dashboard configuration, and reads Core logs to help verify changes and diagnose problems.
 - Keeps a local copy of the official Home Assistant documentation, refreshed after each Home Assistant update, so Codex can look things up without a web search.
 
+## History and statistics
+
+Read-only MCP tools let Codex fetch Home Assistant state history and recorder statistics for sensor analysis, troubleshooting, and automation design. They work in `workspace-write` and `read-only` without shell network approval or a manually configured API token. Queries use explicit IDs and time windows, with limits and clear missing-data/truncation results. See [the tools and limits](codex-cli-worker/DOCS.md#historical-data-and-statistics).
+
 ## Dashboard browser verification
 
 By toggling the option **Enable built-in browser** to ON, Codex can open your Home Assistant dashboards in a real browser, capture desktop and mobile screenshots, and inspect them while working on a change. It can use those images to review the layout and revise its work. Screenshots and check results appear with the conversation, including missing cards, failed resources, and browser errors.

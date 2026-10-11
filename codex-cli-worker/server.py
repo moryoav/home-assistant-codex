@@ -49,11 +49,11 @@ class _ToolWorker:
 
 
 verification = Verification(_ToolWorker())
-ha_data = HomeAssistantData(_ToolWorker())
 
 
 CONFIG_ROOT = Path("/config")
 DATA_ROOT = Path("/data")
+ha_data = HomeAssistantData(_ToolWorker(), DATA_ROOT / "ha-data")
 CODEX_HOME = DATA_ROOT / "codex-home"
 OPTIONS_PATH = DATA_ROOT / "options.json"
 WORKER_TOKEN_PATH = DATA_ROOT / "worker_api_token"

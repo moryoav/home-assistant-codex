@@ -589,7 +589,10 @@ class DataMcpTests(unittest.TestCase):
             environment = server.codex_env()
         for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "HA_DATA_CAPABILITY", "HA_DATA_SOCKET", "HA_TOKEN"):
             self.assertNotIn(key, environment)
-        engine = HomeAssistantData(data_worker())
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        engine = HomeAssistantData(data_worker(), Path(temporary.name) / "exports")
+        self.addCleanup(engine.end, "chat")
         capability = engine.begin("chat")
         with patch.object(server, "ha_data", engine):
             self.assertEqual(server.redact("temporary " + capability), "temporary [redacted]")

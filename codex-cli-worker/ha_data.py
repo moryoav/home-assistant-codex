@@ -56,8 +56,8 @@ def iso_milliseconds(value):
 class HomeAssistantData:
     """Read only history/statistics for an active turn, without exposing Supervisor credentials."""
 
-    def __init__(self, worker, export_root=Path("/data/ha-data")):
-        """Bind worker services and private storage outside the configuration workspace."""
+    def __init__(self, worker, export_root):
+        """Bind worker services to an explicit private storage root outside the configuration workspace."""
         self.worker = worker
         self.lock = threading.RLock()
         self.execution_lock = threading.Lock()

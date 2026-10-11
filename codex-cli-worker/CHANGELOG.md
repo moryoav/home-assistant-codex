@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.73
 
 - Added separate read-only MCP tools for Home Assistant state history and recorder statistics, available in sandboxed modes without shell approval or a manually supplied API token.
 - Bounded historical queries by IDs, time range, response size and exchange budget, with explicit truncation, missing-statistics results, timezone-aware timestamps and display units.
 - Saved historical data in private temporary JSON files with small tool receipts, so sandboxed calculations can use every saved point without CLI output truncation. Removed files on exchange completion and excluded them from app backups.
 - Redistributed unused point allowances and integer remainders across requested sensors.
+
+Update the **Codex CLI Worker** app to **0.1.73** for the history and statistics tools. The **Codex** integration is also released as **0.1.73** so that both carry the same version; its code is unchanged.
 
 ## 0.1.72
 

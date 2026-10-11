@@ -88,6 +88,7 @@ class ChoiceTests(unittest.TestCase):
             patch.object(server, "read_options", return_value={"task_timeout_seconds": 30, "auto_save_lovelace": False}),
             patch.object(server, "validate_changed_files", return_value=[]),
             patch.object(server.subprocess, "Popen", side_effect=FakeProcess),
+            patch.object(server, "uses_user_approvals", return_value=False),
             patch.object(server, "fire_ha_event", side_effect=lambda _type, data: (events.append(data), (True, ""))[1]),
             patch.object(server, "notify"), patch.object(server, "notify_question") as question,
         ):

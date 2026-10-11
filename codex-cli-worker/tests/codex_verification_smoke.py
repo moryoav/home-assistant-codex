@@ -13,6 +13,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from verification import Verification
 from server import verification_mcp_args
+from approvals import AppServerSession
 
 
 def main():
@@ -93,23 +94,54 @@ def main():
                     cwd=root, env=environment, capture_output=True, text=True, timeout=30)
                 assert probe.returncode != 0 and "Operation not permitted" in probe.stderr, probe
                 # The test supplies the private socket path to the trusted MCP process.
-                args = [binary, "exec", "--sandbox", mode, "--skip-git-repo-check", "--json", "--model", "gpt-5.1-codex",
-                        "-c", 'approval_policy="never"', "-c", 'model_provider="fixture"',
+                config_args = ["-c", 'model_provider="fixture"',
                         "-c", 'model_providers.fixture.name="Fixture"',
                         "-c", f'model_providers.fixture.base_url="http://127.0.0.1:{provider.server_port}/v1"',
                         "-c", 'model_providers.fixture.wire_api="responses"',
                         "-c", 'model_providers.fixture.requires_openai_auth=false',
                         "-c", 'check_for_update_on_startup=false',
                         *verification_mcp_args(),
-                        "-c", 'mcp_servers.home_assistant.env.HA_VERIFICATION_SOCKET=' + json.dumps(path),
-                        "Check the kitchen light with the verification tool."]
+                        "-c", 'mcp_servers.home_assistant.env.HA_VERIFICATION_SOCKET=' + json.dumps(path)]
+                args = [binary, "exec", "--sandbox", mode, "--skip-git-repo-check", "--json", "--model", "gpt-5.1-codex",
+                        "-c", 'approval_policy="never"', *config_args, "Check the kitchen light with the verification tool."]
                 result = subprocess.run(args, cwd=root, env=environment, capture_output=True, text=True, timeout=90)
                 assert result.returncode == 0, (result.stdout, result.stderr)
                 assert "Fresh entity state" in json.dumps(received[-1]["input"]), (result.stdout, result.stderr)
                 assert checks and checks[-1]["status"] == "passed", (result.stdout, result.stderr)
                 assert len(received) % 2 == 0, received
-            assert len(received) == 4
-            print("Pinned CLI verification passed: shell sockets denied, MCP checks work in workspace-write and read-only.")
+                # Sandboxed production tasks now use app-server. Verify the
+                # trusted MCP bridge still works without shell networking.
+                with (root / "app-server.log").open("w+") as errors:
+                    proc = subprocess.Popen([binary, "app-server", *config_args], cwd=root, env=environment,
+                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, bufsize=1)
+                    finals = []
+                    approval = AppServerSession(
+                        proc.stdin, lock=threading.RLock(),
+                        thread_params={"cwd": str(root), "sandbox": mode, "model": "gpt-5.1-codex",
+                                       "approvalPolicy": "on-request", "approvalsReviewer": "user"},
+                        turn_params={"input": [{"type": "text", "text": "Check the kitchen light with the verification tool."}]},
+                        on_event=lambda _: None, on_approvals=lambda _: None, on_final=finals.append,
+                        is_active=lambda: proc.poll() is None, redact=lambda text: text,
+                    )
+                    reader = threading.Thread(target=approval.read, args=(proc.stdout,), daemon=True)
+                    reader.start()
+                    try:
+                        approval.start()
+                        assert approval.finished.wait(45), "Verification app-server timed out"
+                    finally:
+                        approval.close()
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proc.terminate()
+                            proc.wait(timeout=5)
+                        reader.join(3)
+                    errors.seek(0)
+                    assert approval.returncode == 0 and finals, (approval.error, errors.read())
+                assert "Fresh entity state" in json.dumps(received[-1]["input"]), received[-1]
+                assert checks[-1]["status"] == "passed", checks
+            assert len(received) == 8
+            print("Pinned CLI verification passed: shell sockets denied, MCP checks work through exec and app-server in both sandbox modes.")
         finally:
             service.shutdown()
             service.server_close()

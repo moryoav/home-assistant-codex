@@ -663,6 +663,35 @@ h1 {
   font-weight: 500;
 }
 /* The answers Codex offers with a question, one button each. */
+.permission-card {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.permission-card p {
+  margin: 10px 0;
+}
+.permission-card pre {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  background: var(--surface);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.permission-scope {
+  font-weight: 500;
+}
+.permission-folder,
+.permission-note {
+  font-size: 12px;
+  color: var(--muted);
+}
 .choices {
   display: flex;
   flex-wrap: wrap;

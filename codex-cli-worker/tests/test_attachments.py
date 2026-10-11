@@ -114,7 +114,8 @@ class AttachmentTests(unittest.TestCase):
                 self.output.write_text(json.dumps(final), encoding="utf-8")
                 return 0
 
-        with patch.object(server.subprocess, "Popen", side_effect=FakeProcess):
+        with (patch.object(server.subprocess, "Popen", side_effect=FakeProcess),
+              patch.object(server, "uses_user_approvals", return_value=False)):
             server.run_task(task_id, "Draw a sheep", session_id, reply)
         server.active_task_runners.discard(task_id)
 

@@ -525,6 +525,8 @@ function controls() {
     blocked || preparingCount(state.files) > 0 || !$("message").value.trim();
   for (const button of document.querySelectorAll("#messages .choice"))
     button.disabled = blocked;
+  for (const button of document.querySelectorAll("#messages .permission-action"))
+    button.disabled = state.busy || button.dataset.canAllow === "false";
   $("send").setAttribute(
     "aria-label",
     queueing ? "Add message to queue" : "Send message",
@@ -549,6 +551,8 @@ function controls() {
   if (waiting)
     notice =
       "This chat's message is waiting in the queue and has not been sent yet. You can edit or remove it above.";
+  else if (task?.permission_required)
+    notice = "Review the permission request above to continue, or stop the task.";
   else if (working)
     notice =
       "Codex is working. Your response will appear here when it finishes.";
@@ -629,7 +633,7 @@ function renderRow(chat, queued = null) {
       "span",
       queued
         ? markdownPlain(queued.message) || queued.message
-        : markdownPlain(chat.summary || chat.question) ||
+        : chat.permission_required ? "Waiting for your permission" : markdownPlain(chat.summary || chat.question) ||
             labels[chat.status] ||
             chat.status,
       "row-preview",
@@ -643,8 +647,8 @@ function renderRow(chat, queued = null) {
         ? queued.position === 1
           ? "Next in queue"
           : `In queue · ${queued.position} of ${state.queue.length}`
-        : labels[chat.status] || chat.status,
-      queued || chat.status === "waiting_for_input" ? "waiting" : "",
+        : chat.permission_required ? "Permission needed" : labels[chat.status] || chat.status,
+      queued || chat.status === "waiting_for_input" || chat.permission_required ? "waiting" : "",
     ),
   );
   meta.append(
@@ -993,7 +997,7 @@ function renderTask(force = false) {
   $("chat-status").textContent =
     task.status === "in_queue"
       ? "In queue · not sent yet"
-      : `${labels[task.status] || task.status} · ${dateLabel(task.updated_at, true)}${queued ? " · next message in queue" : ""}`;
+      : `${task.permission_required ? "Permission needed" : labels[task.status] || task.status} · ${dateLabel(task.updated_at, true)}${queued ? " · next message in queue" : ""}`;
   const signature = JSON.stringify([
     task.turns,
     task.history_incomplete,
@@ -1040,6 +1044,8 @@ function renderTask(force = false) {
       );
     if (turn.message)
       exchange.append(renderMarkdown(turn.message, "message user"));
+    for (const approval of turn.approvals || [])
+      exchange.append(renderApproval(approval, task.task_id, turn.turn_id, latest && task.status === "running"));
     const attachments = imageAttachments(turn.attachments);
     const hasAnswer =
       turn.summary || turn.details || turn.question || attachments.length || turn.verification?.length;
@@ -1090,7 +1096,7 @@ function renderTask(force = false) {
         "p",
         turn.status === "queued"
           ? "Getting started…"
-          : "Working on your request…",
+          : task.permission_required ? "Waiting for your permission…" : "Working on your request…",
         "pending",
       );
       if (latest) {
@@ -1107,6 +1113,58 @@ function renderTask(force = false) {
   area.scrollTop = force || nearBottom ? area.scrollHeight : oldScroll;
   controls();
   ensureActivity();
+}
+/** Show a native permission request as text, with its precise action and scope. */
+function renderApproval(approval, taskId, turnId, active) {
+  const pending = active && approval.status === "pending";
+  const card = textNode("section", "", "permission-card");
+  card.setAttribute("aria-label", "Permission request");
+  const statuses = { allowed: "Allowed once", denied: "Denied", expired: "Expired" };
+  card.append(textNode("strong", pending ? "Permission needed" : statuses[approval.status] || "Expired"));
+  if (approval.reason) card.append(textNode("p", approval.reason));
+  card.append(textNode("p", approval.scope || "", "permission-scope"));
+  if (approval.cwd) card.append(textNode("p", `Working folder: ${approval.cwd}`, "permission-folder"));
+  if (approval.network) card.append(textNode("p", `Network host: ${approval.network}`));
+  if (approval.command) card.append(textNode("pre", approval.command, "permission-command"));
+  for (const change of approval.changes || []) {
+    card.append(textNode("p", `${change.kind}: ${change.path}`, "permission-folder"));
+    if (change.move_path) card.append(textNode("p", `Move to: ${change.move_path}`, "permission-folder"));
+    card.append(textNode("pre", change.diff || "No diff available", "permission-diff"));
+  }
+  if (approval.note) card.append(textNode("p", approval.note, "permission-note"));
+  if (pending) {
+    const actions = textNode("div", "", "choices");
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", "Permission decision");
+    for (const [decision, label] of [["allow", "Allow once"], ["deny", "Deny"]]) {
+      const button = textNode("button", label, "subtle permission-action");
+      button.type = "button";
+      button.dataset.canAllow = String(decision !== "allow" || approval.can_allow);
+      button.disabled = state.busy || button.dataset.canAllow === "false";
+      button.onclick = () => sendApproval(taskId, turnId, approval.approval_id, decision);
+      actions.append(button);
+    }
+    card.append(actions);
+  }
+  return card;
+}
+/** Reply to the live request, preserving the draft and refreshing stale decisions. */
+async function sendApproval(taskId, turnId, approvalId, decision) {
+  if (state.busy || state.id !== taskId) return;
+  state.busy = true;
+  controls();
+  showError(null);
+  try {
+    await api(`tasks/${encodeURIComponent(taskId)}/approvals/${encodeURIComponent(approvalId)}`, {
+      turn_id: turnId, decision,
+    });
+  } catch (error) {
+    showError(error);
+  } finally {
+    await Promise.allSettled([loadList(), fetchSelected(true)]);
+    state.busy = false;
+    controls();
+  }
 }
 /**
  * Build a button for each answer Codex offered with its question. A click
@@ -1460,7 +1518,7 @@ function renderActivity() {
   const label = textNode(
     "span",
     running
-      ? `Working on your request… · ${count}`
+      ? `${state.task?.permission_required ? "Waiting for your permission…" : "Working on your request…"} · ${count}`
       : `${expanded ? "Hide" : "Show"} activity (${count})`,
   );
   if (running) label.append(textNode("span", "", "elapsed"));

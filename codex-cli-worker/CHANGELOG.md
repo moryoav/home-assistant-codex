@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.72
+
+- Added live permission requests in the chat for sandboxed commands and file changes, with the action, reason, and access scope shown before **Allow once** or **Deny**.
+- Added a **Codex needs permission** notification when a request starts waiting, through `notify_service` or as a persistent notification, so a task started by the integration or from a notification does not wait unnoticed. It points to the chat and has no buttons.
+- Kept approvals limited to one pending action, with authenticated decisions, redacted history, stale-request rejection, and expiration on cancellation, timeout, connection loss, or restart.
+- Blocked approval of hidden action details, displayed file rename destinations, and retained change checks and recovery information when a started exchange fails.
+- Input for a command that is already running outside the sandbox is shown and can only be denied, with a note that says so.
+- The activity list no longer reports a file change as made while it waits for permission or after it was denied.
+- Documented `danger-full-access` as the recommended mode, the existing backups, checks, and verification, and the limits of those safeguards. Kept `workspace-write` as the default.
+
 ## 0.1.71
 
 - **The chat says when the Codex integration is missing.** The app's web UI works without the **Codex** integration, but some features need it, and it was easy to install the app alone without noticing. The web UI now shows a line at the top of the chat when the integration is not installed, when it is installed but not connected to the app, or when it is older than this app needs. The line stays in view above the messages, on desktop and on a phone, and goes away by itself once the integration is installed, up to date, and connected.

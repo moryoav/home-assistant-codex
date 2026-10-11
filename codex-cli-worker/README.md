@@ -4,6 +4,8 @@ Run Codex CLI tasks against your Home Assistant configuration folder from Home A
 
 The app provides a responsive chat UI with saved conversations, a resizable desktop sidebar and a mobile chat drawer, a token-protected local worker API for the Codex integration, device-code sign-in for Codex CLI, per-file backups of changed files, task logs, and notifications when work completes or needs input.
 
+I recommend `danger-full-access` for working freely in Home Assistant. The name sounds scary, but the app still offers backups, configuration checks, and verification. `workspace-write` remains the default. In sandboxed modes, the chat asks you to **Allow once** or **Deny** commands and file changes that need extra access. See [sandbox modes, safeguards, and permission requests](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#sandbox).
+
 ## Dashboard browser verification
 
 **Codex can inspect your dashboards in a real browser at desktop and mobile sizes.** It can review screenshots during a task and revise its work, with images and findings kept in the conversation. Checks report missing cards, failed resources, and browser errors. Saved storage dashboards also receive automatic captures within the task's remaining time.

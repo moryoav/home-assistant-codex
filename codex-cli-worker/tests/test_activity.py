@@ -83,6 +83,26 @@ class ActivityStepTests(unittest.TestCase):
         self.assertEqual(plan["text"], "☑ Read config\n☐ Edit")
         self.assertEqual(reasoning["id"], "item_0")
 
+    def test_file_change_reads_as_made_only_once_it_was_made(self):
+        """A change that waits, as for permission, or that was refused is not reported as done."""
+        changes = [{"path": "/config/automations.yaml", "kind": "update"}, {"path": "/config/old.yaml", "kind": "delete"},
+                   {"path": "/config/new.yaml", "kind": "add"}, {"path": "/config/moved.yaml", "kind": "other"}]
+        server.record_activity_event("t", {"type": "item.started", "item": {
+            "id": "item_1", "type": "file_change", "status": "in_progress", "changes": changes}})
+        waiting = self.steps()["steps"][0]
+        self.assertEqual((waiting["status"], waiting["text"]),
+                         ("running", "Editing automations.yaml, Deleting old.yaml, Adding new.yaml, Changing moved.yaml"))
+        server.record_activity_event("t", item("file_change", "item_1", status="declined", changes=changes))
+        refused = self.steps()["steps"][0]
+        self.assertEqual((refused["status"], refused["text"]),
+                         ("failed", "Did not edit automations.yaml, Did not delete old.yaml, Did not add new.yaml, "
+                                    "Did not change moved.yaml"))
+        server.record_activity_event("t", item("file_change", "item_2", status="completed", changes=changes[:1]))
+        server.record_activity_event("t", item("file_change", "item_3", status="declined", changes=[]))
+        made, empty = self.steps()["steps"][1:]
+        self.assertEqual((made["status"], made["text"]), ("done", "Edited automations.yaml"))
+        self.assertEqual(empty["text"], "Did not change files")
+
     def test_started_items_update_in_place_with_duration(self):
         """An item that starts and then completes stays one step, updated with its result and duration."""
         server.record_activity_event("t", command("item_1", "/bin/sh -lc 'sleep 1'", status="in_progress", exit_code=None))

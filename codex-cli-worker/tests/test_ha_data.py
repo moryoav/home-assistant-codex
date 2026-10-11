@@ -478,6 +478,24 @@ class HistoricalDataTests(unittest.TestCase):
         self.assertFalse((self.engine.export_root / "turn-orphan").exists())
 
     @unittest.skipUnless(os.name == "posix", "Unix symlink boundary")
+    def test_startup_cleanup_skips_replaced_storage_without_unblocking_queries(self):
+        """Keep worker startup available without following a symlink or exporting data through it."""
+        outside = self.engine.export_root.parent / "outside"
+        orphan = outside / "turn-keep"
+        orphan.mkdir(parents=True)
+        marker = orphan / "result.json"
+        marker.write_text("private", encoding="utf-8")
+        self.engine.export_root.symlink_to(outside, target_is_directory=True)
+        with patch("ha_data.sys.stderr") as diagnostics:
+            self.engine.cleanup()
+        diagnostics.write.assert_any_call("Historical data storage was replaced; skipping cleanup")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "private")
+        with patch.object(self.engine, "history", return_value={"status": "observed"}):
+            result = self.engine.dispatch(self.payload())
+        self.assertEqual(result, {"status": "unavailable", "message": "Historical data storage is unavailable"})
+        self.assertEqual(list(outside.glob("result-*")), [])
+
+    @unittest.skipUnless(os.name == "posix", "Unix symlink boundary")
     def test_end_never_deletes_through_a_replaced_storage_root(self):
         """Revoke the credential even when a replacement root makes file cleanup unsafe."""
         with patch.object(self.engine, "history", return_value={"status": "observed"}):

@@ -109,10 +109,12 @@ class HomeAssistantData:
             print("Could not remove temporary historical data files", file=sys.stderr, flush=True)
 
     def cleanup(self):
-        """Remove exports left by a stopped worker while preserving any current exchange."""
+        """Remove orphan exports, preserving active files and skipping unsafe storage at startup."""
         with self.lock:
             if self.export_root.is_symlink():
-                raise DataError("Historical data storage is unavailable")
+                # save_result() still refuses this root; keep the worker available.
+                print("Historical data storage was replaced; skipping cleanup", file=sys.stderr, flush=True)
+                return
             if not self.export_root.exists():
                 return
             for directory in self.export_root.glob("turn-*"):

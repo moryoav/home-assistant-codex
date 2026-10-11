@@ -56,6 +56,7 @@ class AppServerSession:
         self._next_id = 0
         self._requests: dict[str, str] = {}
         self._pending: dict[str, Any] = {}
+        self._pending_files: dict[str, str] = {}
         self._records: list[dict[str, Any]] = []
         self._file_changes: dict[str, list[dict[str, Any]]] = {}
         self._final_text = ""
@@ -118,6 +119,7 @@ class AppServerSession:
                 except (OSError, ValueError):
                     pass
             self._pending.clear()
+            self._pending_files.clear()
             for record in self._records:
                 if record["status"] == "pending":
                     record["status"] = "expired"
@@ -133,8 +135,9 @@ class AppServerSession:
 
     def _display(self, value: Any) -> tuple[str, bool]:
         """Redact display text and signal when review would hide part of an action."""
-        text = self.redact(str(value or ""))
-        return text[:DISPLAY_LIMIT], len(text) > DISPLAY_LIMIT
+        raw = str(value or "")
+        text = self.redact(raw)
+        return text[:DISPLAY_LIMIT], text != raw or len(text) > DISPLAY_LIMIT
 
     def _publish_approval(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
         """Expose only a request for the active thread and turn, with an opaque UI ID."""
@@ -146,7 +149,8 @@ class AppServerSession:
             return
         if request_id in self._pending.values():
             raise ValueError("duplicate live permission request")
-        reason, clipped = self._display(params.get("reason"))
+        reason, _ = self._display(params.get("reason"))
+        clipped = False
         record: dict[str, Any] = {
             "approval_id": uuid.uuid4().hex, "status": "pending", "reason": reason,
             "kind": "command" if method == COMMAND_APPROVAL else "file_change",
@@ -168,16 +172,19 @@ class AppServerSession:
             record["changes"] = copy.deepcopy(self._file_changes.get(str(params.get("itemId")), []))
             record["scope"] = "Allow these file changes once, including any listed paths outside /config."
             record["can_allow"] = bool(record["changes"]) and all(
-                change.get("path") and change.get("diff") for change in record["changes"])
-            clipped |= any(change.get("truncated") for change in record["changes"])
+                change.get("path") and change.get("diff") and change.get("kind") in {"add", "update", "delete"}
+                for change in record["changes"])
+            clipped |= any(change.get("truncated") or change.get("redacted") for change in record["changes"])
         if clipped:
             record["can_allow"] = False
         if not record["can_allow"]:
-            record["note"] = "The complete action is unavailable or too large to review. Deny it and ask for a smaller action."
+            record["note"] = "The complete action is missing, too large, or redacted. Deny it and request an action without hidden details."
         else:
             record["note"] = "Known credentials are hidden. This does not change your sandbox setting or approve future requests."
         self._records.append(record)
         self._pending[record["approval_id"]] = request_id
+        if method == FILE_APPROVAL:
+            self._pending_files[record["approval_id"]] = str(params.get("itemId"))
         # Persist the reviewable request before it can receive a decision.
         self.on_approvals(copy.deepcopy(self._records))
 
@@ -196,6 +203,7 @@ class AppServerSession:
             if decision == "allow" and not record["can_allow"]:
                 raise ValueError("The complete action must be available before it can be allowed.")
             request_id = self._pending.pop(approval_id)
+            self._pending_files.pop(approval_id, None)
             record["status"] = "allowed" if decision == "allow" else "denied"
             try:
                 self.on_approvals(copy.deepcopy(self._records))
@@ -236,6 +244,7 @@ class AppServerSession:
                 for approval_id, request_id in list(self._pending.items()):
                     if request_id == params.get("requestId") and params.get("threadId") == self.thread_id:
                         self._pending.pop(approval_id)
+                        self._pending_files.pop(approval_id, None)
                         next(item for item in self._records if item["approval_id"] == approval_id)["status"] = "expired"
                         changed = True
                 if changed:
@@ -246,6 +255,8 @@ class AppServerSession:
                     self.on_event({"type": "turn.started"})
             elif params.get("threadId") == self.thread_id and params.get("turnId") == self.turn_id and method in {"item/started", "item/completed"}:
                 self._item(method, params["item"])
+            elif method == "item/fileChange/patchUpdated" and params.get("threadId") == self.thread_id and params.get("turnId") == self.turn_id:
+                self._cache_file_changes(str(params["itemId"]), params.get("changes") or [])
             elif method == "turn/completed" and params.get("threadId") == self.thread_id:
                 turn = params["turn"]
                 if turn.get("id") != self.turn_id:
@@ -281,6 +292,28 @@ class AppServerSession:
         elif method == "turn/start":
             self.turn_id = result["turn"]["id"]
 
+    def _cache_file_changes(self, item_id: str, raw_changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Bound and redact complete file actions, refusing to replace a pending review."""
+        changes = []
+        remaining = DISPLAY_LIMIT
+        for change in raw_changes[:REQUEST_LIMIT]:
+            kind = change.get("kind") or {}
+            entry: dict[str, Any] = {"kind": str(kind.get("type") or "unknown"), "truncated": False, "redacted": False}
+            for key, raw in (("path", change.get("path")), ("move_path", kind.get("move_path")), ("diff", change.get("diff"))):
+                raw = str(raw or "")
+                text = self.redact(raw)
+                entry["redacted"] |= text != raw
+                entry["truncated"] |= len(text) > max(remaining, 0)
+                entry[key] = text[:max(remaining, 0)]
+                remaining -= len(text)
+            changes.append(entry)
+        if len(raw_changes) > REQUEST_LIMIT and changes:
+            changes[-1]["truncated"] = True
+        if item_id in self._pending_files.values() and self._file_changes.get(item_id) != changes:
+            raise ValueError("File changes were updated while permission was pending. The exchange was stopped.")
+        self._file_changes[item_id] = changes
+        return changes
+
     def _item(self, method: str, item: dict[str, Any]) -> None:
         """Translate app-server items into the worker's existing activity format."""
         kind = item.get("type")
@@ -296,26 +329,10 @@ class AppServerSession:
         if kind == "commandExecution":
             event_item.update(aggregated_output=item.get("aggregatedOutput"), exit_code=item.get("exitCode"))
         elif kind == "fileChange":
-            changes = []
-            remaining = DISPLAY_LIMIT
-            raw_changes = item.get("changes") or []
-            for change in raw_changes[:REQUEST_LIMIT]:
-                path = self.redact(str(change.get("path") or ""))
-                path_clipped = len(path) > max(remaining, 0)
-                path = path[:max(remaining, 0)]
-                remaining -= len(path)
-                diff = self.redact(str(change.get("diff") or ""))
-                changes.append({"path": path, "diff": diff[:max(remaining, 0)],
-                                "kind": (change.get("kind") or {}).get("type", "update"),
-                                "truncated": path_clipped or len(diff) > remaining})
-                remaining -= len(diff)
-            if len(raw_changes) > REQUEST_LIMIT and changes:
-                changes[-1]["truncated"] = True
-            if method == "item/started":
-                self._file_changes[str(item["id"])] = changes
-            else:
+            changes = self._cache_file_changes(str(item["id"]), item.get("changes") or [])
+            if method == "item/completed":
                 self._file_changes.pop(str(item["id"]), None)
-            event_item["changes"] = [{"path": c["path"], "kind": c["kind"]} for c in changes]
+            event_item["changes"] = [{"path": c["path"], "kind": c["kind"], "move_path": c["move_path"]} for c in changes]
         elif kind == "reasoning":
             event_item = {"id": item["id"], "type": "reasoning", "text": "\n".join(item.get("summary") or [])}
         elif kind == "agentMessage" and method == "item/completed":

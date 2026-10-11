@@ -4140,7 +4140,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
 
     if task_cancellation_requested(task_id):
         return
-    if lifecycle_error is not None:
+    if lifecycle_error is not None and not (approval_session and approval_session.turn_id):
         fail_task_launch(
             task_id,
             lifecycle_error,
@@ -4150,6 +4150,11 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         )
         return
 
+    if lifecycle_error is not None:
+        # A started turn may already have changed files. Keep the normal review,
+        # backup, validation, and recovery path even when its transport fails.
+        returncode = 1
+        write_task_log(task_id, "worker", f"Codex permission connection failed: {lifecycle_error}")
     final = parse_final(final_file, returncode)
     start_phase(task_id, "review", "Checking the changes")
     after_manifest = build_manifest()
@@ -4187,6 +4192,12 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
             "summary": f"Codex timed out after {timeout} seconds.",
             "details": final.get("summary", ""),
         }
+    elif lifecycle_error is not None:
+        reason = redact(str(lifecycle_error))
+        final["status"] = "failed"
+        final["summary"] = "The Codex exchange could not finish."
+        final["question"] = ""
+        final["details"] = "\n\n".join(part for part in (str(final.get("details") or "").strip(), reason) if part)
     elif returncode != 0 and final.get("status") == "completed":
         final["status"] = "failed"
         reason = f"Codex exited with {returncode}."

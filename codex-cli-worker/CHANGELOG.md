@@ -4,6 +4,7 @@
 
 - Added live permission requests in the chat for sandboxed commands and file changes, with the action, reason, and access scope shown before **Allow once** or **Deny**.
 - Kept approvals limited to one pending action, with authenticated decisions, redacted history, stale-request rejection, and expiration on cancellation, timeout, connection loss, or restart.
+- Blocked approval of hidden action details, displayed file rename destinations, and retained change checks and recovery information when a started exchange fails.
 - Documented `danger-full-access` as the recommended mode, the existing backups, checks, and verification, and the limits of those safeguards. Kept `workspace-write` as the default.
 
 ## 0.1.71

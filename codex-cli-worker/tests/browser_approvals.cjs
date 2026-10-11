@@ -59,6 +59,23 @@ async function testApprovals(browser, output, errors) {
   await approvalPage.locator("#cancel").click();
   await approvalPage.locator(".permission-card strong").filter({hasText: /^Expired$/}).waitFor();
   assert.equal(await approvalPage.locator(".permission-action").count(), 0);
+  await approvalPage.locator("#new-chat").click();
+  await approvalPage.locator("#message").fill("Request permission with hidden command details");
+  await approvalPage.getByRole("button", {name: "Send message", exact: true}).click();
+  await approvalPage.getByRole("button", {name: "Deny", exact: true}).waitFor();
+  assert.equal(await approvalPage.getByRole("button", {name: "Allow once", exact: true}).isDisabled(), true);
+  assert.match(await approvalPage.locator(".permission-note").textContent(), /redacted/);
+  assert.doesNotMatch(await approvalPage.locator(".permission-card").textContent(), /private password/);
+  await approvalPage.getByRole("button", {name: "Deny", exact: true}).click();
+  await approvalPage.locator(".permission-card strong").filter({hasText: /^Denied$/}).waitFor();
+  await approvalPage.locator("#new-chat").click();
+  await approvalPage.locator("#message").fill("Request permission to rename a file");
+  await approvalPage.getByRole("button", {name: "Send message", exact: true}).click();
+  await approvalPage.getByRole("button", {name: "Allow once", exact: true}).waitFor();
+  assert.match(await approvalPage.locator(".permission-card").textContent(), /update: \/other\/original.yaml/);
+  assert.match(await approvalPage.locator(".permission-card").textContent(), /Move to: \/other\/renamed.yaml/);
+  await approvalPage.getByRole("button", {name: "Allow once", exact: true}).click();
+  await approvalPage.locator(".permission-card strong").filter({hasText: /^Allowed once$/}).waitFor();
   await approvalPage.close();
 }
 module.exports = testApprovals;

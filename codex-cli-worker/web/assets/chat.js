@@ -1128,6 +1128,7 @@ function renderApproval(approval, taskId, turnId, active) {
   if (approval.command) card.append(textNode("pre", approval.command, "permission-command"));
   for (const change of approval.changes || []) {
     card.append(textNode("p", `${change.kind}: ${change.path}`, "permission-folder"));
+    if (change.move_path) card.append(textNode("p", `Move to: ${change.move_path}`, "permission-folder"));
     card.append(textNode("pre", change.diff || "No diff available", "permission-diff"));
   }
   if (approval.note) card.append(textNode("p", approval.note, "permission-note"));

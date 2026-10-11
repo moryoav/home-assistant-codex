@@ -31,6 +31,7 @@ def main():
         final_only = False
         file_case = False
         outside_file = root / "outside.yaml"
+        moved_file = root / "renamed.yaml"
 
         class Provider(BaseHTTPRequestHandler):
             """Serve deterministic tool calls and count actual shell HTTP requests."""
@@ -61,7 +62,9 @@ def main():
                     selected = next(((namespace, tool) for namespace, tool in functions if tool.get("name") == "exec_command"), None)
                     assert selected, [(namespace, tool.get("name")) for namespace, tool in functions]
                     namespace, tool = selected
-                    patch = f"*** Begin Patch\n*** Update File: {outside_file}\n@@\n-value: {stage}\n+value: {stage + 1}\n*** End Patch"
+                    target = outside_file if stage == 0 else moved_file
+                    move = f"*** Move to: {moved_file}\n" if stage == 0 else ""
+                    patch = f"*** Begin Patch\n*** Update File: {target}\n{move}@@\n-value: {stage}\n+value: {stage + 1}\n*** End Patch"
                     # The pinned CLI recognizes apply_patch inside exec_command
                     # and routes it through its native file-change approval.
                     item = {"type": "function_call", "call_id": f"file_{stage}", "name": tool["name"],
@@ -165,17 +168,21 @@ def main():
                 if file_case:
                     assert len(records) == 2 and [record["status"] for record in records] == ["allowed", "denied"], (records, diagnostic)
                     assert all(record["kind"] == "file_change" and record["changes"] for record in records), records
-                    assert outside_file.read_text() == "value: 1\n", outside_file.read_text()
+                    assert records[0]["changes"][0]["move_path"] == str(moved_file), records
+                    assert not outside_file.exists(), records
+                    assert moved_file.read_text() == "value: 1\n", moved_file.read_text()
                     continue
                 assert len(records) == 1, (records, diagnostic)
                 assert records[0]["status"] == ("allowed" if decision == "allow" else "denied"), records
                 assert len(probes) == (1 if decision == "allow" else 0), (probes, diagnostic)
                 assert len(requests) == 4, (len(requests), diagnostic)
-                assert "network-action-executed" not in json.dumps(requests[1]["input"]), requests[1]["input"]
-                # The third command still runs sandboxed after the one-off grant.
-                command_events = [event["item"] for event in events if event.get("type") == "item.completed" and event.get("item", {}).get("type") == "command_execution"]
-                assert len(command_events) == 3, diagnostic
-                assert command_events[0]["exit_code"] != 0 and command_events[-1]["exit_code"] != 0, command_events
+                # Rejected commands may never start and therefore need not emit
+                # command activity items. Their tool responses are authoritative.
+                for call_id in ("call_0", "call_2"):
+                    outputs = [item for item in requests[-1]["input"]
+                               if item.get("type") == "function_call_output" and item.get("call_id") == call_id]
+                    assert outputs, (call_id, requests[-1]["input"])
+                    assert "network-action-executed" not in json.dumps(outputs), outputs
             print("Pinned CLI approvals passed: legacy sessions resume, command and file allow/deny works, subsequent actions stay sandboxed.")
         finally:
             provider.shutdown()

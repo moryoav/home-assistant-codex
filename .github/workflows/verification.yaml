@@ -35,11 +35,6 @@ jobs:
           python codex-cli-worker/tests/install_frontend_test_deps.py
           npm install --prefix "$RUNNER_TEMP/codex-test" @openai/codex@0.160.0
           echo "HA_TEST_CODEX=$RUNNER_TEMP/codex-test/node_modules/.bin/codex" >> "$GITHUB_ENV"
-          # Use the pinned CLI's bundled helper rather than the runner's system
-          # bwrap, which can fail loopback setup before a sandboxed command runs.
-          codex_resources="$RUNNER_TEMP/codex-test/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-resources"
-          test -x "$codex_resources/bwrap"
-          echo "$codex_resources" >> "$GITHUB_PATH"
           npm install --prefix "$RUNNER_TEMP/browser-deps" playwright@1.63.0 ws@8.18.3
           "$RUNNER_TEMP/browser-deps/node_modules/.bin/playwright" install --with-deps chromium
           echo "NODE_PATH=$RUNNER_TEMP/browser-deps/node_modules" >> "$GITHUB_ENV"
@@ -49,8 +44,6 @@ jobs:
         env:
           HA_BROWSER_NODE: node
         run: pytest
-      - name: Test verification, history and statistics through the pinned CLI without shell networking
-        run: python codex-cli-worker/tests/codex_verification_smoke.py
       - name: Test single-action user approvals through the pinned CLI
         run: python codex-cli-worker/tests/codex_approval_smoke.py
       - name: Exercise browser protocol and restrictions
@@ -90,6 +83,11 @@ jobs:
       - name: Smoke test packaged historical data tools
         run: |
           docker run --rm --workdir / --entrypoint python3 verification-test -c 'import server, ha_data, ha_data_mcp; assert {tool["name"] for tool in ha_data_mcp.TOOLS} == {"history", "statistics"}; assert server.ha_data is not server.verification'
+      - name: Analyze large data files through the packaged CLI in both sandbox modes
+        # The host runner blocks loopback setup in unprivileged user namespaces.
+        # Use the app's real sandbox wrapper, as in the documentation check below.
+        run: |
+          docker run --rm --privileged --workdir / --entrypoint python3 -v "$PWD/codex-cli-worker/tests:/tests:ro" verification-test /tests/codex_verification_smoke.py
       - name: Download the Home Assistant documentation and read it from the Codex sandbox
         # Bubblewrap needs namespace privileges that the runner's default container profile withholds.
         run: |

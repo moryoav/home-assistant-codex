@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.72
 
 - Added live permission requests in the chat for sandboxed commands and file changes, with the action, reason, and access scope shown before **Allow once** or **Deny**.
 - Added a **Codex needs permission** notification when a request starts waiting, through `notify_service` or as a persistent notification, so a task started by the integration or from a notification does not wait unnoticed. It points to the chat and has no buttons.

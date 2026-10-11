@@ -304,6 +304,8 @@ class RunTests(unittest.TestCase):
         """Run against a temporary config tree with Codex and Home Assistant faked."""
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
+        # The backup harness emits exec JSON; native approvals are covered separately.
+        self.stack.enter_context(patch.object(server, "uses_user_approvals", return_value=False))
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.config = self.root / "config"
         for name, value in (("tasks", {}), ("task_activity", {}), ("active_task_runners", set()), ("running_processes", {})):

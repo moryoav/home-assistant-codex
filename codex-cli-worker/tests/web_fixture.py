@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import struct
 import tempfile
@@ -96,6 +97,7 @@ def main():
             live = task_id == "preview-00"
             held = (reply or prompt).startswith("Take your time")
             asking = (reply or prompt).startswith("Ask me")
+            permission = (reply or prompt).startswith("Request permission")
 
             def run():
                 """Play the worker's and Codex's steps for one exchange, then finish it."""
@@ -115,6 +117,59 @@ def main():
                     if live and event["type"] == "item.started":
                         # Hold the command open long enough for the browser to show it running.
                         time.sleep(2)
+                if permission:
+                    answered = threading.Event()
+
+                    class PermissionInput(io.StringIO):
+                        """Wake the fixture when the real approval endpoint sends its response."""
+
+                        def write(self, value):
+                            """Record the native response and release the simulated command."""
+                            result = super().write(value)
+                            answered.set()
+                            return result
+
+                        def close(self):
+                            """Release a cancelled request without granting it."""
+                            answered.set()
+
+                    class PermissionProcess:
+                        """A live process placeholder that supports normal worker cancellation."""
+
+                        stdin = PermissionInput()
+                        returncode = None
+
+                        def poll(self):
+                            """Stay live until the fixture or cancel route ends the exchange."""
+                            return self.returncode
+
+                        def terminate(self):
+                            """Stop the simulated process on cancellation."""
+                            self.returncode = -15
+                            answered.set()
+
+                        kill = terminate
+
+                        def wait(self, timeout=None):
+                            """Return the code after the cancellation route stops the process."""
+                            return self.returncode
+
+                    proc = PermissionProcess()
+                    server.running_processes[task_id] = proc
+                    session = server.create_approval_session(task_id, proc, reply or prompt,
+                                                            server.get_run_dir(task_id) / "final.json", None, {}, server.read_options())
+                    server.approval_sessions[task_id] = session
+                    session.thread_id, session.turn_id = session_id, "preview-native"
+                    session.receive({"id": 0, "method": "item/commandExecution/requestApproval", "params": {
+                        "threadId": session_id, "turnId": "preview-native", "itemId": "preview-command",
+                        "command": "curl '$HA_URL/api/history/period' -H 'Authorization: Bearer $HA_TOKEN'\n# <img src=x onerror=alert(1)>",
+                        "cwd": "/config", "reason": "Read historical sensor states from Home Assistant", "startedAtMs": 1,
+                    }})
+                    answered.wait(120)
+                    session.close()
+                    with server.lock:
+                        server.approval_sessions.pop(task_id, None)
+                        server.running_processes.pop(task_id, None)
                 if held:
                     release.wait(120)
                     release.clear()
@@ -137,7 +192,7 @@ def main():
                 # The real runner starts the next queued message when it ends.
                 server.start_next_queued()
 
-            if live or held:
+            if live or held or permission:
                 threading.Thread(target=run, daemon=True).start()
             else:
                 run()

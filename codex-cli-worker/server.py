@@ -36,6 +36,7 @@ from flask import Flask, Response, jsonify, request, send_file
 # Also support the existing importlib-based test harness.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification
+from approvals import APPROVAL_GONE, AppServerSession
 
 
 class _VerificationWorker:
@@ -289,6 +290,7 @@ lock = threading.RLock()
 auth_lock = threading.RLock()
 tasks: dict[str, dict[str, Any]] = {}
 running_processes: dict[str, subprocess.Popen] = {}
+approval_sessions: dict[str, AppServerSession] = {}
 active_task_runners: set[str] = set()
 # Messages sent while another task was running, oldest first. Each one starts
 # on its own once the tasks ahead of it have finished.
@@ -772,6 +774,7 @@ def load_task_index() -> None:
                 task = json.loads(task_file.read_text(encoding="utf-8"))
                 task_id = str(task.get("task_id") or task_file.parent.name)
                 task["task_id"] = task_id
+                expire_saved_approvals(task)
                 if task.get("status") in {"queued", "running"}:
                     task["status"] = "failed"
                     task["summary"] = task["error"] = "Worker restarted while this task was active."
@@ -785,12 +788,22 @@ def load_task_index() -> None:
         loaded = json.loads(TASK_STATE_FILE.read_text(encoding="utf-8"))
         if isinstance(loaded, dict):
             for task_id, task in loaded.items():
+                expire_saved_approvals(task)
                 if task.get("status") in {"queued", "running"}:
                     task["status"] = "failed"
                     task["summary"] = task["error"] = "Worker restarted while this task was active."
+                    sync_current_turn(task)
                 tasks.setdefault(task_id, task)
     except Exception as exc:
         print(f"Could not load task index: {exc}", flush=True)
+
+
+def expire_saved_approvals(task: dict[str, Any]) -> None:
+    """Make interrupted permission prompts display-only when restoring history."""
+    for record in [task, *(task.get("turns") or [])]:
+        for approval in record.get("approvals") or []:
+            if approval.get("status") == "pending":
+                approval["status"] = "expired"
 
 
 def redact(text: str) -> str:
@@ -1525,7 +1538,7 @@ def load_stored_activity(task_id: str, turn_id: str) -> dict[str, Any] | None:
 TURN_RESULT_FIELDS = (
     "status", "summary", "details", "question", "choices", "started_at", "completed_at",
     "returncode", "changes", "validation_errors", "lovelace_results", "error",
-    "attachments", "config_check", "recovery_files", "backups", "verification", "verification_attachments",
+    "attachments", "config_check", "recovery_files", "backups", "verification", "verification_attachments", "approvals",
 )
 # The check result recorded when no check ran: launch failures, cancellations, and new turns.
 EMPTY_CONFIG_CHECK = {"result": "skipped", "errors": "", "warnings": ""}
@@ -1876,6 +1889,9 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
         result["turns"] = task_turns(task)
         result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
     result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES
+    result["permission_required"] = task.get("status") == "running" and any(
+        item.get("status") == "pending" for item in task.get("approvals") or []
+    )
     return result
 
 
@@ -3401,7 +3417,7 @@ Task id: {task_id}
 
 Follow /config/AGENTS.md. Treat this as a live Home Assistant config tree. Make focused edits, do not expose secrets, and validate changed YAML/JSON when practical. After you finish, the worker asks Home Assistant to check its configuration whenever YAML files changed; if that check fails, the task is reported as failed, so prefer a change you are confident is valid over a speculative one.
 
-This is a non-interactive run. Do not wait for terminal input. If you need the user's decision or verification before continuing, stop cleanly by returning status "needs_input" with one concise question. If you are asking whether to go ahead with a change, say in the summary exactly what you would change. When the answer is one of a few options, also list up to three in choices, each a few words of plain text, for example "Go ahead" and "Don't change anything". The user answers by picking one or by typing something else, and the answer arrives as the next message.
+Do not wait for terminal input. In sandboxed modes, request a native command or file-change approval when an authorized task requires access outside the sandbox. The worker shows the action to the user and delivers their Allow once or Deny decision to the pending request. Never bypass a denial or request permanent permission rules. For other decisions or verification, stop cleanly by returning status "needs_input" with one concise question. If you are asking whether to go ahead with a change, say in the summary exactly what you would change. When the answer is one of a few options, also list up to three in choices, each a few words of plain text, for example "Go ahead" and "Don't change anything". The user answers by picking one or by typing something else, and the answer arrives as the next message.
 
 {backups}If the user asks for an image, use the built-in image generation tool. Every image it generates is attached to this conversation and shown to the user automatically, so leave it at its default save location and describe it in the summary. Copy it into /config only when the user asks for a file at a specific path. The default save location is not a failure.
 
@@ -3411,7 +3427,7 @@ Use the home_assistant MCP verify tool for authenticated Home Assistant checks, 
   {{"operation":"logs"}}
   {{"operation":"dashboard","path":"/lovelace/0"}}
   {{"operation":"dashboard_readback","path":"/lovelace/0"}}
-The MCP tool runs through the worker outside the shell network sandbox. Do not attempt verification through a shell socket command or enable network access. Logs are limited to Core.
+The MCP tool runs through the worker outside the shell network sandbox. Use it for supported verification instead of shell socket commands. If the user's task needs a different API or shell networking in a sandboxed mode, request approval for that specific command. Approval does not supply API credentials. Logs are limited to Core.
 Use fresh entity readback after any user-authorized reload or change. These tools do not perform reloads or device actions. Only perform those when authorized by the user. A matching state does not prove automation behavior. Dashboard inspection is observational, blocks writes, and captures desktop/mobile screenshots. Inspect the returned image_paths with your image viewer before making visual claims. Record any unavailable checks or blocked resources in your answer. Relevant changed storage dashboards are also checked after the worker saves them. For YAML dashboards and specific affected views, explicitly request the dashboard path. Do not expose credentials or try to obtain the user's login. Verification evidence is attached to this exchange automatically.
 After an authorized storage-dashboard edit, add "save_pending":true to the dashboard request to have the worker save that turn's pending dashboard edit and verify API readback before capturing it. This requires auto_save_lovelace to be enabled. Without save_pending, the browser inspects only the dashboard currently loaded in Home Assistant.
 
@@ -3516,6 +3532,107 @@ def reader_thread(task_id: str, stream_name: str, handle, session_holder: dict[s
                 pass
 
 
+def build_app_server_args() -> list[str]:
+    """Start the bidirectional CLI transport with approvals routed to the user."""
+    return [CODEX_BINARY, "app-server", "--config", 'approval_policy="on-request"',
+            "--config", 'approvals_reviewer="user"', *verification_mcp_args()]
+
+
+def uses_user_approvals(options: dict[str, Any]) -> bool:
+    """Use live permission requests for sandboxed modes; full access needs no escape."""
+    return (options.get("codex_sandbox") or "workspace-write") != "danger-full-access"
+
+
+def create_approval_session(
+    task_id: str, proc: subprocess.Popen, prompt: str, final_file: Path,
+    session_id: str | None, session_holder: dict[str, str], options: dict[str, Any],
+) -> AppServerSession:
+    """Bind one app-server exchange to its task, activity, and redacted audit trail."""
+    with lock:
+        task = tasks.get(task_id, {})
+        turn_id = str(task.get("current_turn_id") or "")
+        latest_turn = copy.deepcopy((task.get("turns") or [{}])[-1])
+        execution = latest_turn.get("execution_settings") or resolve_chat_settings(
+            task.get("chat_settings", DEFAULT_CHAT_SETTINGS), options)
+    secret_values = [str(options.get("HA_TOKEN") or ""), api_token(), str(os.environ.get("HA_TOKEN") or "")]
+
+    def approval_redact(text: str) -> str:
+        """Hide configured credentials even when a command embeds them without a label."""
+        for value in secret_values:
+            if value:
+                text = text.replace(value, "[redacted]")
+        text = re.sub(
+            r'''(?i)(\b(?:password|passwd|passphrase|client_secret)\b["']?\s*(?:[:=]\s*|\s+))("[^"\r\n]*"|'[^'\r\n]*'|[^\s,\r\n]+)''',
+            r"\1[redacted]", text,
+        )
+        return redact(text)
+
+    def redact_event(value: Any) -> Any:
+        """Redact string values without changing protocol keys or JSON syntax."""
+        if isinstance(value, str):
+            return approval_redact(value)
+        if isinstance(value, dict):
+            return {key: redact_event(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact_event(item) for item in value]
+        return value
+
+    def active() -> bool:
+        """Refuse stale requests, ended processes, and cancelled exchanges under the lock."""
+        task = tasks.get(task_id, {})
+        return (task.get("status") == "running" and not task.get("cancellation_requested")
+                and str(task.get("current_turn_id") or "") == turn_id
+                and running_processes.get(task_id) is proc and proc.poll() is None)
+
+    def save_approvals(records: list[dict[str, Any]]) -> None:
+        """Save display-only decisions on the matching exchange, including expiration."""
+        task = tasks.get(task_id, {})
+        if str(task.get("current_turn_id") or "") != turn_id:
+            return
+        previous = {item["approval_id"]: item for item in task.get("approvals") or []}
+        for item in records:
+            older = previous.get(item["approval_id"], {})
+            item["turn_id"] = turn_id
+            item["requested_at"] = older.get("requested_at") or utc_now()
+            if item["status"] != "pending":
+                item["resolved_at"] = older.get("resolved_at") or utc_now()
+        update_task(task_id, approvals=records, **({"status": "cancelled"} if task.get("cancellation_requested") else {}))
+
+    def event(event: dict[str, Any]) -> None:
+        """Reuse the existing exec event consumer without logging raw RPC requests."""
+        event = redact_event(event)
+        write_task_log(task_id, "stdout", json.dumps(event))
+        record_activity_event(task_id, event)
+        found = extract_session_id(event)
+        if found and not session_holder.get("session_id"):
+            session_holder["session_id"] = found
+            update_task(task_id, session_id=found)
+
+    mode = str(options.get("codex_sandbox") or "workspace-write")
+    thread_params: dict[str, Any] = {
+        "cwd": "/config", "sandbox": mode, "approvalPolicy": "on-request", "approvalsReviewer": "user",
+    }
+    if session_id:
+        thread_params["threadId"] = session_id
+    model = execution["model"]
+    if model not in {"default", "gpt-5.3-codex"}:
+        thread_params["model"] = model
+    policy: dict[str, Any] = {"type": "readOnly" if mode == "read-only" else "workspaceWrite", "networkAccess": False}
+    if mode == "workspace-write":
+        policy["writableRoots"] = ["/config"]
+    return AppServerSession(
+        proc.stdin, lock=lock, thread_params=thread_params,
+        turn_params={"input": [{"type": "text", "text": prompt},
+                               *({"type": "localImage", "path": str(path)} for path in prompt_attachment_paths(task_id, latest_turn))],
+                     "effort": execution["reasoning_effort"], "summary": reasoning_summary(options),
+                     "outputSchema": FINAL_RESPONSE_SCHEMA, "sandboxPolicy": policy,
+                     "approvalPolicy": "on-request", "approvalsReviewer": "user"},
+        on_event=event, on_approvals=save_approvals,
+        on_final=lambda text: final_file.write_text(text, encoding="utf-8"),
+        is_active=active, redact=approval_redact,
+    )
+
+
 def parse_final(final_file: Path, returncode: int) -> dict[str, Any]:
     """Return Codex's final answer from its output file, or a stand-in when the file is missing or holds no JSON object."""
     if not final_file.exists():
@@ -3603,6 +3720,15 @@ def terminate_and_reap_process(
         return False
 
 
+def reap_approval_process(proc: subprocess.Popen[Any]) -> bool:
+    """Let app-server process EOF and an interrupt before falling back to termination."""
+    try:
+        proc.wait(timeout=5)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return terminate_and_reap_process(proc)
+
+
 def request_task_cancellation(
     task_id: str,
 ) -> tuple[bool, subprocess.Popen[Any] | None, str]:
@@ -3644,6 +3770,9 @@ def request_task_cancellation(
         task_dir.mkdir(parents=True, exist_ok=True)
         atomic_json_write(task_dir / "task.json", task)
         proc = running_processes.get(task_id)
+        approval_session = approval_sessions.get(task_id)
+        if approval_session is not None:
+            approval_session.close()
     save_task_index()
     return True, proc, ""
 
@@ -3884,7 +4013,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
     if task_cancellation_requested(task_id):
         return
-    args = build_codex_args(task_id, prompt_file, final_file, session_id)
+    interactive_approvals = uses_user_approvals(options)
+    args = build_app_server_args() if interactive_approvals else build_codex_args(task_id, prompt_file, final_file, session_id)
     write_task_log(task_id, "worker", "Starting Codex: " + " ".join(args))
 
     start_phase(task_id, "launch", "Starting Codex")
@@ -3933,9 +4063,15 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     assert proc.stdin is not None
     assert proc.stdout is not None
     assert proc.stderr is not None
+    approval_session = None
+    if interactive_approvals:
+        approval_session = create_approval_session(
+            task_id, proc, prompt_file.read_text(encoding="utf-8"), final_file, session_id, session_holder, options)
+        with lock:
+            approval_sessions[task_id] = approval_session
     stdout_thread = threading.Thread(
-        target=reader_thread,
-        args=(task_id, "stdout", proc.stdout, session_holder),
+        target=approval_session.read if approval_session else reader_thread,
+        args=(proc.stdout,) if approval_session else (task_id, "stdout", proc.stdout, session_holder),
         daemon=True,
     )
     stderr_thread = threading.Thread(
@@ -3953,16 +4089,30 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     process_exit_confirmed = False
     try:
         try:
-            proc.stdin.write(prompt_file.read_text(encoding="utf-8"))
-            proc.stdin.close()
-            stdin_closed = True
+            if approval_session:
+                approval_session.start()
+            else:
+                proc.stdin.write(prompt_file.read_text(encoding="utf-8"))
+                proc.stdin.close()
+                stdin_closed = True
         except (OSError, ValueError) as exc:
             lifecycle_error = exc
             process_exit_confirmed = terminate_and_reap_process(proc)
         if lifecycle_error is None:
             try:
-                returncode = proc.wait(timeout=timeout)
-                process_exit_confirmed = True
+                if approval_session:
+                    if not approval_session.finished.wait(timeout=timeout):
+                        timed_out = True
+                    approval_session.close()
+                    returncode = approval_session.returncode
+                    if approval_session.error:
+                        lifecycle_error = RuntimeError(approval_session.error)
+                    # The app-server is long-lived; one worker process owns one
+                    # exchange, and must be reaped before the queue advances.
+                    process_exit_confirmed = reap_approval_process(proc)
+                else:
+                    returncode = proc.wait(timeout=timeout)
+                    process_exit_confirmed = True
             except subprocess.TimeoutExpired:
                 timed_out = True
                 process_exit_confirmed = terminate_and_reap_process(proc)
@@ -3971,6 +4121,11 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
                 lifecycle_error = exc
                 process_exit_confirmed = terminate_and_reap_process(proc)
     finally:
+        if approval_session:
+            approval_session.close()
+            with lock:
+                if approval_sessions.get(task_id) is approval_session:
+                    approval_sessions.pop(task_id, None)
         if not stdin_closed:
             try:
                 proc.stdin.close()
@@ -3990,8 +4145,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
             task_id,
             lifecycle_error,
             session_id=session_holder.get("session_id") or session_id,
-            summary="Codex exited before accepting the task prompt.",
-            detail_prefix="Could not send the task prompt to Codex",
+            summary="The Codex exchange could not finish." if approval_session else "Codex exited before accepting the task prompt.",
+            detail_prefix="Codex permission connection failed" if approval_session else "Could not send the task prompt to Codex",
         )
         return
 
@@ -4255,6 +4410,9 @@ def _run_background_task(
     finally:
         verification.end(task_id)
         with lock:
+            approval_session = approval_sessions.pop(task_id, None)
+            if approval_session:
+                approval_session.close()
             proc = running_processes.get(task_id)
         if proc is not None:
             process_exit_confirmed = terminate_and_reap_process(proc)
@@ -4339,7 +4497,7 @@ def open_turn(task_id: str, task: dict[str, Any], turn: dict[str, Any], settings
         error="", started_at="", completed_at="", returncode=None,
         changes={}, validation_errors=[], lovelace_results=[], attachments=[],
         config_check=dict(EMPTY_CONFIG_CHECK), recovery_files=[], backups=[],
-        verification=[], verification_attachments=[],
+        verification=[], verification_attachments=[], approvals=[],
     )
 
 
@@ -4974,10 +5132,40 @@ def cancel_task(task_id: str) -> Response:
         status_code = 404 if error == "task not found" else 409
         return jsonify({"ok": False, "error": error}), status_code
     if proc is not None:
-        terminate_and_reap_process(proc)
+        with lock:
+            has_approval_session = task_id in approval_sessions
+        if has_approval_session:
+            reap_approval_process(proc)
+        else:
+            terminate_and_reap_process(proc)
     publish_cancelled_task_outcome(task_id, proc.returncode if proc is not None else None)
     start_next_queued()
     return jsonify({"ok": True, "task_id": task_id, "status": "cancelled"})
+
+
+@app.post("/tasks/<task_id>/approvals/<approval_id>")
+@require_auth
+def decide_approval(task_id: str, approval_id: str) -> Response:
+    """Answer a native permission request for the current exchange, once only."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("decision"), str) or payload["decision"] not in {"allow", "deny"}:
+        return jsonify({"ok": False, "error": "decision must be allow or deny"}), 400
+    with lock:
+        task = tasks.get(task_id)
+        if task is None:
+            return jsonify({"ok": False, "error": "task not found"}), 404
+        session = approval_sessions.get(task_id)
+        if not session or payload.get("turn_id") != task.get("current_turn_id"):
+            return jsonify({"ok": False, "error": APPROVAL_GONE}), 409
+        try:
+            session.decide(approval_id, payload["decision"])
+        except LookupError:
+            return jsonify({"ok": False, "error": APPROVAL_GONE}), 409
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except OSError:
+            return jsonify({"ok": False, "error": "Could not deliver the decision. The exchange was stopped."}), 503
+    return jsonify({"ok": True, "approval_id": approval_id, "decision": payload["decision"]})
 
 
 @app.post("/tasks/<task_id>/reply")

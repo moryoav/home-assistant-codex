@@ -454,6 +454,7 @@ class ConversationTests(unittest.TestCase):
             patch.object(server.subprocess, "Popen", side_effect=FakeProcess),
             patch.object(server, "fire_ha_event", return_value=(True, "")),
             patch.object(server, "notify"), patch.object(server, "refresh_usage_status_async"),
+            patch.object(server, "uses_user_approvals", return_value=False),
         ):
             server.run_task(task_id, "Review my automation")
             server.active_task_runners.discard(task_id)

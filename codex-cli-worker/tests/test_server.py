@@ -138,6 +138,8 @@ class SessionIdParsingTests(unittest.TestCase):
                     final_file.write_text(json.dumps(stale_payload), encoding="utf-8")
 
                 with (
+                    # This harness emits exec events; app-server has its own protocol tests.
+                    patch.object(server, "uses_user_approvals", return_value=False),
                     patch.object(server, "get_task_dir", return_value=task_dir),
                     patch.object(server, "save_task_index"),
                     patch.object(
@@ -900,6 +902,7 @@ class TaskLaunchFailureTests(unittest.TestCase):
                     ),
                     patch.object(server, "write_task_log"),
                     patch.object(server.subprocess, "Popen", return_value=proc),
+                    patch.object(server, "uses_user_approvals", return_value=False),
                     patch.object(
                         server,
                         "fire_ha_event",
@@ -1220,6 +1223,7 @@ class TaskCancellationTests(unittest.TestCase):
                 ),
                 patch.object(server, "write_task_log"),
                 patch.object(server.subprocess, "Popen", return_value=proc),
+                patch.object(server, "uses_user_approvals", return_value=False),
                 patch.object(server, "fire_ha_event", side_effect=self.capture_event(events)),
                 patch.object(server, "notify"),
                 patch.object(server, "refresh_usage_status_async"),

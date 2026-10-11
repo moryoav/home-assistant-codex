@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added live permission requests in the chat for sandboxed commands and file changes, with the action, reason, and access scope shown before **Allow once** or **Deny**.
+- Kept approvals limited to one pending action, with authenticated decisions, redacted history, stale-request rejection, and expiration on cancellation, timeout, connection loss, or restart.
+- Documented `danger-full-access` as the recommended mode, the existing backups, checks, and verification, and the limits of those safeguards. Kept `workspace-write` as the default.
+
 ## 0.1.71
 
 - **The chat says when the Codex integration is missing.** The app's web UI works without the **Codex** integration, but some features need it, and it was easy to install the app alone without noticing. The web UI now shows a line at the top of the chat when the integration is not installed, when it is installed but not connected to the app, or when it is older than this app needs. The line stays in view above the messages, on desktop and on a phone, and goes away by itself once the integration is installed, up to date, and connected.

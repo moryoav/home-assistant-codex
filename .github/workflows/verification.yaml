@@ -46,6 +46,8 @@ jobs:
         run: pytest
       - name: Test verification through the pinned CLI with shell networking disabled
         run: python codex-cli-worker/tests/codex_verification_smoke.py
+      - name: Test single-action user approvals through the pinned CLI
+        run: python codex-cli-worker/tests/codex_approval_smoke.py
       - name: Exercise browser protocol and restrictions
         run: |
           node codex-cli-worker/tests/browser_resources.cjs

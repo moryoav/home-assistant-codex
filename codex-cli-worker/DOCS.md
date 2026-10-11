@@ -140,7 +140,7 @@ API: `GET /status` has `integration` with `state` (`ok`, `starting`, `not_instal
 
 `codex_model` is a fixed selection to avoid typo-prone free text. The default value, `default`, lets the installed Codex CLI choose its recommended model. Explicit choices are `gpt-6-astra` for the most demanding tasks, `gpt-6.1-sol` as the latest workhorse for coding and everyday work, close to Astra at a lower cost, `gpt-6-sol` as the previous workhorse, `gpt-6-luna` for fast and affordable work on easier tasks, and the older `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Model availability depends on your account. The app bundles Codex CLI 0.160.0, which includes GPT-6.1 Sol support. Older models are no longer offered in the selector. Existing installations with the legacy `gpt-5.3-codex` value remain upgrade-compatible and treat it as `default`. `gpt-5.5` is retired: OpenAI removes it from Codex with ChatGPT sign-in on October 14, 2026. It stays in the list only so that an app with it saved keeps starting, and it runs `gpt-5.6-sol`, the next model up.
 
-`model_reasoning_effort` controls how much reasoning Codex asks supported models to use for each non-interactive task. The app passes it to `codex exec` as a per-run `--config model_reasoning_effort="<value>"` override rather than writing it into `config.toml`. Available values are:
+`model_reasoning_effort` controls how much reasoning Codex asks supported models to use for each task. The app passes it for each exchange, through the app-server turn in sandboxed modes or a `codex exec` configuration override in full access. Available values are:
 
 - `minimal`: fastest and lowest reasoning.
 - `low`: lighter reasoning.
@@ -150,7 +150,7 @@ API: `GET /status` has `integration` with `state` (`ok`, `starting`, `not_instal
 
 For GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna, select `low`, `medium`, `high`, or `xhigh`; `minimal` is not supported. None of the current models supports `minimal`, so the app runs `medium` when it is selected, also with the `default` model. See the [OpenAI model documentation](https://developers.openai.com/api/docs/models/gpt-6-astra) for supported reasoning levels and the [Codex models guide](https://learn.chatgpt.com/docs/models) for availability.
 
-`reasoning_summary` controls whether Codex reports its reasoning while it works, which the chat shows in the activity list under your latest message. It is passed to `codex exec` as `--config model_reasoning_summary="<value>"`. Codex reports no reasoning at all unless summaries are requested, so the default is on.
+`reasoning_summary` controls whether Codex reports its reasoning while it works, which the chat shows in the activity list under your latest message. It is passed with each app-server turn in sandboxed modes, or as `--config model_reasoning_summary="<value>"` in full access. Codex reports no reasoning at all unless summaries are requested, so the default is on.
 
 - `concise`: short headlines such as "Checking the automation". This is the default.
 - `detailed`: asks for fuller summaries; current models still mostly return headlines.
@@ -182,7 +182,7 @@ From **0.1.63**, the worker no longer archives the whole configuration folder be
 - The chat lists the files with a saved previous version, and the task details name any reviewed file without one. `GET /tasks/<task_id>`, `codex_cli.get_task`, and the `codex_cli_task_result` event carry `backups` with `path`, `status` (`saved`, `missing`, `unverified` for a copy that is not the earlier version, or `excluded`), and `copy`.
 - Credential files (`secrets.yaml`, the auth stores, and `.storage/core.config_entries`) are never copied. The worker deletes such a copy if Codex makes one.
 
-Codex needs to be able to write to the backup folder. In `workspace-write` mode that requires `task_root` to be inside `/config`, which is the default. In `read-only` mode Codex changes nothing and is given no backup folder. A per-file copy depends on Codex following the instruction; if a file was changed without one, restore it from a Home Assistant backup.
+Codex needs to be able to write to the backup folder. In `workspace-write` mode that requires `task_root` to be inside `/config`, which is the default. In `read-only` mode Codex is given no backup folder; any explicitly approved writes still need a separate recovery plan. A per-file copy depends on Codex following the instruction; if a file was changed without one, restore it from a Home Assistant backup.
 
 **Full snapshot (optional).** Turn on **Full snapshot before every message** (`full_snapshot`) to archive every tracked file to `snapshot-before.tar.gz` in the exchange's folder before Codex starts, as earlier versions did. The worker then takes the previous version of any reviewed file that Codex did not copy out of the archive, so every reviewed file has a saved copy. The archive adds a wait before every message that grows with the size of `/config`.
 
@@ -192,11 +192,25 @@ Codex needs to be able to write to the backup folder. In `workspace-write` mode 
 
 ## Sandbox
 
-- `read-only`: Codex can inspect files and run read-only commands, but should not edit `/config`.
-- `workspace-write`: Codex can edit the mounted `/config` workspace while generated shell commands remain sandboxed. This is the recommended mode.
-- `danger-full-access`: Codex sandboxing is disabled inside the add-on container. The container still only mounts the configured add-on volumes, but this should be used only when a task cannot work in `workspace-write`.
+- `read-only`: Codex can inspect files. Writes and shell networking require permission for the specific action.
+- `workspace-write`: Codex can edit the mounted `/config` workspace. Shell networking and writes outside the workspace require permission. This remains the default setting.
+- `danger-full-access`: Codex sandboxing is disabled inside the app container, so tasks can use the files and network available to the app without sandbox approval prompts.
+
+**My recommendation is `danger-full-access`.** The name sounds scary, but this is the mode I use and recommend for working freely in Home Assistant. The app still provides safeguards: instructions to save per-file backups, optional full snapshots, checks of changed YAML and JSON, Home Assistant configuration checks, and built-in verification of states and dashboards. These help catch mistakes and recover changes; they do not guarantee that every action is safe or reversible. A configuration check does not prove automation behavior, and file backups do not undo device actions, service calls, or changes outside the backed-up configuration. Keep normal Home Assistant backups too.
 
 The worker exposes the Codex version and a structured sandbox preflight in its authenticated `/health` response. Sandboxed tasks fail with an actionable error before launch if namespace isolation is unavailable.
+
+### Permission requests
+
+In `workspace-write` and `read-only`, the worker uses Codex's live approval protocol with the approval policy `on-request`. When Codex requests access for a command or file change, the chat shows **Permission needed**, the reason, the command and working folder or the file paths and diff, and **Allow once** and **Deny** buttons. Review the action, then choose a button. Typing a reply or answering a follow-up question does not grant sandbox access. Open the app chat to answer permission requests, including tasks started by the integration or a notification.
+
+**Allow once** answers only that pending request. It does not change the configured sandbox, create a permanent command rule, or grant access to later requests. An approved command can run outside the sandbox with the app's available file and network access; permission is broader than enabling networking alone. An approved file change applies the displayed edits. Review paths outside `/config` carefully, since the worker's configuration backups and checks do not cover them. In `read-only`, the normal per-file backup instructions are disabled, so consider changing modes for editing work.
+
+**Deny** refuses the action and lets Codex continue, for example by finding another way or explaining the limitation. **Cancel** stops the exchange. Requests expire when the exchange ends, times out, is cancelled, loses its CLI connection, or the worker restarts. The task timeout includes time spent waiting for permission. An unanswered request keeps the worker busy and later messages in the queue. Decisions from another tab refresh automatically; an old or repeated button cannot grant access.
+
+The request and decision remain in the exchange's `approvals` history, with sensitive values redacted. An incomplete or oversized action can be denied but cannot be allowed. This first version supports individual command and file-change requests; broad turn or session permission grants and permanent policy changes are refused. API credentials are separate: an approval does not create a Home Assistant token or expose the Supervisor token to Codex. The built-in verification tool continues to work through the worker without shell network approval.
+
+Authenticated API clients can answer a live request using `POST /tasks/<task_id>/approvals/<approval_id>` with `{"turn_id":"<current_turn_id>","decision":"allow"}` or `"deny"`. Read the redacted `approvals` records from `GET /tasks/<task_id>` first. A stale or already answered request returns HTTP 409. Task summaries include `permission_required` while an exchange is waiting. Permission decisions are made directly on the live exchange and are never queued as chat messages.
 
 ## Codex Sign-In
 
@@ -222,7 +236,7 @@ The optional `HA_TOKEN` add-on option is passed to Codex subprocesses as the `HA
 
 From **0.1.68**, a task that has `HA_TOKEN` also gets `HA_URL`, the address those calls go to, and the worker's instructions tell Codex to use the two together. The address is the **Home Assistant API URL** option (`ha_url`), which now defaults to `http://homeassistant:8123`, Home Assistant's own address inside the app network. Change it only if your Home Assistant uses HTTPS or another port. Before, Codex was given the token without an address and tended to use `http://supervisor/core`, the Supervisor's Core proxy, which rejects a Home Assistant token with HTTP 401; a reload or restart it was asked for then failed. An installation that still has `http://supervisor/core` saved in the option gets the new default, so nothing has to be changed after the update. The app's own calls to Home Assistant keep using the Supervisor proxy with the app's own token and do not use this option.
 
-These calls come from Codex's shell, so they need a sandbox mode with network access; `workspace-write` and `read-only` block it. What Codex can do with the token is whatever the token's user may do, including reloading configuration and restarting Home Assistant.
+These calls come from Codex's shell. They can run freely in `danger-full-access`; in `workspace-write` and `read-only`, Codex must request permission for the specific command that needs networking. What Codex can do with the token is whatever the token's user may do, including reloading configuration and restarting Home Assistant.
 
 ## Usage Status
 

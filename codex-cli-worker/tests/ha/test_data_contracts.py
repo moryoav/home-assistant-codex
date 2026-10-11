@@ -17,12 +17,12 @@ END = "2026-01-02T00:00:00+00:00"
 
 
 @pytest.mark.parametrize("period", ["5minute", "hour", "day", "week", "month"])
-def test_generated_recorder_requests_match_core_schemas(period):
+def test_generated_recorder_requests_match_core_schemas(period, tmp_path):
     """Validate the exact generated requests against both Core versions in the CI matrix."""
     worker = SimpleNamespace(lock=threading.RLock(), tasks={"chat": {"status": "running", "current_turn_id": "turn"}},
                              ha_token=lambda: "private-token", api_token=lambda: "", read_options=lambda: {},
                              redact=lambda text: text)
-    engine = HomeAssistantData(worker)
+    engine = HomeAssistantData(worker, tmp_path / "exports")
     capability = engine.begin("chat")
     captured = []
 

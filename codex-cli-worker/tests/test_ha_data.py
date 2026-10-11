@@ -1,19 +1,21 @@
 """Recorder API contracts, bounded analysis, and the historical-data credential boundary."""
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from test_server import server
-from ha_data import HomeAssistantData, MAX_QUERIES, MAX_SOURCE_BYTES
-from ha_data_mcp import MAX_RESPONSE_BYTES, TOOLS, respond
+from ha_data import HomeAssistantData, MAX_EXPORT_BYTES, MAX_QUERIES, MAX_SOURCE_BYTES, MAX_TURN_BYTES
+from ha_data_mcp import MAX_RESPONSE_BYTES, STATISTIC_TYPES, TOOLS, respond
 
 START = "2026-01-01T00:00:00+00:00"
 END = "2026-01-02T00:00:00+00:00"
@@ -35,8 +37,20 @@ class HistoricalDataTests(unittest.TestCase):
     def setUp(self):
         """Begin an isolated turn with its own data capability."""
         self.worker = data_worker()
-        self.engine = HomeAssistantData(self.worker)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.engine = HomeAssistantData(self.worker, Path(temporary.name) / "exports")
+        self.addCleanup(self.engine.end, "chat")
         self.capability = self.engine.begin("chat")
+
+    def saved_result(self, receipt):
+        """Read the full export and verify the model-visible receipt identifies its exact bytes."""
+        self.assertEqual(receipt["delivery"], "file")
+        self.assertLessEqual(len(json.dumps(receipt).encode()) + 1, MAX_RESPONSE_BYTES)
+        content = Path(receipt["file"]["path"]).read_bytes()
+        self.assertEqual(len(content), receipt["file"]["size_bytes"])
+        self.assertEqual(hashlib.sha256(content).hexdigest(), receipt["file"]["sha256"])
+        return json.loads(content)
 
     def payload(self, operation="history", **fields):
         """Build a valid scoped request and allow a test to change one boundary."""
@@ -122,7 +136,7 @@ class HistoricalDataTests(unittest.TestCase):
                 elif outcome == "new_capability":
                     self.engine.begin("chat")
                 else:
-                    self.engine = HomeAssistantData(self.worker)
+                    self.engine = HomeAssistantData(self.worker, self.engine.export_root)
                 with patch.object(self.engine, "history") as read, self.assertRaises(ValueError):
                     self.engine.dispatch(self.payload())
                 read.assert_not_called()
@@ -180,7 +194,7 @@ class HistoricalDataTests(unittest.TestCase):
         ], [{"entity_id": "sensor.unrequested", "last_changed": START, "state": "private"}]]
         response = self.rest_response(raw)
         with patch("ha_data.requests.get", return_value=response) as get:
-            result = self.engine.dispatch(self.payload(entity_ids=["sensor.kitchen", "sensor.empty"]))
+            result = self.saved_result(self.engine.dispatch(self.payload(entity_ids=["sensor.kitchen", "sensor.empty"])))
         call = get.call_args
         self.assertEqual(call.args, ("http://supervisor/core/api/history/period/2026-01-01T00%3A00%3A00%2B00%3A00",))
         self.assertEqual(call.kwargs["params"], {"filter_entity_id": "sensor.kitchen,sensor.empty", "end_time": END,
@@ -201,7 +215,7 @@ class HistoricalDataTests(unittest.TestCase):
         raw = [[{"entity_id": entity, "last_changed": START, "state": str(index)} for index in range(3)]
                for entity in ("sensor.a", "sensor.b")]
         with patch("ha_data.requests.get", return_value=self.rest_response(raw)):
-            result = self.engine.dispatch(self.payload(entity_ids=["sensor.a", "sensor.b"], max_points=4))
+            result = self.saved_result(self.engine.dispatch(self.payload(entity_ids=["sensor.a", "sensor.b"], max_points=4)))
         self.assertTrue(result["truncated"])
         for item in result["series"].values():
             self.assertEqual(item["available_points"], 3)
@@ -219,7 +233,7 @@ class HistoricalDataTests(unittest.TestCase):
                     ("2026-01-01T01:00:00Z", "off"), ("2026-01-01T02:00:00Z", "heat"),
                 ])]]
         with patch("ha_data.requests.get", return_value=self.rest_response(raw)):
-            result = self.engine.dispatch(self.payload(entity_ids=["climate.kitchen"]))
+            result = self.saved_result(self.engine.dispatch(self.payload(entity_ids=["climate.kitchen"])))
         item = result["series"]["climate.kitchen"]
         self.assertEqual([point["state"] for point in item["points"]], ["heat", "off", "heat"])
         self.assertEqual(item["available_points"], 3)
@@ -250,9 +264,9 @@ class HistoricalDataTests(unittest.TestCase):
                                     "unrequested": "private"}], "sensor.other": [{"private": "hidden"}]}
         ws = self.ws_response(metadata, raw)
         with patch("ha_data.websocket.create_connection", return_value=ws) as connect:
-            result = self.engine.dispatch(self.payload(
+            result = self.saved_result(self.engine.dispatch(self.payload(
                 "statistics", statistic_ids=["sensor.kitchen", "sensor.empty", "external:missing"],
-                types=["mean", "sum", "change", "state", "last_reset"]))
+                types=["mean", "sum", "change", "state", "last_reset"])))
         connect.assert_called_once_with("ws://supervisor/core/websocket", timeout=15)
         sent = [json.loads(call.args[0]) for call in ws.send.call_args_list]
         self.assertEqual(sent[0], {"type": "auth", "access_token": "supervisor-secret"})
@@ -325,7 +339,7 @@ class HistoricalDataTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.worker.ha_token.return_value = value
                 with patch.object(self.engine, "history", return_value={"status": "observed", "state": "prefix " + value}):
-                    result = self.engine.dispatch(self.payload())
+                    result = self.saved_result(self.engine.dispatch(self.payload()))
                 self.assertEqual(result, {"status": "observed", "state": "prefix [redacted]"})
 
     def test_transport_exceptions_and_oversized_outputs_are_safe_tool_errors(self):
@@ -334,12 +348,177 @@ class HistoricalDataTests(unittest.TestCase):
             with self.subTest(error=error), patch.object(self.engine, "history", side_effect=error):
                 result = self.engine.dispatch(self.payload())
             self.assertEqual(result, {"status": "unavailable", "message": "Home Assistant data request failed"})
-        with patch.object(self.engine, "history", return_value={"status": "observed", "state": "x" * MAX_RESPONSE_BYTES}):
+        with patch.object(self.engine, "history", return_value={"status": "observed", "state": "x" * MAX_EXPORT_BYTES}):
             result = self.engine.dispatch(self.payload())
         self.assertIn("too large", result["message"])
         # The execution lock must also be released after a backend failure.
         with patch.object(self.engine, "history", return_value={"status": "observed"}):
             self.assertEqual(self.engine.dispatch(self.payload())["status"], "observed")
+
+    def test_large_history_is_saved_completely_without_points_in_the_receipt(self):
+        """Keep the middle of a large series accessible without sending it through CLI output truncation."""
+        raw = [[{"entity_id": "sensor.kitchen", "last_changed": (datetime.fromisoformat(START) + timedelta(seconds=index)).isoformat(),
+                 "state": str(index)} for index in range(1000)]]
+        with patch("ha_data.requests.get", return_value=self.rest_response(raw)):
+            receipt = self.engine.dispatch(self.payload())
+        result = self.saved_result(receipt)
+        self.assertLess(len(json.dumps(receipt).encode()), 2000)
+        self.assertNotIn("points", receipt)
+        self.assertNotIn("sensor.kitchen", json.dumps(receipt))
+        self.assertEqual(receipt["returned_points"], 1000)
+        self.assertFalse(receipt["truncated"])
+        self.assertEqual([point["state"] for point in result["series"]["sensor.kitchen"]["points"]],
+                         [str(index) for index in range(1000)])
+
+    def test_maximum_statistics_points_fit_in_a_file_with_all_supported_fields(self):
+        """Deliver 5,000 full statistics buckets, exceeding the old 256 KiB output cap."""
+        rows = [{"start": START_MS + index * 3600000, "end": START_MS + (index + 1) * 3600000,
+                 "mean": index / 4, "min": index / 4 - 1, "max": index / 4 + 1,
+                 "sum": index * 2, "state": index * 2, "change": 2, "last_reset": START_MS}
+                for index in range(5000)]
+        ws = self.ws_response([{"statistic_id": "sensor.kitchen", "display_unit_of_measurement": "kWh"}],
+                              {"sensor.kitchen": rows})
+        with patch("ha_data.websocket.create_connection", return_value=ws):
+            receipt = self.engine.dispatch(self.payload("statistics", max_points=5000, types=STATISTIC_TYPES,
+                                                        end_time="2026-09-01T00:00:00Z"))
+        result = self.saved_result(receipt)
+        points = result["series"]["sensor.kitchen"]["points"]
+        self.assertGreater(receipt["file"]["size_bytes"], 256 * 1024)
+        self.assertEqual(len(points), 5000)
+        self.assertEqual(points[2500]["mean"], 625)
+        self.assertEqual(sum(point["change"] for point in points), 10000)
+        self.assertFalse(receipt["truncated"])
+        self.assertEqual(receipt["returned_points"], 5000)
+
+    def test_point_budget_redistributes_unused_shares_and_integer_remainders(self):
+        """Use the whole budget without starving quiet or empty sensors when one records frequently."""
+        counts = [9117, 150, 9, 0, 0, 0, 0, 0]
+        series = {f"sensor.item_{index}": {"points": [{"state": str(point)} for point in range(count)]}
+                  for index, count in enumerate(counts)}
+        result = self.engine.result("history", {"max_points": 1000, "start_time": START, "end_time": END}, series)
+        self.assertEqual([item["returned_points"] for item in result["series"].values()], [841, 150, 9, 0, 0, 0, 0, 0])
+        self.assertTrue(result["series"]["sensor.item_0"]["truncated"])
+        self.assertFalse(result["series"]["sensor.item_1"]["truncated"])
+        series = {f"sensor.item_{index}": {"points": [0] * 10} for index in range(3)}
+        result = self.engine.result("history", {"max_points": 5, "start_time": START, "end_time": END}, series)
+        self.assertEqual([item["returned_points"] for item in result["series"].values()], [2, 2, 1])
+
+    def test_receipt_size_does_not_grow_with_long_unicode_ids_or_sensor_values(self):
+        """Keep long untrusted IDs and states in the file rather than exhausting the output budget."""
+        ids = [str(index) + "漢" * 250 for index in range(16)]
+        with patch.object(self.engine, "ws_read", return_value=[[], {}]):
+            receipt = self.engine.dispatch(self.payload("statistics", statistic_ids=ids))
+        result = self.saved_result(receipt)
+        self.assertEqual(set(result["series"]), set(ids))
+        self.assertEqual(receipt["requested_series"], 16)
+        self.assertEqual(receipt["series_statuses"]["no_statistics"], 16)
+        self.assertLess(len(json.dumps(receipt).encode()), 2000)
+
+    def test_exports_are_private_and_removed_on_end_replacement_and_restart(self):
+        """Keep data outside task files, isolate turns, and remove exports left by a stopped worker."""
+        with patch.object(self.engine, "history", return_value={"status": "observed"}):
+            for outcome in ("ended", "replaced", "restarted"):
+                with self.subTest(outcome=outcome):
+                    self.capability = self.engine.begin("chat")
+                    receipt = self.engine.dispatch(self.payload())
+                    path = Path(receipt["file"]["path"])
+                    self.assertEqual(path.parent.parent, self.engine.export_root)
+                    self.assertNotIn(self.capability, str(path))
+                    if os.name == "posix":
+                        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+                        self.assertEqual(self.engine.export_root.stat().st_mode & 0o777, 0o700)
+                    if outcome == "ended":
+                        self.engine.end("chat")
+                    elif outcome == "replaced":
+                        self.engine.begin("chat")
+                    else:
+                        restarted = HomeAssistantData(self.worker, self.engine.export_root)
+                        restarted.cleanup()
+                    self.assertFalse(path.exists())
+                    self.assertFalse(path.parent.exists())
+
+    def test_storage_quota_refuses_additional_files_without_dropping_prior_results(self):
+        """Bound per-turn disk use and restore the allowance only when a new exchange starts."""
+        with patch.object(self.engine, "history", return_value={"status": "observed"}):
+            first = self.engine.dispatch(self.payload())
+            with patch("ha_data.MAX_TURN_BYTES", first["file"]["size_bytes"]):
+                self.assertIn("storage limit", self.engine.dispatch(self.payload())["message"])
+                self.assertTrue(Path(first["file"]["path"]).exists())
+                self.assertEqual(len(list(self.engine.export_root.rglob("*.json"))), 1)
+                self.capability = self.engine.begin("chat")
+                self.assertEqual(self.engine.dispatch(self.payload())["status"], "observed")
+        self.assertLess(MAX_EXPORT_BYTES, MAX_TURN_BYTES)
+
+    def test_write_failure_removes_partial_exports_and_keeps_the_budget_available(self):
+        """Do not return a dangling receipt or charge storage when publishing a file fails."""
+        with patch.object(self.engine, "history", return_value={"status": "observed"}), \
+             patch("ha_data.Path.replace", side_effect=OSError("private storage path")):
+            self.assertEqual(self.engine.dispatch(self.payload()),
+                             {"status": "unavailable", "message": "Home Assistant data request failed"})
+        self.assertEqual(list(self.engine.export_root.rglob("*.tmp")), [])
+        self.assertEqual(list(self.engine.export_root.rglob("*.json")), [])
+        self.assertEqual(self.engine.export_bytes["chat"], 0)
+
+    @unittest.skipUnless(os.name == "posix", "Unix symlink boundary")
+    def test_storage_and_cleanup_never_follow_symlinks(self):
+        """Refuse a replaced storage root and unlink orphan symlinks without touching their targets."""
+        outside = self.engine.export_root.parent / "outside"
+        outside.mkdir()
+        marker = outside / "keep.json"
+        marker.write_text("private", encoding="utf-8")
+        self.engine.export_root.symlink_to(outside, target_is_directory=True)
+        with patch.object(self.engine, "history", return_value={"status": "observed"}):
+            self.assertEqual(self.engine.dispatch(self.payload())["message"], "Historical data storage is unavailable")
+        self.engine.export_root.unlink()
+        self.engine.export_root.mkdir()
+        (self.engine.export_root / "turn-orphan").symlink_to(outside, target_is_directory=True)
+        self.engine.cleanup()
+        self.assertEqual(marker.read_text(encoding="utf-8"), "private")
+        self.assertFalse((self.engine.export_root / "turn-orphan").exists())
+
+    @unittest.skipUnless(os.name == "posix", "Unix symlink boundary")
+    def test_end_never_deletes_through_a_replaced_storage_root(self):
+        """Revoke the credential even when a replacement root makes file cleanup unsafe."""
+        with patch.object(self.engine, "history", return_value={"status": "observed"}):
+            receipt = self.engine.dispatch(self.payload())
+        directory = Path(receipt["file"]["path"]).parent
+        moved = self.engine.export_root.with_name("moved")
+        self.engine.export_root.rename(moved)
+        self.engine.export_root.symlink_to(moved, target_is_directory=True)
+        with patch("ha_data.sys.stderr"):
+            self.engine.end("chat")
+        self.assertTrue((moved / directory.name / Path(receipt["file"]["path"]).name).exists())
+        self.assertEqual(self.engine.capabilities, {})
+        self.engine.export_root.unlink()
+
+    def test_cleanup_preserves_files_belonging_to_an_active_exchange(self):
+        """Allow orphan cleanup without removing the files a current query has delivered."""
+        with patch.object(self.engine, "history", return_value={"status": "observed"}):
+            receipt = self.engine.dispatch(self.payload())
+        orphan = self.engine.export_root / "turn-orphan"
+        orphan.mkdir()
+        (orphan / "result.json").write_text("{}", encoding="utf-8")
+        self.engine.cleanup()
+        self.assertTrue(Path(receipt["file"]["path"]).exists())
+        self.assertFalse(orphan.exists())
+
+    def test_cancellation_while_publishing_removes_files_and_refuses_the_receipt(self):
+        """Discard even a successfully written result if the exchange ends before dispatch returns it."""
+        replace = Path.replace
+
+        def cancelled_replace(path, target):
+            """Publish the file, then simulate cancellation before the final capability check."""
+            result = replace(path, target)
+            self.worker.tasks["chat"]["cancellation_requested"] = True
+            return result
+
+        with patch.object(self.engine, "history", return_value={"status": "observed"}), \
+             patch("ha_data.Path.replace", cancelled_replace):
+            result = self.engine.dispatch(self.payload())
+        self.assertEqual(result, {"status": "unavailable", "message": "Data capability expired"})
+        self.assertEqual(list(self.engine.export_root.glob("turn-*")), [])
+        self.assertEqual(self.engine.capabilities, {})
 
 
 class DataMcpTests(unittest.TestCase):
@@ -401,8 +580,14 @@ class DataMcpTests(unittest.TestCase):
         """Exercise the background runner's cleanup and refuse its old credential after either outcome."""
         for failure in (None, RuntimeError("Fixture startup failure")):
             with self.subTest(failure=failure), ExitStack() as stack:
-                engine = HomeAssistantData(data_worker())
+                temporary = stack.enter_context(tempfile.TemporaryDirectory())
+                engine = HomeAssistantData(data_worker(), Path(temporary) / "exports")
                 capability = engine.begin("chat")
+                with patch.object(engine, "history", return_value={"status": "observed"}):
+                    receipt = engine.dispatch({"operation": "history", "capability": capability, "entity_ids": ["sensor.kitchen"],
+                                               "start_time": START, "end_time": END})
+                export = Path(receipt["file"]["path"])
+                self.assertTrue(export.exists())
                 stack.enter_context(patch.object(server, "ha_data", engine))
                 stack.enter_context(patch.object(server, "run_task", side_effect=failure))
                 failed = stack.enter_context(patch.object(server, "fail_task_launch"))
@@ -418,6 +603,7 @@ class DataMcpTests(unittest.TestCase):
                     engine.dispatch({"operation": "history", "capability": capability, "entity_ids": ["sensor.kitchen"],
                                      "start_time": START, "end_time": END})
                 self.assertEqual(engine.capabilities, {})
+                self.assertFalse(export.exists())
 
     def test_both_cli_paths_register_automatically_approved_data_tools(self):
         """Use the same required bridge in exec and app-server so changing sandbox mode cannot hide it."""

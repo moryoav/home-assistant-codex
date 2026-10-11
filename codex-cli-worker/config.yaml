@@ -22,6 +22,7 @@ map:
 homeassistant_api: true
 backup_exclude:
   - "*/ha-docs*"
+  - "*/ha-data*"
 discovery:
   - codex_cli
 options:

@@ -1,7 +1,9 @@
 """Exercise the pinned CLI's sandbox and MCP path without an account or model call."""
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import shlex
 import socket
 import subprocess
 import sys
@@ -17,8 +19,8 @@ from server import data_mcp_args, verification_mcp_args
 from approvals import AppServerSession
 
 
-def assert_data_results(request):
-    """Decode nested MCP text content and require actual history and statistics in the model input."""
+def data_receipts(request):
+    """Decode nested MCP content and locate the small file receipts actually delivered to the model."""
     results = {}
 
     def visit(value):
@@ -34,22 +36,64 @@ def assert_data_results(request):
             for item in value:
                 visit(item)
         elif isinstance(value, dict):
-            if value.get("status") == "observed" and value.get("operation") in ("history", "statistics"):
+            if value.get("delivery") == "file" and value.get("operation") in ("history", "statistics"):
                 results[value["operation"]] = value
             for item in value.values():
                 visit(item)
 
     visit(request["input"])
-    assert results["history"]["series"]["sensor.kitchen"]["points"][0]["state"] == "22.5", request
-    assert results["statistics"]["series"]["sensor.kitchen"]["points"][0]["mean"] == 22.5, request
+    assert set(results) == {"history", "statistics"}, request
+    assert "tokens truncated" not in json.dumps(request["input"]), request
+    return results
+
+
+def analysis_command(receipts):
+    """Load every saved point in the sandbox and return counts, full-series sums and middle values."""
+    code = """import hashlib, json
+from pathlib import Path
+receipts = RECEIPTS
+answer = {}
+for operation, receipt in receipts.items():
+    content = Path(receipt['file']['path']).read_bytes()
+    assert len(content) == receipt['file']['size_bytes']
+    assert hashlib.sha256(content).hexdigest() == receipt['file']['sha256']
+    data = json.loads(content)
+    points = data['series']['sensor.kitchen']['points']
+    assert not data['truncated'] and not receipt['truncated']
+    values = [int(point['state'] if operation == 'history' else point['mean']) for point in points]
+    answer[operation] = {'count': len(points), 'sum': sum(values), 'middle': values[len(values) // 2]}
+print(json.dumps(answer, sort_keys=True))
+""".replace("RECEIPTS", repr(receipts))
+    return shlex.quote(sys.executable) + " -c " + shlex.quote(code)
+
+
+def assert_data_results(request):
+    """Require full-series calculations from the real sandbox, rather than trusting file metadata alone."""
+    receipts = data_receipts(request)
+    assert receipts["history"]["returned_points"] == 1000, receipts
+    assert receipts["statistics"]["returned_points"] == 5000, receipts
+    # Look at actual shell output separately from the echoed command text.
+    outputs = [item for item in request["input"] if item.get("type") == "function_call_output"
+               and item.get("call_id") == "analyze_files"]
+    assert len(outputs) == 1, request
+    text = json.dumps(outputs[0])
+    assert '\\"count\\": 1000' in text and '\\"count\\": 5000' in text, outputs
+    assert "499500" in text and "12497500" in text, outputs
+    assert '\\"middle\\": 500' in text and '\\"middle\\": 2500' in text, outputs
 
 
 def main():
     """Run both CLI transports: private MCP reads work while shell networking stays sandboxed."""
     binary = os.environ.get("HA_TEST_CODEX", "/usr/local/bin/codex")
     assert "0.160.0" in subprocess.check_output([binary, "--version"], text=True)
-    with tempfile.TemporaryDirectory(prefix="ha-mcp-test-") as root:
+    # Private files must be outside both the workspace and writable /tmp, just
+    # like /data/ha-data is outside /config in the app container.
+    cache = Path.home() / ".cache"
+    cache.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="ha-mcp-test-", dir=cache) as root:
         root = Path(root)
+        workspace = root / "workspace"
+        workspace.mkdir()
         checks = []
         worker = SimpleNamespace(
             lock=threading.RLock(), tasks={"task": {"status": "running", "current_turn_id": "turn"}},
@@ -66,13 +110,19 @@ def main():
         engine.core = lambda *_args, **_kwargs: {"state": "on", "attributes": {}}
         path = str(root / "verification.sock")
         service = engine.serve(path)
-        data = HomeAssistantData(worker)
+        data = HomeAssistantData(worker, root / "exports")
         data_capability = data.begin("task")
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
         data.history = lambda query: data.result("history", query, {
-            "sensor.kitchen": {"points": [{"time": query["start_time"], "state": "22.5"}]},
+            "sensor.kitchen": {"points": [{"time": f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}+00:00", "state": str(index)}
+                                          for index in range(1000)]},
         })
         data.statistics = lambda query: data.result("statistics", query, {
-            "sensor.kitchen": {"points": [{"start": query["start_time"], "end": query["end_time"], "mean": 22.5}],
+            "sensor.kitchen": {"points": [{"start": (start + timedelta(hours=index)).isoformat(),
+                                           "end": (start + timedelta(hours=index + 1)).isoformat(), "mean": index,
+                                           "min": index - 1, "max": index + 1, "sum": index * 2,
+                                           "state": index * 2, "change": 2, "last_reset": query["start_time"]}
+                                          for index in range(5000)],
                                "statistics_available": True, "unit_of_measurement": "°C"},
         })
         data_path = str(root / "data.sock")
@@ -80,14 +130,14 @@ def main():
         received = []
 
         class Provider(BaseHTTPRequestHandler):
-            """Fixture model provider that calls verification, history and statistics before answering."""
+            """Call both data tools, then analyze their large files through a real sandboxed shell."""
 
             def log_message(self, *_args):
                 """Keep request logging out of the smoke test's output."""
                 pass
 
             def do_POST(self):
-                """Stream three tool calls and a final message for each CLI run.
+                """Stream four tool calls and a final message for each CLI run.
 
                 Prewarm requests get an empty completion and are not counted.
                 """
@@ -99,7 +149,7 @@ def main():
                     self.wfile.write(b'event: response.completed\ndata: {"type":"response.completed","response":{"id":"prewarm"}}\n\n')
                     return
                 received.append(request)
-                step = len(received) % 4
+                step = len(received) % 5
                 if step == 1:
                     namespace = next((tool for tool in request["tools"] if tool.get("name") == "mcp__home_assistant"), None)
                     if not namespace or not any(tool.get("name") == "verify" for tool in namespace["tools"]):
@@ -114,10 +164,25 @@ def main():
                         self.send_error(400, "Data tool missing")
                         return
                     arguments = {"entity_ids" if step == 2 else "statistic_ids": ["sensor.kitchen"],
-                                 "start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-02T00:00:00Z"}
+                                 "start_time": "2026-01-01T00:00:00Z",
+                                 "end_time": "2026-01-02T00:00:00Z" if step == 2 else "2026-09-01T00:00:00Z",
+                                 "max_points": 1000 if step == 2 else 5000}
+                    if step == 3:
+                        arguments["types"] = ["mean", "min", "max", "sum", "state", "change", "last_reset"]
                     item = {"type": "function_call", "call_id": "data_" + name, "namespace": namespace["name"],
                             "name": name, "arguments": json.dumps(arguments)}
+                elif step == 4:
+                    receipts = data_receipts(request)
+                    functions = [(tool["name"], child) for tool in request["tools"] if tool.get("type") == "namespace"
+                                 for child in tool["tools"]]
+                    functions += [(None, tool) for tool in request["tools"] if tool.get("type") != "namespace"]
+                    namespace, tool = next((namespace, tool) for namespace, tool in functions if tool.get("name") == "exec_command")
+                    item = {"type": "function_call", "call_id": "analyze_files", "name": tool["name"],
+                            "arguments": json.dumps({"cmd": analysis_command(receipts), "max_output_tokens": 1000})}
+                    if namespace:
+                        item["namespace"] = namespace
                 else:
+                    assert_data_results(request)
                     item = {"type": "message", "role": "assistant", "status": "completed",
                             "content": [{"type": "output_text", "text": "Verified", "annotations": []}]}
                 self.send_response(200)
@@ -144,7 +209,7 @@ def main():
                 for private_path in (path, data_path):
                     probe = subprocess.run([binary, "sandbox", "-c", f'sandbox_mode="{mode}"', "--", sys.executable, "-c",
                         "import socket; s=socket.socket(socket.AF_UNIX); s.connect(" + repr(private_path) + ")"],
-                        cwd=root, env=environment, capture_output=True, text=True, timeout=30)
+                        cwd=workspace, env=environment, capture_output=True, text=True, timeout=30)
                     assert probe.returncode != 0 and "Operation not permitted" in probe.stderr, probe
                 # The test supplies the private socket path to the trusted MCP process.
                 config_args = ["-c", 'model_provider="fixture"',
@@ -158,22 +223,27 @@ def main():
                         "-c", 'mcp_servers.home_assistant_data.env.HA_DATA_SOCKET=' + json.dumps(data_path)]
                 args = [binary, "exec", "--sandbox", mode, "--skip-git-repo-check", "--json", "--model", "gpt-5.1-codex",
                         "-c", 'approval_policy="never"', *config_args, "Check the kitchen light with the verification tool."]
-                result = subprocess.run(args, cwd=root, env=environment, capture_output=True, text=True, timeout=90)
+                result = subprocess.run(args, cwd=workspace, env=environment, capture_output=True, text=True, timeout=90)
                 assert result.returncode == 0, (result.stdout, result.stderr)
                 assert "Fresh entity state" in json.dumps(received[-1]["input"]), (result.stdout, result.stderr)
                 assert_data_results(received[-1])
                 assert checks and checks[-1]["status"] == "passed", (result.stdout, result.stderr)
-                assert len(received) % 4 == 0, received
+                assert len(received) % 5 == 0, received
+                export = Path(data_receipts(received[-1])["history"]["file"]["path"])
+                probe = subprocess.run([binary, "sandbox", "-c", f'sandbox_mode="{mode}"', "--", sys.executable, "-c",
+                    "from pathlib import Path; Path(" + repr(str(export)) + ").write_text('tampered')"],
+                    cwd=workspace, env=environment, capture_output=True, text=True, timeout=30)
+                assert probe.returncode != 0 and export.read_text().startswith('{"status": "observed"'), probe
                 # Sandboxed production tasks now use app-server. Verify the
                 # trusted MCP bridge still works without shell networking.
                 with (root / "app-server.log").open("w+") as errors:
-                    proc = subprocess.Popen([binary, "app-server", *config_args], cwd=root, env=environment,
+                    proc = subprocess.Popen([binary, "app-server", *config_args], cwd=workspace, env=environment,
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, bufsize=1)
                     finals = []
                     approvals = []
                     approval = AppServerSession(
                         proc.stdin, lock=threading.RLock(),
-                        thread_params={"cwd": str(root), "sandbox": mode, "model": "gpt-5.1-codex",
+                        thread_params={"cwd": str(workspace), "sandbox": mode, "model": "gpt-5.1-codex",
                                        "approvalPolicy": "on-request", "approvalsReviewer": "user"},
                         turn_params={"input": [{"type": "text", "text": "Check the kitchen light with the verification tool."}]},
                         on_event=lambda _: None, on_approvals=approvals.append, on_final=finals.append,
@@ -198,10 +268,12 @@ def main():
                 assert "Fresh entity state" in json.dumps(received[-1]["input"]), received[-1]
                 assert_data_results(received[-1])
                 assert checks[-1]["status"] == "passed", checks
-            assert len(received) == 16
+            assert len(received) == 20
             assert data.queries["task"] == 8
             assert "private-supervisor-token" not in json.dumps(received)
-            print("Pinned CLI passed: shell sockets denied, verification/history/statistics work without approvals through exec and app-server in both sandbox modes.")
+            data.end("task")
+            assert not any(data.export_root.rglob("*.json"))
+            print("Pinned CLI passed: private sockets and export writes denied; all 1,000 history and 5,000 statistics points analyzed without approvals through exec and app-server in both sandbox modes.")
         finally:
             service.shutdown()
             service.server_close()

@@ -93,7 +93,7 @@ This repository contains two pieces:
 
 ## History and statistics
 
-Read-only MCP tools let Codex fetch Home Assistant state history and recorder statistics for sensor analysis, troubleshooting, and automation design. They work in `workspace-write` and `read-only` without shell network approval or a manually configured API token. Queries use explicit IDs and time windows, with limits and clear missing-data/truncation results. See [the tools and limits](codex-cli-worker/DOCS.md#historical-data-and-statistics).
+Read-only MCP tools let Codex fetch Home Assistant state history and recorder statistics for sensor analysis, troubleshooting, and automation design. They work in `workspace-write` and `read-only` without shell network approval or a manually configured API token. Results are saved in private temporary JSON files so Codex can calculate over the data without large tool outputs being cut off. Queries use explicit IDs and time windows, with limits and clear missing-data/truncation results. See [the tools and limits](codex-cli-worker/DOCS.md#historical-data-and-statistics).
 
 ## Dashboard browser verification
 

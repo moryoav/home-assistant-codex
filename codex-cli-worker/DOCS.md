@@ -41,6 +41,43 @@ Home Assistant and other apps. This is a capture limit, not reserved RAM or a
 limit on the whole app. Save the options and restart the app if Home Assistant
 prompts you; the next capture uses the new value.
 
+## Historical data and statistics
+
+The separate **Home Assistant data** MCP server lets Codex read state history and recorder statistics. It is available automatically in `workspace-write`, `read-only`, and `danger-full-access`. It does not ask for shell network approval or require the `HA_TOKEN` option. The worker makes these fixed, read-only API requests with its Supervisor credential, which is never sent to Codex. No extra MCP setup is needed.
+
+Ask, for example: “Compare my kitchen temperature, humidity and extractor fan history yesterday and suggest activation thresholds. Only analyze the measurements.” Codex finds the relevant entity IDs in the configuration, queries the data, and explains its analysis. These tools do not change configuration, call services, or run automations. Verification remains a separate tool.
+
+Two tools are available under `home_assistant_data`:
+
+- **`history`** reads `/api/history/period/<start_time>` for explicit `entity_ids`, `start_time`, and `end_time`. It returns timestamped state strings, including `unknown` and `unavailable`, and the initial state at the window boundary. Attributes are omitted; the existing entity verification tool can read units separately. Example: `{"entity_ids":["sensor.kitchen_temperature","fan.extractor"],"start_time":"2026-10-01T00:00:00+03:00","end_time":"2026-10-02T00:00:00+03:00"}`.
+- **`statistics`** reads `recorder/get_statistics_metadata` and `recorder/statistics_during_period` through Home Assistant's WebSocket API, for explicit `statistic_ids`, `start_time`, and `end_time`. `period` is `5minute`, `hour` (default), `day`, `week`, or `month`. Optional `types` selects `mean`, `min`, `max`, `sum`, `state`, `change`, or `last_reset`, where supported. It returns display units and bucket start/end timestamps in UTC. Example: `{"statistic_ids":["sensor.kitchen_temperature"],"start_time":"2026-10-01T00:00:00+03:00","end_time":"2026-10-08T00:00:00+03:00","period":"hour","types":["mean","min","max"]}`.
+
+Use ISO timestamps with seconds and a timezone offset or `Z`. Results normalize timestamps to UTC; aggregated day/week/month buckets still follow Home Assistant's configured timezone and can extend beyond the exact requested boundaries. A statistics `sum` is cumulative, not consumption during a bucket; request `change` for that. Unsupported numeric fields are absent or null, not zero.
+
+Each tool saves its result in a private temporary JSON file under `/data/ha-data`, outside `/config`. The tool returns a small receipt with `file.path`, the file's byte count and SHA-256, total available/saved point counts, series status counts, and `truncated`. The file contains the query window, per-ID metadata and all saved points under `series[ID].points`. Codex can read these files in every sandbox mode without approval. They are excluded from app backups and removed when the exchange ends, including cancellation and failure. Files left by a stopped worker are removed on startup. A follow-up message must query again rather than reuse a previous exchange's file path.
+
+Codex loads the file with Python and calculates over the saved points, printing only the relevant summary or a small slice. This keeps large datasets out of the model's context without silently losing their middle. Printing the whole file with `cat`, or reading it all into a tool response, hits the CLI's output limit again. For example, a compact calculation over a statistics file is:
+
+```python
+import json
+from pathlib import Path
+
+data = json.loads(Path(receipt["file"]["path"]).read_bytes())
+series = data["series"]["sensor.kitchen_temperature"]
+if series["truncated"]:
+    raise ValueError("Query a narrower window before analyzing the complete period")
+means = [point["mean"] for point in series["points"] if point.get("mean") is not None]
+print({"buckets_with_mean": len(means), "lowest_mean": min(means) if means else None})
+```
+
+Limits: up to 16 distinct IDs; seven days for raw history and 366 days for statistics; 64 queries per exchange, with one in progress at a time. `max_points` defaults to 1,000 and accepts up to 5,000, shared fairly across requested IDs, with unused shares and integer remainders redistributed. Each series in the file reports `available_points`, `returned_points`, and `truncated`. A truncated series contains only its first points and cannot represent the whole window. Query a smaller window, fewer IDs, or coarser statistics before analyzing a complete period. Responses from Home Assistant are limited to 1 MiB, each saved file to 4 MiB, and temporary files to 32 MiB per exchange. Receipts are limited to 8 KiB. Large requests fail with guidance to narrow the query; a full storage budget requires a new exchange. Statistics queries are also rejected before reaching Core when their expected bucket count exceeds 10,000. Files avoid the model's output limit; bounded queries still protect Home Assistant, memory and disk use. Longer analyses can use several smaller time windows, calculating compact summaries from each file.
+
+`no_statistics` means the ID has no recorder statistics metadata; `no_data` means no points were returned for the period. Empty history can mean an entity is unrecorded, unavailable to the API, or its history has been purged. It does not establish a constant state. Home Assistant's recorder settings determine retention and which sensors provide statistics; these tools cannot recover purged measurements or add statistics to an unsupported entity.
+
+Each exchange has a separate temporary data credential, revoked on completion and rejected on cancellation, restart, or turn replacement. The data queries do not consume the verification budget or appear as passed verification checks. Configured credentials are redacted before the data is saved. Receipts and any measurements printed during analysis are part of the conversation like other tool results; the full file is not automatically sent to the model. Sensor values are untrusted data, never instructions. The tools accept no arbitrary URLs, API paths, WebSocket commands, SQL, database files, or output paths.
+
+API references: [Home Assistant REST history](https://developers.home-assistant.io/docs/api/rest/#get-apihistoryperiodtimestamp) and the [Core recorder WebSocket command definitions](https://github.com/home-assistant/core/blob/2026.9.4/homeassistant/components/recorder/websocket_api.py).
+
 ## Local Home Assistant documentation
 
 From **0.1.70**, the worker keeps a copy of the official Home Assistant

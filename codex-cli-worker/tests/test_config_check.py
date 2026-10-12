@@ -18,6 +18,10 @@ LWP_COOKIE_JAR = (
     'Set-Cookie3: session=fake-cookie; path="/"; domain=".icloud.example"; '
     'path_spec; discard; version=0\n'
 )
+# Home Assistant's iCloud integration keeps its jar under .storage/icloud. Other
+# integrations keep theirs under their own names, as iCloud3 does here.
+ICLOUD_COOKIE_JAR = ".storage/icloud/account.cookiejar"
+OTHER_COOKIE_JAR = ".storage/icloud3.apple_acct/account.cookies"
 
 
 class FileSyntaxValidationTests(unittest.TestCase):
@@ -30,9 +34,9 @@ class FileSyntaxValidationTests(unittest.TestCase):
         self.config = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.stack.enter_context(patch.object(server, "CONFIG_ROOT", self.config))
 
-    def test_valid_icloud_cookie_jars_are_read_only(self):
-        """Added and refreshed cookie jars, including empty jars, pass without writes."""
-        for rel in (".storage/icloud/account.cookiejar", ".storage/icloud/nested/account.COOKIEJAR"):
+    def test_valid_cookie_jars_are_read_only(self):
+        """Added and refreshed cookie jars, including empty jars, pass without writes wherever they are kept."""
+        for rel in (ICLOUD_COOKIE_JAR, ".storage/icloud/nested/account.COOKIEJAR", OTHER_COOKIE_JAR, ".storage/jar"):
             path = self.config / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             expired = LWP_COOKIE_JAR.replace('discard;', 'expires="2000-01-01 00:00:00Z";')
@@ -47,21 +51,23 @@ class FileSyntaxValidationTests(unittest.TestCase):
                         self.assertEqual(path.read_bytes(), before)
                         self.assertEqual(path.stat().st_mtime_ns, modified)
 
-    def test_malformed_icloud_cookie_jars_do_not_expose_contents(self):
+    def test_malformed_cookie_jars_do_not_expose_contents(self):
         """Bad headers, cookie records, and encodings fail without leaking cookie data."""
-        rel = ".storage/icloud/account.cookiejar"
-        path = self.config / rel
-        path.parent.mkdir(parents=True)
-        cases = (
-            b"fake-private-cookie-is-not-an-LWP-header\n",
+        malformed = (
             b"#LWP-Cookies-2.0\nSet-Cookie3: session=fake-private-cookie; version=0\n",
             b"#LWP-Cookies-2.0\n\xfffake-private-cookie\n",
             b"#LWP-Cookies-2.0\nSet-Cookie3 session=fake-private-cookie\n",
             b"#LWP-Cookies-2.0\nSet-Cookie3:\n",
             b"#LWP-Cookies-2.0\nunexpected=fake-private-cookie\n",
+            b"#LWP-Cookies-fake-private-cookie\n",
         )
-        for content in cases:
-            with self.subTest(content=content):
+        cases = [(rel, content) for rel in (ICLOUD_COOKIE_JAR, OTHER_COOKIE_JAR) for content in malformed]
+        # The iCloud jar is known by its path, so it is checked as a jar even without its header.
+        cases.append((ICLOUD_COOKIE_JAR, b"fake-private-cookie-is-not-an-LWP-header\n"))
+        for rel, content in cases:
+            with self.subTest(rel=rel, content=content):
+                path = self.config / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(content)
                 modified = path.stat().st_mtime_ns
                 with warnings.catch_warnings(record=True) as caught:
@@ -73,12 +79,14 @@ class FileSyntaxValidationTests(unittest.TestCase):
                 self.assertEqual(path.stat().st_mtime_ns, modified)
 
     def test_other_storage_json_and_yaml_validation_is_preserved(self):
-        """Only iCloud .cookiejar files use LWP; other JSON and YAML still reject bad syntax."""
+        """Files that are not cookie jars by the iCloud path or a leading header still reject bad JSON and YAML."""
         cases = (
             (".storage/core.config_entries", '{"data": {}}', "{broken"),
-            (".storage/icloud/account.session", "{}", LWP_COOKIE_JAR),
-            (".storage/other/account.cookiejar", "{}", LWP_COOKIE_JAR),
+            (".storage/icloud/account.session", "{}", "{broken"),
+            (".storage/other/account.cookiejar", "{}", "fake-private-cookie-is-not-an-LWP-header\n"),
+            (".storage/other/late_header", '{"note": "#LWP-Cookies-2.0"}', "\n" + LWP_COOKIE_JAR),
             ("data.json", '{"valid": true}', "{broken"),
+            ("cookies.json", '{"valid": true}', LWP_COOKIE_JAR),
             ("automations.yaml", "automation: !include automations.yaml\n", "automation: [\n"),
             ("scripts.yml", "script: []\n", "script: [\n"),
         )
@@ -92,6 +100,11 @@ class FileSyntaxValidationTests(unittest.TestCase):
                 errors = server.validate_changed_files({"changed": [rel]})
                 self.assertEqual(len(errors), 1)
                 self.assertTrue(errors[0].startswith(f"{rel}: "))
+                self.assertNotIn("fake-", errors[0])
+
+    def test_unreadable_storage_file_is_not_taken_for_a_cookie_jar(self):
+        """A .storage file that cannot be opened is left to the JSON check, which reports it as before."""
+        self.assertFalse(server.is_lwp_cookiejar(".storage/gone", self.config / ".storage" / "gone"))
 
 
 class FakeResponse:
@@ -261,28 +274,29 @@ class AssessChangesTests(unittest.TestCase):
         self.assertEqual(result["config_check"]["result"], "valid")
         self.check.assert_called_once()
 
-    def test_background_icloud_cookie_refresh_preserves_successful_task(self):
+    def test_background_cookie_refresh_preserves_successful_task(self):
         """An independent cookie refresh is detected without failing an otherwise successful task."""
-        rel = ".storage/icloud/account.cookiejar"
-        self.write(rel, LWP_COOKIE_JAR)
-        before = server.build_manifest()
-        self.write(rel, LWP_COOKIE_JAR.replace("fake-cookie", "refreshed-fake-cookie"))
-        changes = server.diff_manifests(before, server.build_manifest())
-        self.assertEqual(changes, {"added": [], "changed": [rel], "deleted": []})
+        for rel in (ICLOUD_COOKIE_JAR, OTHER_COOKIE_JAR):
+            with self.subTest(rel=rel):
+                self.write(rel, LWP_COOKIE_JAR)
+                before = server.build_manifest()
+                self.write(rel, LWP_COOKIE_JAR.replace("fake-cookie", "refreshed-fake-cookie"))
+                changes = server.diff_manifests(before, server.build_manifest())
+                self.assertEqual(changes, {"added": [], "changed": [rel], "deleted": []})
 
-        assessment = server.assess_changes("t", self.run_dir, changes, before)
-        self.assertEqual(assessment["validation_errors"], [])
-        self.assertEqual(assessment["recovery_files"], [])
-        self.check.assert_not_called()
-        self.save.assert_not_called()
+                assessment = server.assess_changes("t", self.run_dir, changes, before)
+                self.assertEqual(assessment["validation_errors"], [])
+                self.assertEqual(assessment["recovery_files"], [])
+                self.check.assert_not_called()
+                self.save.assert_not_called()
 
-        harness = RunTaskWiringTests("run_with")
-        task, events = harness.run_with(assessment)
-        self.assertEqual(task["status"], "completed")
-        self.assertEqual(task["validation_errors"], [])
-        self.assertEqual(task["recovery_files"], [])
-        self.assertEqual(events[-1]["status"], "completed")
-        self.assertEqual(events[-1]["validation_errors"], [])
+                harness = RunTaskWiringTests("run_with")
+                task, events = harness.run_with(assessment)
+                self.assertEqual(task["status"], "completed")
+                self.assertEqual(task["validation_errors"], [])
+                self.assertEqual(task["recovery_files"], [])
+                self.assertEqual(events[-1]["status"], "completed")
+                self.assertEqual(events[-1]["validation_errors"], [])
 
 
 class RunTaskWiringTests(unittest.TestCase):

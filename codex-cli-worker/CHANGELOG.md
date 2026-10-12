@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.74
+
+- Fixed successful tasks being reported as failed when an integration refreshes its cookie jar under `.storage` during a run. Home Assistant's iCloud cookie jars, and jars that other integrations such as iCloud3 keep in the same LWP format, are now checked as cookie jars instead of as JSON, and malformed-cookie errors keep cookie contents private.
+
+Update the **Codex CLI Worker** app to **0.1.74**. The **Codex** integration is also released as **0.1.74** so that both carry the same version; its code is unchanged.
+
 ## 0.1.73
 
 - Added separate read-only MCP tools for Home Assistant state history and recorder statistics, available in sandboxed modes without shell approval or a manually supplied API token.

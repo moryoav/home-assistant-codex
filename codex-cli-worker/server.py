@@ -21,9 +21,11 @@ import tarfile
 import threading
 import time
 import uuid
+import warnings
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from http.cookiejar import LWPCookieJar, LoadError
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
@@ -2265,15 +2267,28 @@ def snapshot_secret_path(relative: str) -> bool:
     } or relative.startswith(".storage/auth_provider.")
 
 
+def validate_icloud_cookiejar(path: Path) -> None:
+    """Parse iCloud cookies without rewriting them or exposing their contents in errors."""
+    with warnings.catch_warnings():
+        # The standard parser can include a malformed cookie in warnings and errors.
+        warnings.filterwarnings("ignore", category=UserWarning, module=r"http\.cookiejar")
+        try:
+            LWPCookieJar(str(path)).load(ignore_discard=True, ignore_expires=True)
+        except (LoadError, UnicodeDecodeError):
+            raise ValueError("Invalid LWP cookie jar.") from None
+
+
 def validate_changed_files(changes: dict[str, list[str]]) -> list[str]:
-    """Check that added and changed JSON, YAML, and .storage files still parse; return a message for each that fails."""
+    """Check that added and changed configuration files still parse; return a message for each that fails."""
     errors: list[str] = []
     for rel in sorted(set(changes.get("added", []) + changes.get("changed", []))):
         path = CONFIG_ROOT / rel
         if not path.exists() or not path.is_file():
             continue
         try:
-            if rel.startswith(".storage/") or path.suffix.lower() == ".json":
+            if rel.startswith(".storage/icloud/") and path.suffix.lower() == ".cookiejar":
+                validate_icloud_cookiejar(path)
+            elif rel.startswith(".storage/") or path.suffix.lower() == ".json":
                 json.loads(path.read_text(encoding="utf-8"))
             elif path.suffix.lower() in {".yaml", ".yml"}:
                 yaml.load(path.read_text(encoding="utf-8"), Loader=HassYamlLoader)

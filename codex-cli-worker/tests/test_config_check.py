@@ -58,6 +58,7 @@ class FileSyntaxValidationTests(unittest.TestCase):
             b"#LWP-Cookies-2.0\n\xfffake-private-cookie\n",
             b"#LWP-Cookies-2.0\nSet-Cookie3 session=fake-private-cookie\n",
             b"#LWP-Cookies-2.0\nSet-Cookie3:\n",
+            b"#LWP-Cookies-2.0\nSet-Cookie3: ;\n",
             b"#LWP-Cookies-2.0\nunexpected=fake-private-cookie\n",
             b"#LWP-Cookies-fake-private-cookie\n",
         )

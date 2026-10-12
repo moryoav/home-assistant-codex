@@ -2269,6 +2269,8 @@ def snapshot_secret_path(relative: str) -> bool:
 
 # The first bytes of every cookie jar that the standard library saves in the LWP format.
 LWP_COOKIEJAR_HEADER = b"#LWP-Cookies-"
+# A cookie record in such a jar. The standard parser reads no cookie from one that holds only separators.
+LWP_COOKIE_RECORD = re.compile(r"Set-Cookie3:.*[^=\s;,]")
 
 
 def is_lwp_cookiejar(rel: str, path: Path) -> bool:
@@ -2299,7 +2301,7 @@ def validate_lwp_cookiejar(path: Path) -> None:
                 for line in handle:
                     if not line.strip() or line.lstrip().startswith("#"):
                         continue
-                    if not line.startswith("Set-Cookie3:") or not line.removeprefix("Set-Cookie3:").strip():
+                    if not LWP_COOKIE_RECORD.match(line):
                         raise ValueError("Invalid LWP cookie jar.")
             LWPCookieJar(str(path)).load(ignore_discard=True, ignore_expires=True)
         except (LoadError, UnicodeDecodeError):

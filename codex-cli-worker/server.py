@@ -2273,6 +2273,12 @@ def validate_icloud_cookiejar(path: Path) -> None:
         # The standard parser can include a malformed cookie in warnings and errors.
         warnings.filterwarnings("ignore", category=UserWarning, module=r"http\.cookiejar")
         try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip() or line.lstrip().startswith("#"):
+                        continue
+                    if not line.startswith("Set-Cookie3:") or not line.removeprefix("Set-Cookie3:").strip():
+                        raise ValueError("Invalid LWP cookie jar.")
             LWPCookieJar(str(path)).load(ignore_discard=True, ignore_expires=True)
         except (LoadError, UnicodeDecodeError):
             raise ValueError("Invalid LWP cookie jar.") from None

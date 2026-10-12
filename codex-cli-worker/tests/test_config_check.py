@@ -36,7 +36,8 @@ class FileSyntaxValidationTests(unittest.TestCase):
             path = self.config / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             expired = LWP_COOKIE_JAR.replace('discard;', 'expires="2000-01-01 00:00:00Z";')
-            for content in ("#LWP-Cookies-2.0\n", LWP_COOKIE_JAR, expired):
+            commented = LWP_COOKIE_JAR.replace("\n", "\n\n  # Cookie metadata comment\n\n", 1)
+            for content in ("#LWP-Cookies-2.0\n", LWP_COOKIE_JAR, expired, commented):
                 for change in ("added", "changed"):
                     with self.subTest(rel=rel, content=content, change=change):
                         path.write_text(content, encoding="utf-8")
@@ -55,6 +56,9 @@ class FileSyntaxValidationTests(unittest.TestCase):
             b"fake-private-cookie-is-not-an-LWP-header\n",
             b"#LWP-Cookies-2.0\nSet-Cookie3: session=fake-private-cookie; version=0\n",
             b"#LWP-Cookies-2.0\n\xfffake-private-cookie\n",
+            b"#LWP-Cookies-2.0\nSet-Cookie3 session=fake-private-cookie\n",
+            b"#LWP-Cookies-2.0\nSet-Cookie3:\n",
+            b"#LWP-Cookies-2.0\nunexpected=fake-private-cookie\n",
         )
         for content in cases:
             with self.subTest(content=content):

@@ -2,6 +2,19 @@
 
 This app runs Codex CLI tasks against the Home Assistant config folder mounted at `/config`.
 
+## Copying responses
+
+Choose **Copy response** below any answer in the chat, including a saved answer.
+It copies the summary, details, and any question as original Markdown, preserving
+code fences, links, and YAML indentation. Images, activity logs, and separate
+configuration, backup, and verification cards are not included.
+
+The browser first tries its Clipboard API, then selection-based copying for
+environments such as local HTTP. If both are unavailable or denied, the response
+opens in a read-only dialog with all text selected. Use Ctrl+C / Cmd+C or the
+browser's Copy action. **Select all** selects it again on touch devices. A
+**Copied!** confirmation appears only after automatic copying succeeds.
+
 ## Dashboard browser verification
 
 **Codex can open your dashboards in a real browser and inspect desktop and mobile

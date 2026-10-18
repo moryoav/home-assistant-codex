@@ -334,6 +334,24 @@
         </button>
       </div>
     </dialog>
+    <dialog
+      id="copy-dialog"
+      class="small-dialog copy-dialog"
+      aria-labelledby="copy-title"
+      aria-describedby="copy-help"
+    >
+      <h2 id="copy-title">Copy response</h2>
+      <p id="copy-help">
+        Automatic copying is unavailable in this browser. Copy the selected
+        Markdown using your browser's Copy action or Ctrl+C / Cmd+C.
+      </p>
+      <label class="sr-only" for="copy-text">Response Markdown</label>
+      <textarea id="copy-text" rows="12" readonly spellcheck="false"></textarea>
+      <div class="dialog-actions">
+        <button type="button" id="copy-select" class="subtle">Select all</button>
+        <button type="button" id="copy-close">Close</button>
+      </div>
+    </dialog>
     <dialog id="settings">
       <div class="dialog-header">
         <h2>Settings</h2>

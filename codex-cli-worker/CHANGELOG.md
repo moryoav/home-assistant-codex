@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.75
 
 - Added **Copy response** below chat answers, including saved answers, to copy their original Markdown while preserving code blocks and YAML indentation. A dialog offers selectable text when automatic copying is unavailable.
+
+Update the **Codex CLI Worker** app to **0.1.75** for response copying. The **Codex** integration is also released as **0.1.75** so that both carry the same version; its code is unchanged.
 
 ## 0.1.74
 

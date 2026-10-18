@@ -288,6 +288,7 @@ async function copyAnswer(button) {
     assert.equal(await page.evaluate(() => window.copyInjected), undefined);
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     // A delayed permission result must not open an old response over a new chat.
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await page.evaluate(() => {
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,

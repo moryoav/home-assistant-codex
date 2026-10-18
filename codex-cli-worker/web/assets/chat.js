@@ -987,6 +987,97 @@ function renderVerification(turn, taskId) {
   section.append(textNode("p", "Screenshots are evidence for visual review. State and configuration checks do not prove automation behavior.", "verification-note"));
   return section;
 }
+/** Keep the original Markdown of the answer's visible text, including code indentation. */
+function responseMarkdown(turn) {
+  return [
+    turn.summary,
+    turn.details && turn.details !== turn.summary ? turn.details : "",
+    turn.question && turn.question !== turn.summary ? turn.question : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+/** Try the browser clipboard, then the selection-based copy used on local HTTP. */
+async function copyResponseText(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {
+    // Ingress, browser permissions, or a WebView can deny the modern API.
+  }
+  const focus = document.activeElement;
+  const selection = window.getSelection();
+  const ranges = selection
+    ? Array.from({ length: selection.rangeCount }, (_, index) =>
+        selection.getRangeAt(index).cloneRange(),
+      )
+    : [];
+  const buffer = textNode("textarea", "", "copy-buffer");
+  buffer.value = text;
+  buffer.readOnly = true;
+  buffer.tabIndex = -1;
+  document.body.append(buffer);
+  try {
+    buffer.focus({ preventScroll: true });
+    buffer.select();
+    return document.execCommand("copy");
+  } catch (_) {
+    return false;
+  } finally {
+    buffer.remove();
+    if (focus?.isConnected) focus.focus({ preventScroll: true });
+    if (selection) {
+      selection.removeAllRanges();
+      for (const range of ranges) selection.addRange(range);
+    }
+  }
+}
+/** Offer selected, read-only Markdown when the browser cannot copy automatically. */
+function showCopyResponse(text) {
+  $("copy-text").value = text;
+  $("copy-dialog").showModal();
+  $("copy-text").focus({ preventScroll: true });
+  $("copy-text").select();
+}
+$("copy-select").onclick = () => {
+  $("copy-text").focus({ preventScroll: true });
+  $("copy-text").select();
+};
+$("copy-close").onclick = () => $("copy-dialog").close();
+$("copy-dialog").addEventListener("close", () => {
+  $("copy-text").value = "";
+});
+/** A copy action belongs to this exchange, even when later answers arrive. */
+function renderResponseCopy(text) {
+  const actions = textNode("div", "", "response-actions");
+  const button = textNode("button", "Copy response", "subtle copy-response");
+  button.type = "button";
+  button.title = "Copy the whole response as Markdown";
+  const status = textNode("span", "", "copy-status");
+  status.setAttribute("role", "status");
+  let timer;
+  button.onclick = async () => {
+    const focused = document.activeElement === button;
+    clearTimeout(timer);
+    status.textContent = "";
+    button.disabled = true;
+    const copied = await copyResponseText(text);
+    button.disabled = false;
+    if (!button.isConnected) return;
+    if (focused && document.activeElement === document.body)
+      button.focus({ preventScroll: true });
+    if (copied) {
+      status.textContent = "Copied!";
+      timer = setTimeout(() => {
+        status.textContent = "";
+      }, 2500);
+    } else showCopyResponse(text);
+  };
+  actions.append(button, status);
+  return actions;
+}
 /** Draw the open chat: every exchange with its answer, checks, saved copies, and steps. */
 function renderTask(force = false) {
   const task = state.task;
@@ -1059,6 +1150,8 @@ function renderTask(force = false) {
         answer.append(renderMarkdown(turn.details, "message details"));
       if (turn.question && turn.question !== turn.summary)
         answer.append(renderMarkdown(turn.question, "message question"));
+      const markdown = responseMarkdown(turn);
+      if (markdown.trim()) answer.append(renderResponseCopy(markdown));
       // Only the question still waiting can be answered with a choice.
       if (
         latest &&

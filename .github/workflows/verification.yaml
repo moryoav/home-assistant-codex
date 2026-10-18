@@ -60,6 +60,7 @@ jobs:
             sleep 1
           done
           node codex-cli-worker/tests/browser_smoke.cjs
+          node codex-cli-worker/tests/browser_copy.cjs
 
   container:
     name: Container (${{ matrix.arch }})

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added **Copy response** below chat answers, including saved answers, to copy their original Markdown while preserving code blocks and YAML indentation. A dialog offers selectable text when automatic copying is unavailable.
+
 ## 0.1.74
 
 - Fixed successful tasks being reported as failed when an integration refreshes its cookie jar under `.storage` during a run. Home Assistant's iCloud cookie jars, and jars that other integrations such as iCloud3 keep in the same LWP format, are now checked as cookie jars instead of as JSON, and malformed-cookie errors keep cookie contents private.

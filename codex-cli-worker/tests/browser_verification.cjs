@@ -30,7 +30,9 @@ async function main() {
   assert(allowMessage({id: 6, type: 'knob_swipe_navigation/config'}));
   assert(!allowMessage({type: 'knob_swipe_navigation/config', navigation_enabled: true}));
   for (const type of ['knob_swipe_navigation/subscribe_rotations', 'knob_swipe_navigation/navigation_result']) assert(!allowMessage({type}));
-  for (const type of ['frontend/get_icons', 'render_template', 'sensor/numeric_device_classes', 'weather/subscribe_forecast']) assert(allowMessage({type}));
+  for (const type of ['frontend/get_icons', 'render_template', 'sensor/numeric_device_classes', 'weather/subscribe_forecast',
+    'recorder/statistic_during_period', 'recorder/statistics_during_period', 'camera/capabilities']) assert(allowMessage({type}));
+  for (const type of ['camera/stream', 'camera/update_prefs', 'recorder/clear_statistics', 'recorder/import_statistics']) assert(!allowMessage({type}));
   assert(allowMessage({ type: 'subscribe_events', event_type: 'state_changed' }));
   assert(!allowRequest(new URL('http://evil.test/local/card.js'), 'http://ha.test', 'GET'));
   assert(!allowRequest(new URL('http://ha.test/api/webhook/action'), 'http://ha.test', 'GET'));
@@ -40,6 +42,8 @@ async function main() {
   assert(!allowRequest(new URL('http://ha.test/api/image/upload'), 'http://ha.test', 'POST'));
   assert(allowRequest(new URL('http://ha.test/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02'), 'http://ha.test', 'GET'));
   assert(!allowRequest(new URL('http://ha.test/api/calendars/calendar.fixture'), 'http://ha.test', 'POST'));
+  for (const pathname of ['/integration-a/frontend.js?v=123', '/integration-b/panel.mjs?version=456'])
+    assert(!allowRequest(new URL(pathname, 'http://ha.test'), 'http://ha.test', 'GET'));
 
   const upstream = [], requests = [], tokens = [];
   let redirectedRequests = 0;
@@ -54,17 +58,21 @@ async function main() {
       response.end('{"state":"on"}'); return;
     }
     if (request.url === '/local/missing.js') { response.writeHead(404); response.end(); return; }
-    if (['/browser_mod.js', '/custom_icons/main.js'].includes(request.url)) {
+    if (['/browser_mod.js', '/custom_icons/main.js', '/integration-a/frontend.js?v=123'].includes(request.url)) {
       response.setHeader('Content-Type', 'text/javascript');
       response.end('window.loadedAssets = (window.loadedAssets || 0) + 1;'); return;
+    }
+    if (request.url === '/integration-b/panel.mjs?version=456') {
+      response.setHeader('Content-Type', 'text/javascript');
+      response.end("fetch('/api/states/sensor.registered_bundle_loaded', {headers:{Authorization:'Bearer verification-session'}});"); return;
     }
     if (request.url === '/local/redirect.js') {
       response.writeHead(302, {Location: `http://127.0.0.1:${redirectTarget.address().port}/external.js`});
       response.end(); return;
     }
     response.setHeader('Content-Type', 'text/html');
-    response.end(`<!doctype html><html><body><script src="/browser_mod.js"></script><script src="/custom_icons/main.js"></script><home-assistant></home-assistant><script>
-      if (window.loadedAssets !== 2) console.error('Registered assets failed to execute');
+    response.end(`<!doctype html><html><body><script src="/browser_mod.js"></script><script src="/custom_icons/main.js"></script><script src="/integration-a/frontend.js?v=123"></script><home-assistant></home-assistant><script>
+      if (window.loadedAssets !== 3) console.error('Dashboard assets failed to execute');
       const ha = document.querySelector('home-assistant');
       ha.attachShadow({mode:'open'}).innerHTML = '<hui-view><h1>Home dashboard</h1><p>Kitchen light: on</p></hui-view>';
       ha.shadowRoot.innerHTML += '<hui-error-card style="display:none">Hidden loading placeholder</hui-error-card>';
@@ -81,9 +89,13 @@ async function main() {
             ws.send(JSON.stringify({id:4,type:'call_service',domain:'system_log',service:'write'}));
             ws.send(JSON.stringify({id:5,type:'call_service',domain:'persistent_notification',service:'create'}));
             ws.send(JSON.stringify({id:20,type:'knob_swipe_navigation/config'}));
+            ws.send(JSON.stringify({id:23,type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']}));
+            ws.send(JSON.stringify({id:24,type:'camera/capabilities',entity_id:'camera.fixture'}));
             ${bad ? `ws.send(JSON.stringify({id:21,type:'knob_swipe_navigation/subscribe_rotations'}));
-            ws.send(JSON.stringify({id:22,type:'knob_swipe_navigation/navigation_result',result:'navigated'}));` : ''}
-            ${external ? "ws.send(JSON.stringify({id:6,type:'lovelace/resources'}));" : ''}
+            ws.send(JSON.stringify({id:22,type:'knob_swipe_navigation/navigation_result',result:'navigated'}));
+            ws.send(JSON.stringify({id:25,type:'camera/stream',entity_id:'camera.fixture'}));
+            ws.send(JSON.stringify({id:26,type:'recorder/clear_statistics',statistic_ids:['sensor.fixture']}));` : ''}
+            ws.send(JSON.stringify({id:6,type:'lovelace/resources'}));
             await fetch('/api/states/light.kitchen', {headers:{Authorization:'Bearer '+token.access_token}});
             await fetch('/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02', {headers:{Authorization:'Bearer '+token.access_token}});
             ${bad ? `ws.send(JSON.stringify({id:2,type:'call_service',domain:'light',service:'turn_on'}));
@@ -91,11 +103,16 @@ async function main() {
             const script=document.createElement('script');script.src='/local/missing.js';document.body.append(script);
             const redirect=document.createElement('script');redirect.src='/local/redirect.js';document.body.append(redirect);
             const unsafe=document.createElement('script');unsafe.src='/unsafe-action.js';document.body.append(unsafe);
+            for (const url of ['/integration-b/other.mjs', '/integration-b/panel.mjs?version=other']) {
+              const script=document.createElement('script');script.src=url;document.body.append(script);
+            }
             ha.shadowRoot.querySelector('hui-view').innerHTML+='<hui-error-card>Custom element does not exist: missing-card</hui-error-card>';
             console.error('Fixture custom card error');` : ''}
           }
           if (msg.id === 6 && msg.success) {
-            const script = document.createElement('script'); script.type = 'module'; script.src = msg.result[0].url; document.body.append(script);
+            for (const resource of msg.result) {
+              const script = document.createElement('script'); script.type = 'module'; script.src = resource.url; document.body.append(script);
+            }
           }
         };
       };
@@ -112,18 +129,21 @@ async function main() {
         tokens.push(message.access_token);
         ws.send(JSON.stringify({type: reject ? 'auth_invalid' : 'auth_ok'}));
       } else ws.send(JSON.stringify({id:message.id,type:'result',success:true,result:message.type === 'lovelace/resources'
-        ? [{url: 'https://registered.example.test/card/main.js', type: 'module'}] : []}));
+        ? [{url: '/integration-b/panel.mjs?version=456', type: 'module'},
+          ...(external ? [{url: 'https://registered.example.test/card/main.js', type: 'module'}] : [])] : []}));
     });
   });
   await new Promise(resolve => server.listen(0, '0.0.0.0', resolve));
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ha-browser-test-'));
   try {
     const input = { url: `http://127.0.0.1:${server.address().port}`, path:'/lovelace/0', directory, access_token:'temporary-browser-token',
-      resources: {files: ['/browser_mod.js'], directories: ['/custom_icons']} };
+      resources: {files: ['/browser_mod.js'], directories: ['/custom_icons'], extra_urls: ['/integration-a/frontend.js?v=123']} };
     const first = await inspect(input);
     assert.equal(first.status, 'captured', JSON.stringify(first));
     assert.deepEqual(first.errors, []);
     assert.deepEqual(first.blocked, []);
+    assert.equal(requests.filter(url => url === '/integration-b/panel.mjs?version=456').length, 2);
+    assert.equal(requests.filter(url => url === '/api/states/sensor.registered_bundle_loaded').length, 2);
     assert(first.findings.every(item => item.kind === 'diagnostic' && item.count === 2));
     assert(first.findings.every(item => item.viewports.join(',') === 'desktop,mobile'));
     assert.deepEqual(first.screenshots.map(s => [s.width,s.height]), [[1440,1000],[390,844]]);
@@ -137,6 +157,9 @@ async function main() {
     assert.equal(localHttp.screenshots.length, 2);
     assert(upstream.includes('weather/subscribe_forecast'));
     assert(upstream.includes('knob_swipe_navigation/config'));
+    assert(upstream.includes('recorder/statistic_during_period'));
+    assert(upstream.includes('camera/capabilities'));
+    assert(requests.includes('/integration-a/frontend.js?v=123'));
     assert(requests.some(url => url.startsWith('/api/calendars/calendar.fixture')));
     const worker = await new Promise((resolve, reject) => {
       const child = execFile(process.platform === 'win32' ? 'python' : 'python3',
@@ -211,14 +234,22 @@ async function main() {
     assert(second.blocked.includes('WebSocket call_service (light.turn_on)'));
     assert(second.blocked.includes('WebSocket knob_swipe_navigation/subscribe_rotations'));
     assert(second.blocked.includes('WebSocket knob_swipe_navigation/navigation_result'));
+    assert(second.blocked.includes('WebSocket camera/stream'));
+    assert(second.blocked.includes('WebSocket recorder/clear_statistics'));
     assert(second.blocked.includes('GET /unsafe-action.js'));
     assert(!requests.includes('/unsafe-action.js'));
+    assert(second.blocked.includes('GET /integration-b/other.mjs'));
+    assert(second.blocked.includes('GET /integration-b/panel.mjs'));
+    assert(!requests.includes('/integration-b/other.mjs'));
+    assert(!requests.includes('/integration-b/panel.mjs?version=other'));
     assert.equal(second.findings.find(item => item.message === 'Fixture custom card error').count, 2);
     assert(second.blocked.includes('Redirect /local/redirect.js'));
     assert.equal(redirectedRequests, 0);
     assert(!upstream.includes('call_service'));
     assert(!upstream.includes('knob_swipe_navigation/subscribe_rotations'));
     assert(!upstream.includes('knob_swipe_navigation/navigation_result'));
+    assert(!upstream.includes('camera/stream'));
+    assert(!upstream.includes('recorder/clear_statistics'));
     assert(!requests.some(url => url.startsWith('/api/services')));
     reject = true;
     assert.equal((await inspect(input)).status, 'unavailable');

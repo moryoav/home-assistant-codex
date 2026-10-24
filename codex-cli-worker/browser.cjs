@@ -16,9 +16,9 @@ const READ_MESSAGES = new Set([
   'config/entity_registry/list_for_display', 'config/device_registry/list',
   'config/area_registry/list', 'config/floor_registry/list',
   'config/label_registry/list', 'config/category_registry/list',
-  'history/history_during_period', 'recorder/statistics_during_period',
+  'history/history_during_period', 'recorder/statistics_during_period', 'recorder/statistic_during_period',
   'recorder/get_statistics_metadata', 'recorder/list_statistic_ids',
-  'energy/get_prefs', 'energy/info', 'get_panels', 'manifest/list',
+  'energy/get_prefs', 'energy/info', 'get_panels', 'manifest/list', 'camera/capabilities',
 ]);
 
 /**
@@ -116,6 +116,8 @@ async function inspect(input) {
   };
   /** Return the errors, blocked items, and findings gathered so far. */
   const evidence = () => ({errors, blocked, findings: [...findings.values()], findings_omitted: omitted});
+  const policyNote = () => blocked.length
+    ? ' Read-only policy blocks limit this inspection; they do not establish faults on another device.' : '';
   try {
     browser = await chromium.launch({
       executablePath: process.env.HA_BROWSER_EXECUTABLE || '/usr/bin/chromium-browser',
@@ -298,7 +300,7 @@ async function inspect(input) {
     }
     await context.close();
     return { status: errors.length || blocked.length || omitted ? 'issues' : 'captured', ...evidence(), screenshots,
-      message: 'Screenshots captured for visual inspection. This is not proof of correct layout or automation behavior.' };
+      message: 'Screenshots captured for visual inspection. This is not proof of correct layout or automation behavior.' + policyNote() };
   } catch (_) {
     if (activePage && !activePage.isClosed()) {
       try {
@@ -308,7 +310,7 @@ async function inspect(input) {
       } catch (_) { /* The page may already have crashed. */ }
     }
     return { status: 'unavailable', stage, ...evidence(), screenshots,
-      message: `Dashboard verification could not finish during ${stage}.` };
+      message: `Dashboard verification could not finish during ${stage}.` + policyNote() };
   } finally {
     await browser?.close();
   }

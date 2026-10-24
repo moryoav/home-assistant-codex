@@ -25,6 +25,35 @@ async function main() {
   assert(!local('/browser_mod.js', 'POST'));
   assert(!local('/browser_mod.js', 'GET', 'document'));
   assert(!local('https://evil.test/browser_mod.js'));
+  // Frontend registrations may be backed by custom HTTP views, not static routes.
+  const registered = new ResourcePolicy(policy.origin, {extra_urls: [
+    '/integration-a/frontend.js?v=123', 'http://ha.test:8123/integration-b/panel.mjs?version=456',
+  ]});
+  const registeredLocal = (path, method = 'GET', type = 'script') => registered.local(new URL(path, policy.origin), method, type);
+  for (const method of ['GET', 'HEAD']) {
+    assert(registeredLocal('/integration-a/frontend.js?v=123', method));
+    assert(registeredLocal('/integration-b/panel.mjs?version=456', method));
+  }
+  registered.register('/integration-c/theme.css?v=789#registered');
+  assert(registeredLocal('/integration-c/theme.css?v=789#requested', 'GET', 'stylesheet'));
+  for (const path of ['/integration-a/frontend.js', '/integration-a/frontend.js?v=other',
+    '/integration-a/other.js', '/integration-b/panel.mjs?version=456&action=run',
+    'http://other.test/integration-a/frontend.js?v=123']) assert(!registeredLocal(path), path);
+  for (const method of ['POST', 'PUT', 'DELETE']) assert(!registeredLocal('/integration-a/frontend.js?v=123', method));
+  assert(!registeredLocal('/integration-a/frontend.js?v=123', 'GET', 'document'));
+  for (const url of ['/api/action.js', '/auth/action.js', '/integration-a/action',
+    'http://user:password@ha.test:8123/credentialed.js', '/integration-a/encoded%2fpath.js']) {
+    registered.register(url); assert(!registeredLocal(url), url);
+  }
+  registered.cssDependencies(Buffer.from('.x {background:url(/integration-c/image.svg?v=1)}'), 'http://ha.test:8123/integration-c/theme.css?v=789');
+  assert(registeredLocal('/integration-c/image.svg?v=1', 'GET', 'image'));
+  assert(!registeredLocal('/integration-c/other.svg', 'GET', 'image'));
+  registered.cssDependencies(Buffer.from('.x {background:url(http://ha.test:8123/integration-c/external.svg)}'), 'https://assets.example.test/theme.css');
+  assert(!registeredLocal('/integration-c/external.svg', 'GET', 'image'));
+  const bounded = new ResourcePolicy(policy.origin);
+  for (let i = 0; i <= 256; i++) bounded.register(`/integration-${i}/frontend.js?v=1`);
+  assert(bounded.local(new URL('/integration-255/frontend.js?v=1', policy.origin), 'GET', 'script'));
+  assert(!bounded.local(new URL('/integration-256/frontend.js?v=1', policy.origin), 'GET', 'script'));
   assert(remote('https://assets.example.test/cards/main.js'));
   assert(remote('https://assets.example.test/cards/chunk.js?v=2'));
   assert(!remote('https://assets.example.test/other.js'));

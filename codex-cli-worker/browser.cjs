@@ -65,9 +65,7 @@ function allowRequest(url, origin, method, dashboardPath) {
   if (url.pathname.startsWith('/api/')) {
     return /^\/api\/(onboarding|config|states(?:\/[a-z0-9_.]+)?|calendars\/calendar\.[a-z0-9_]+|history\/period(?:\/[0-9T:Z.+-]+)?|camera_proxy\/[a-z0-9_.]+|image\/serve\/[a-f0-9]{32}\/(?:256x256|512x512|original))$/.test(url.pathname);
   }
-  // Dreame serves this frontend bundle through a read-only custom HTTP view.
-  return url.pathname === '/dreame_vacuum/frontend.js'
-    || /^\/(frontend_latest|frontend_es5|static|local|hacsfiles)\//.test(url.pathname)
+  return /^\/(frontend_latest|frontend_es5|static|local|hacsfiles)\//.test(url.pathname)
     || (dashboardPath && url.pathname === dashboardPath)
     || url.pathname === '/';
 }

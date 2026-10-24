@@ -56,8 +56,8 @@ function cdnAsset(url) {
 
 /**
  * The rules for what a dashboard may load besides the frontend's own files:
- * local files and directories that Home Assistant has registered, and
- * external assets that are registered or come from a well-known CDN.
+ * registered local static routes, exact frontend resource URLs, and external
+ * assets that are registered or come from a well-known CDN.
  */
 class ResourcePolicy {
   /**
@@ -70,6 +70,7 @@ class ResourcePolicy {
     this.origin = origin;
     this.files = new Set();
     this.directories = new Set();
+    this.localResources = new Set();
     this.external = new Set();
     this.externalDirectories = new Set();
     for (const key of ['files', 'directories']) {
@@ -82,17 +83,25 @@ class ResourcePolicy {
   }
 
   /**
-   * Allow an external URL. A script or stylesheet also allows the other assets
-   * under its directory unless allowDirectory is false. Same-origin and
-   * non-public URLs are ignored, as is anything after 256 URLs.
+   * Register a frontend resource. Same-origin scripts/stylesheets allow only
+   * their exact URL, including its query; CSS dependencies allow exact assets.
+   * External scripts/stylesheets also allow their directory unless disabled.
+   * Local and external registrations each have a 256-URL limit; external hosts
+   * must be public.
    */
   register(value, allowDirectory = true) {
-    if (typeof value !== 'string' || value.length > 2048 || this.external.size >= 256) return;
+    if (typeof value !== 'string' || value.length > 2048) return;
     let url;
     try { url = new URL(value, this.origin); } catch { return; }
-    // Same-origin permissions come only from Core's actual static route registry.
-    if (url.origin === this.origin || !publicURL(url)) return;
     url.hash = '';
+    if (url.origin === this.origin) {
+      const asset = allowDirectory ? /\.(?:m?js|css)$/i : CSS_ASSET;
+      if (this.localResources.size < 256 && !url.username && !url.password &&
+          !/^\/(?:api|auth)(?:\/|$)/.test(url.pathname) && !/[%\\]/.test(url.pathname) && asset.test(url.pathname))
+        this.localResources.add(url.href);
+      return;
+    }
+    if (this.external.size >= 256 || !publicURL(url)) return;
     this.external.add(url.href);
     if (allowDirectory && /\.(?:m?js|css)$/i.test(url.pathname))
       this.externalDirectories.add(new URL('.', url).href);
@@ -100,12 +109,15 @@ class ResourcePolicy {
 
   /**
    * Return whether a same-origin request is a GET or HEAD for an asset that is
-   * a registered file or lies in a registered directory. API paths never pass.
+   * an exact frontend resource URL, a registered static file, or a registered
+   * static directory. API paths never pass.
    */
   local(url, method, type) {
-    if (url.origin !== this.origin || !['GET','HEAD'].includes(method) || !RESOURCE_TYPES.has(type) ||
+    if (url.origin !== this.origin || url.username || url.password || !['GET','HEAD'].includes(method) || !RESOURCE_TYPES.has(type) ||
         /^\/api(?:\/|$)/.test(url.pathname) || /[%\\]/.test(url.pathname) || !ASSET.test(url.pathname)) return false;
-    return this.files.has(url.pathname) || [...this.directories].some(prefix => prefix && url.pathname.startsWith(prefix + '/'));
+    const clean = new URL(url); clean.hash = '';
+    return this.localResources.has(clean.href) || this.files.has(url.pathname) ||
+      [...this.directories].some(prefix => prefix && url.pathname.startsWith(prefix + '/'));
   }
 
   /**
@@ -133,6 +145,8 @@ class ResourcePolicy {
     for (const match of text.matchAll(pattern)) {
       let url;
       try { url = new URL(match[1] || match[2] || match[3] || match[4], source); } catch { continue; }
+      // External CSS cannot grant access to additional Home Assistant URLs.
+      if (url.origin === this.origin && new URL(source).origin !== this.origin) continue;
       // CSS references permit only that asset, never sibling scripts or data.
       if (CSS_ASSET.test(url.pathname) || cdnAsset(url)) this.register(url.href, false);
     }

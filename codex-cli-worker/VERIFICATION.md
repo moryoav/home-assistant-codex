@@ -112,15 +112,20 @@ This allows assets such as Browser Mod, custom icons, navigation modules, and
 WebRTC card scripts without granting access to arbitrary integration GET endpoints.
 Loading a script does not permit its service calls, writes, or unsupported APIs.
 The read-only `recorder/statistic_during_period` and `camera/capabilities`
-commands are supported, as is Dreame Vacuum's exact `/dreame_vacuum/frontend.js`
-bundle path, which it serves through a custom HTTP view. Other Dreame endpoints
-remain subject to the existing request restrictions.
+commands are supported.
 Custom Icons' active-set, list, cache, and single-icon reads are supported with
 bounded set/icon names; icon selection and download operations remain blocked.
 Knob Swipe Navigation's configuration read is supported. Its live knob-event
 subscriptions and navigation-result writes remain blocked, as do Browser Mod
 connection/registration requests. Features depending on them may still report
 blocked requests.
+
+Same-origin scripts and stylesheets explicitly registered as Core frontend modules
+or Lovelace resources can also load through custom HTTP views. Only the exact
+registered URL, including its query string, is allowed; registration does not
+grant access to sibling paths or other query strings. Assets referenced by
+same-origin CSS can load at their exact URLs too. These permissions allow only
+GET/HEAD asset requests outside `/api` and `/auth`; they do not enable navigation or writes.
 
 Public HTTPS assets are fetched through a separate client that sends no Home
 Assistant token, browser cookies, authorization, origin, or referrer headers.

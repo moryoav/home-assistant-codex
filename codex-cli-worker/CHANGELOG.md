@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.76
+
+- Fixed read-only dashboard verification blocking `recorder/statistic_during_period` and `camera/capabilities` reads.
+- Added generic support for registered frontend scripts and stylesheets served through custom HTTP views, including exact version queries, while keeping unrelated requests and writes blocked.
+- Clarified that policy-blocked requests are inspection limits and do not establish dashboard or tablet faults.
+
+Update the worker app and integration to **0.1.76**, then restart Home Assistant.
+
 ## 0.1.75
 
 - Added **Copy response** below chat answers, including saved answers, to copy their original Markdown while preserving code blocks and YAML indentation. A dialog offers selectable text when automatic copying is unavailable.

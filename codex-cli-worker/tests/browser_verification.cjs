@@ -30,7 +30,9 @@ async function main() {
   assert(allowMessage({id: 6, type: 'knob_swipe_navigation/config'}));
   assert(!allowMessage({type: 'knob_swipe_navigation/config', navigation_enabled: true}));
   for (const type of ['knob_swipe_navigation/subscribe_rotations', 'knob_swipe_navigation/navigation_result']) assert(!allowMessage({type}));
-  for (const type of ['frontend/get_icons', 'render_template', 'sensor/numeric_device_classes', 'weather/subscribe_forecast']) assert(allowMessage({type}));
+  for (const type of ['frontend/get_icons', 'render_template', 'sensor/numeric_device_classes', 'weather/subscribe_forecast',
+    'recorder/statistic_during_period', 'recorder/statistics_during_period', 'camera/capabilities']) assert(allowMessage({type}));
+  for (const type of ['camera/stream', 'camera/update_prefs', 'recorder/clear_statistics', 'recorder/import_statistics']) assert(!allowMessage({type}));
   assert(allowMessage({ type: 'subscribe_events', event_type: 'state_changed' }));
   assert(!allowRequest(new URL('http://evil.test/local/card.js'), 'http://ha.test', 'GET'));
   assert(!allowRequest(new URL('http://ha.test/api/webhook/action'), 'http://ha.test', 'GET'));
@@ -40,6 +42,12 @@ async function main() {
   assert(!allowRequest(new URL('http://ha.test/api/image/upload'), 'http://ha.test', 'POST'));
   assert(allowRequest(new URL('http://ha.test/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02'), 'http://ha.test', 'GET'));
   assert(!allowRequest(new URL('http://ha.test/api/calendars/calendar.fixture'), 'http://ha.test', 'POST'));
+  const dreame = new URL('http://ha.test/dreame_vacuum/frontend.js?v=0123456789abcdef0123456789abcdef');
+  for (const method of ['GET', 'HEAD']) assert(allowRequest(dreame, 'http://ha.test', method));
+  for (const method of ['POST', 'PUT', 'DELETE']) assert(!allowRequest(dreame, 'http://ha.test', method));
+  assert(!allowRequest(dreame, 'http://other.test', 'GET'));
+  for (const pathname of ['/dreame_vacuum/action.js', '/dreame_vacuum/frontend.js/extra'])
+    assert(!allowRequest(new URL(pathname, 'http://ha.test'), 'http://ha.test', 'GET'));
 
   const upstream = [], requests = [], tokens = [];
   let redirectedRequests = 0;
@@ -54,7 +62,7 @@ async function main() {
       response.end('{"state":"on"}'); return;
     }
     if (request.url === '/local/missing.js') { response.writeHead(404); response.end(); return; }
-    if (['/browser_mod.js', '/custom_icons/main.js'].includes(request.url)) {
+    if (['/browser_mod.js', '/custom_icons/main.js', '/dreame_vacuum/frontend.js?v=0123456789abcdef0123456789abcdef'].includes(request.url)) {
       response.setHeader('Content-Type', 'text/javascript');
       response.end('window.loadedAssets = (window.loadedAssets || 0) + 1;'); return;
     }
@@ -63,8 +71,8 @@ async function main() {
       response.end(); return;
     }
     response.setHeader('Content-Type', 'text/html');
-    response.end(`<!doctype html><html><body><script src="/browser_mod.js"></script><script src="/custom_icons/main.js"></script><home-assistant></home-assistant><script>
-      if (window.loadedAssets !== 2) console.error('Registered assets failed to execute');
+    response.end(`<!doctype html><html><body><script src="/browser_mod.js"></script><script src="/custom_icons/main.js"></script><script src="/dreame_vacuum/frontend.js?v=0123456789abcdef0123456789abcdef"></script><home-assistant></home-assistant><script>
+      if (window.loadedAssets !== 3) console.error('Dashboard assets failed to execute');
       const ha = document.querySelector('home-assistant');
       ha.attachShadow({mode:'open'}).innerHTML = '<hui-view><h1>Home dashboard</h1><p>Kitchen light: on</p></hui-view>';
       ha.shadowRoot.innerHTML += '<hui-error-card style="display:none">Hidden loading placeholder</hui-error-card>';
@@ -81,8 +89,12 @@ async function main() {
             ws.send(JSON.stringify({id:4,type:'call_service',domain:'system_log',service:'write'}));
             ws.send(JSON.stringify({id:5,type:'call_service',domain:'persistent_notification',service:'create'}));
             ws.send(JSON.stringify({id:20,type:'knob_swipe_navigation/config'}));
+            ws.send(JSON.stringify({id:23,type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']}));
+            ws.send(JSON.stringify({id:24,type:'camera/capabilities',entity_id:'camera.fixture'}));
             ${bad ? `ws.send(JSON.stringify({id:21,type:'knob_swipe_navigation/subscribe_rotations'}));
-            ws.send(JSON.stringify({id:22,type:'knob_swipe_navigation/navigation_result',result:'navigated'}));` : ''}
+            ws.send(JSON.stringify({id:22,type:'knob_swipe_navigation/navigation_result',result:'navigated'}));
+            ws.send(JSON.stringify({id:25,type:'camera/stream',entity_id:'camera.fixture'}));
+            ws.send(JSON.stringify({id:26,type:'recorder/clear_statistics',statistic_ids:['sensor.fixture']}));` : ''}
             ${external ? "ws.send(JSON.stringify({id:6,type:'lovelace/resources'}));" : ''}
             await fetch('/api/states/light.kitchen', {headers:{Authorization:'Bearer '+token.access_token}});
             await fetch('/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02', {headers:{Authorization:'Bearer '+token.access_token}});
@@ -137,6 +149,9 @@ async function main() {
     assert.equal(localHttp.screenshots.length, 2);
     assert(upstream.includes('weather/subscribe_forecast'));
     assert(upstream.includes('knob_swipe_navigation/config'));
+    assert(upstream.includes('recorder/statistic_during_period'));
+    assert(upstream.includes('camera/capabilities'));
+    assert(requests.includes('/dreame_vacuum/frontend.js?v=0123456789abcdef0123456789abcdef'));
     assert(requests.some(url => url.startsWith('/api/calendars/calendar.fixture')));
     const worker = await new Promise((resolve, reject) => {
       const child = execFile(process.platform === 'win32' ? 'python' : 'python3',
@@ -211,6 +226,8 @@ async function main() {
     assert(second.blocked.includes('WebSocket call_service (light.turn_on)'));
     assert(second.blocked.includes('WebSocket knob_swipe_navigation/subscribe_rotations'));
     assert(second.blocked.includes('WebSocket knob_swipe_navigation/navigation_result'));
+    assert(second.blocked.includes('WebSocket camera/stream'));
+    assert(second.blocked.includes('WebSocket recorder/clear_statistics'));
     assert(second.blocked.includes('GET /unsafe-action.js'));
     assert(!requests.includes('/unsafe-action.js'));
     assert.equal(second.findings.find(item => item.message === 'Fixture custom card error').count, 2);
@@ -219,6 +236,8 @@ async function main() {
     assert(!upstream.includes('call_service'));
     assert(!upstream.includes('knob_swipe_navigation/subscribe_rotations'));
     assert(!upstream.includes('knob_swipe_navigation/navigation_result'));
+    assert(!upstream.includes('camera/stream'));
+    assert(!upstream.includes('recorder/clear_statistics'));
     assert(!requests.some(url => url.startsWith('/api/services')));
     reject = true;
     assert.equal((await inspect(input)).status, 'unavailable');

@@ -43,6 +43,8 @@ Capturing screenshots is evidence for visual review, not
 a guarantee of correct layout. API results distinguish `observed`, `passed`, and
 `failed`; browser results distinguish `captured`, `issues`, `unavailable`, and
 `disabled`. Problems stay visible even when the edit itself completes.
+Policy blocks limit what this browser can verify; they do not establish faults
+on a tablet or other browser where the dashboard is used.
 
 Each turn retains `verification` and `verification_attachments` in the task API,
 `codex_cli.get_task`, and normal task-result events. The chat shows expandable
@@ -109,6 +111,10 @@ Core supplies registered static file and directory URLs, never filesystem paths.
 This allows assets such as Browser Mod, custom icons, navigation modules, and
 WebRTC card scripts without granting access to arbitrary integration GET endpoints.
 Loading a script does not permit its service calls, writes, or unsupported APIs.
+The read-only `recorder/statistic_during_period` and `camera/capabilities`
+commands are supported, as is Dreame Vacuum's exact `/dreame_vacuum/frontend.js`
+bundle path, which it serves through a custom HTTP view. Other Dreame endpoints
+remain subject to the existing request restrictions.
 Custom Icons' active-set, list, cache, and single-icon reads are supported with
 bounded set/icon names; icon selection and download operations remain blocked.
 Knob Swipe Navigation's configuration read is supported. Its live knob-event

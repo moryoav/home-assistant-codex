@@ -54,6 +54,9 @@ requests**, inspect their details, then choose **Allow selected and retry**.
 Unselected requests stay blocked. **Keep blocked** closes the result without
 granting access. A batch is available only for the current exchange after tasks
 have finished, and can be approved once. Each exchange permits up to four retries.
+An inspection offers at most 16 complete requests, and private storage holds at
+most 128 remembered rules. Additional requests may be omitted to keep the
+evidence bounded; an approvable request is never shortened to fit.
 
 An approval starts a fresh dashboard capture with a new short-lived session.
 It does not rerun the task, save dashboard changes, reload Home Assistant, or

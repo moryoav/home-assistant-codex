@@ -353,8 +353,15 @@ async function inspect(input) {
 }
 
 if (require.main === module) {
-  let input = '';
-  process.stdin.on('data', data => { input += data; if (input.length > 65536) process.exit(2); });
+  let input = '', inputBytes = 0;
+  // The private worker can send 128 saved grants plus 16 one-off requests and
+  // bounded resource metadata. This is independent of the 64 KiB output cap.
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', data => {
+    inputBytes += Buffer.byteLength(data);
+    if (inputBytes > 512 * 1024) process.exit(2);
+    input += data;
+  });
   process.stdin.on('end', async () => {
     try { console.log(JSON.stringify(await inspect(JSON.parse(input)))); }
     catch (_) { console.log(JSON.stringify({ status: 'unavailable', message: 'Browser verification could not load the dashboard. Check local access, authentication, browser availability, and dashboard permissions.' })); process.exitCode = 1; }

@@ -101,7 +101,8 @@ function boundedResult(result) {
 class BrowserPermissions {
   /** Load only validated grants and start a bounded, empty evidence collection. */
   constructor(grants = []) {
-    this.grants = new Set((Array.isArray(grants) ? grants : []).slice(0, 128).map(validate).filter(Boolean).map(item => item.id));
+    // Private storage holds 128 rules; a one-off batch may add 16 more.
+    this.grants = new Set((Array.isArray(grants) ? grants : []).slice(0, 128 + MAX_CANDIDATES).map(validate).filter(Boolean).map(item => item.id));
     this.candidates = new Map();
     this.used = new Set();
     this.omitted = 0;

@@ -69,6 +69,9 @@ assert.equal(commands.size, 500);
 assert.equal(commands.get(0), 'map_tiles/access_token');
 assert.equal(trackCommand(commands, {id: 651, type: 'map_tiles/access_token'}), false);
 assert.equal(trackCommand(commands, {id: 0, type: 'ping'}), false);
+const allGrants = Array.from({length: 144}, (_, index) => rule('websocket', {type: 'custom/get', index}));
+assert.equal(new BrowserPermissions(allGrants).message({type: 'custom/get', index: 143}), true,
+  'the final one-off request must not be dropped after 128 saved rules');
 const large = new BrowserPermissions();
 for (let index = 0; index < 16; index++) large.message({type: 'custom/get', index, payload: '"'.repeat(550)});
 assert.equal(large.evidence().permission_candidates.length, 16);

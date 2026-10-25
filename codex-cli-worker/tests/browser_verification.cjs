@@ -10,6 +10,7 @@ const https = require('node:https');
 const dns = require('node:dns').promises;
 const {EventEmitter} = require('node:events');
 const { inspect, allowMessage, allowRequest } = require('../browser.cjs');
+const { rule } = require('../browser_permissions.cjs');
 
 /**
  * Check the message and request rules, then run inspect against a fake Home
@@ -202,7 +203,8 @@ async function main() {
           try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
         });
       child.stdin.on('error', reject);
-      child.stdin.end(JSON.stringify({...input, session_id: 'fixture-session'}));
+      child.stdin.end(JSON.stringify({...input, session_id: 'fixture-session', installation_id: 'a'.repeat(32),
+        fixture_permissions: Array.from({length:128}, (_, index) => rule('websocket', {type:'custom/get', index, payload:'x'.repeat(700)}))}));
     });
     assert.equal(worker.status, 'captured', JSON.stringify(worker));
     assert.deepEqual(worker.stored_images.map(image => image.viewport), ['desktop', 'mobile']);

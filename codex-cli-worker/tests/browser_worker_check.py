@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from test_server import server
 from verification import Verification
+from browser_permissions import scope
 
 
 def capture(payload):
@@ -21,6 +22,7 @@ def capture(payload):
                            "TASK_STATE_FILE": root / "index.json", "tasks": {}}.items():
             stack.enter_context(patch.object(server, key, value))
         stack.enter_context(patch.object(server, "read_options", return_value=options))
+        stack.enter_context(patch.object(server, "api_token", return_value="fixture-worker-token"))
         turn = server.new_turn("Browser verification fixture")
         task_id = "fixture"
         server.tasks[task_id] = {"task_id": task_id, "status": "running",
@@ -28,6 +30,10 @@ def capture(payload):
         server.get_task_dir(task_id).mkdir(parents=True)
         engine = Verification(server)
         engine.begin(task_id)
+        # Exercise the real stdin transport with a full, legitimate saved set.
+        fixture_permissions = payload.pop("fixture_permissions", [])
+        if fixture_permissions:
+            engine.permissions.remember(scope(payload), payload["path"], fixture_permissions)
         with patch.object(engine, "core", return_value=payload) as core:
             result = engine.run(task_id, {"operation": "dashboard", "path": payload["path"]})
         core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": payload["session_id"]})

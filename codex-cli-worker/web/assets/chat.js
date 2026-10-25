@@ -553,6 +553,8 @@ function controls() {
       "This chat's message is waiting in the queue and has not been sent yet. You can edit or remove it above.";
   else if (task?.permission_required)
     notice = "Review the permission request above to continue, or stop the task.";
+  else if (working && task?.browser_retry)
+    notice = "Retrying the dashboard inspection. You can continue this chat when it finishes.";
   else if (working)
     notice =
       "Codex is working. Your response will appear here when it finishes.";
@@ -760,10 +762,13 @@ async function loadList(older = false) {
   for (const chat of data.tasks) merged.set(chat.task_id, chat);
   state.chats = [...merged.values()].sort(chatOrder);
   state.next = state.chats.length < data.total ? state.chats.length : null;
+  const activeChanged = state.active !== data.active_task_id;
   state.active = data.active_task_id;
   state.queue = Array.isArray(data.queue) ? data.queue : [];
   if (hadSelected && !merged.has(state.id)) await selectChat(null);
   renderList();
+  // Approval panels in the open chat depend on whether any chat is working.
+  if (activeChanged && state.task) renderTask();
   controls();
 }
 /** Return the image attachments in a list that carry a well-formed id. */
@@ -949,8 +954,14 @@ function renderVerification(turn, taskId) {
   if (!checks.length) return null;
   const section = textNode("section", "", "verification");
   section.append(textNode("h3", "Verification"));
+  if (state.task?.browser_retry?.turn_id === turn.turn_id) {
+    const progress = textNode("p", "Retrying dashboard inspection…", "browser-permission-progress");
+    progress.setAttribute("role", "status");
+    section.append(progress);
+  }
   for (const check of checks) {
     const row = textNode("details", "", `verification-result is-${check.status}`);
+    if (check.retry_of && check === checks[checks.length - 1]) row.open = true;
     const label = {
       passed: "Passed", failed: "Failed", observed: "Readback", captured: "Screenshots captured",
       issues: "Needs review", disabled: "Disabled", unavailable: "Unverified",
@@ -980,12 +991,178 @@ function renderVerification(turn, taskId) {
       for (const error of [...(Array.isArray(check.errors) ? check.errors : []), ...(Array.isArray(check.blocked) ? check.blocked : [])]) row.append(textNode("p", error));
     }
     if (check.checked_at) row.append(textNode("small", dateLabel(check.checked_at, true)));
+    if (check.permission_decision) {
+      const names = (check.permission_decision.approved || []).map(item => item.label).join(", ");
+      row.append(textNode("p", `${check.permission_decision.remember ? "Remembered for this dashboard" : "Allowed for this retry"}: ${names}`));
+      const kept = (check.permission_decision.carried || []).map(item => item.label).join(", ");
+      if (kept) row.append(textNode("p", `Still allowed from earlier in this exchange: ${kept}`));
+    }
+    if (check.permissions_used?.length)
+      row.append(textNode("p", `${check.permissions_used.length} user-approved browser permission(s) used.`));
+    if (check.permission_review_unavailable) row.append(textNode("p", check.permission_review_unavailable));
+    if (check.permission_store_error) row.append(textNode("p", check.permission_store_error));
+    if (check.permission_candidates_omitted)
+      row.append(textNode("p", "Some blocked requests can't be offered for approval: they were incomplete, looked like credentials, or exceeded the review limit."));
+    const review = renderBrowserPermissions(check, turn, taskId);
+    if (review) row.append(review);
     section.append(row);
   }
   const images = imageAttachments(turn.verification_attachments).filter(image => image.expires_at * 1000 > Date.now());
   if (images.length) section.append(renderAttachments(taskId, images, "Dashboard verification screenshot"));
   section.append(textNode("p", "Screenshots are evidence for visual review. State and configuration checks do not prove automation behavior.", "verification-note"));
   return section;
+}
+/** Let the owner review a batch of complete requests without interrupting capture. */
+function renderBrowserPermissions(check, turn, taskId) {
+  const candidates = check.permission_candidates || [];
+  if (!candidates.length || !check.check_id) return null;
+  if ((turn.verification || []).some(item => item.retry_of === check.check_id))
+    return textNode("p", "This batch was reviewed in a later inspection.", "muted");
+  if (check.permission_review) {
+    const retrying = state.task?.browser_retry?.source_check_id === check.check_id;
+    return textNode("p", retrying ? "Retrying with the approved requests…"
+      : "This batch was already approved. If no retry result is available, start a new inspection.", "muted");
+  }
+  if (turn.turn_id !== state.task?.current_turn_id) return null;
+  if (state.task?.cancellation_requested)
+    return textNode("p", "This exchange was stopped, so its requests can't be approved. Start a new inspection to review them.", "muted");
+  const panel = textNode("div", "", "browser-permission-review");
+  panel.append(textNode("h4", "Review blocked browser requests"));
+  panel.append(textNode("p", "Select requests you trust. Unreviewed handlers may have side effects. Known device controls, writes, sign-in changes, URL signing and camera signaling stay blocked."));
+  const fields = document.createElement("fieldset");
+  fields.append(textNode("legend", `Additional access for ${check.path}`));
+  const boxes = [];
+  const selectLabel = textNode("label", "", "browser-permission-choice");
+  const selectAll = document.createElement("input");
+  selectAll.type = "checkbox";
+  selectLabel.append(selectAll, textNode("span", "Select all requests"));
+  fields.append(selectLabel);
+  for (const candidate of candidates) {
+    const item = textNode("div", "", "browser-permission-request");
+    const label = textNode("label", "", "browser-permission-choice");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = candidate.id;
+    boxes.push(box);
+    label.append(box, textNode("span", candidate.label));
+    const details = textNode("details", "", "browser-permission-details");
+    details.append(textNode("summary", "Request details"), textNode("pre", candidate.description));
+    item.append(label, details);
+    fields.append(item);
+  }
+  const rememberLabel = textNode("label", "", "browser-permission-choice browser-permission-remember");
+  const remember = document.createElement("input");
+  remember.type = "checkbox";
+  rememberLabel.append(remember, textNode("span", "Remember for this dashboard"));
+  fields.append(rememberLabel);
+  const actions = textNode("div", "", "browser-permission-actions");
+  const allow = textNode("button", "Allow selected and retry");
+  allow.type = "button";
+  const keep = textNode("button", "Keep blocked", "subtle");
+  keep.type = "button";
+  keep.onclick = () => {
+    const result = panel.closest(".verification-result");
+    result.open = false;
+    result.querySelector("summary").focus();
+  };
+  actions.append(allow, keep);
+  const feedback = textNode("p", "", "browser-permission-feedback");
+  feedback.setAttribute("role", "status");
+  // The worker accepts a batch only while no task or inspection runs in any chat.
+  const busy = Boolean(state.task?.browser_retry) || Boolean(state.active) ||
+    ["queued", "running", "in_queue"].includes(state.task?.status);
+  fields.disabled = busy;
+  const update = () => {
+    const selected = boxes.filter(box => box.checked).length;
+    selectAll.checked = selected === boxes.length;
+    selectAll.indeterminate = selected > 0 && selected < boxes.length;
+    allow.disabled = busy || !selected;
+  };
+  selectAll.onchange = () => { for (const box of boxes) box.checked = selectAll.checked; update(); };
+  for (const box of boxes) box.onchange = update;
+  update();
+  allow.onclick = async () => {
+    const generation = state.generation;
+    fields.disabled = allow.disabled = keep.disabled = true;
+    feedback.textContent = "Starting a fresh inspection…";
+    try {
+      await api(`tasks/${encodeURIComponent(taskId)}/browser-permissions`, {
+        turn_id: turn.turn_id, check_id: check.check_id,
+        candidate_ids: boxes.filter(box => box.checked).map(box => box.value), remember: remember.checked,
+      });
+      if (state.id === taskId && state.generation === generation) {
+        await fetchSelected(true);
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(refresh, 1000);
+      }
+    } catch (error) {
+      if (!panel.isConnected) return;
+      feedback.textContent = String(error.message || error);
+      fields.disabled = busy;
+      keep.disabled = false;
+      update();
+    }
+  };
+  panel.append(fields, actions, feedback);
+  if (busy) feedback.textContent = "Wait for running tasks and inspections to finish before approving this batch.";
+  return panel;
+}
+
+let browserPermissionLoad = 0;
+/** List saved exceptions in Settings, with an explicit revoke action for each. */
+async function loadBrowserPermissions() {
+  const load = ++browserPermissionLoad;
+  const area = $("browser-permissions");
+  area.textContent = "Loading saved permissions…";
+  try {
+    const { permissions } = await api("browser-permissions");
+    if (load !== browserPermissionLoad) return;
+    area.replaceChildren();
+    if (!permissions.length) area.append(textNode("p", "No browser permissions remembered.", "muted"));
+    for (const permission of permissions) {
+      const row = textNode("div", "", "saved-browser-permission");
+      const info = textNode("div", "", "saved-browser-permission-info");
+      info.append(textNode("strong", permission.label), textNode("p", permission.path));
+      const details = textNode("details", "", "browser-permission-details");
+      details.append(textNode("summary", "Request details"), textNode("pre", permission.description));
+      info.append(details);
+      const revoke = textNode("button", "Revoke", "subtle");
+      revoke.type = "button";
+      revoke.setAttribute("aria-label", `Revoke ${permission.label} for ${permission.path}`);
+      revoke.onclick = async () => {
+        revoke.disabled = true;
+        try {
+          await api(`browser-permissions/${encodeURIComponent(permission.id)}`, undefined, "DELETE");
+          await loadBrowserPermissions();
+          const next = area.querySelector("button");
+          if (next) next.focus();
+          else { area.tabIndex = -1; area.focus(); }
+          $("settings-result").textContent = "Browser permission revoked.";
+        } catch (error) { revoke.disabled = false; settingsError(error); }
+      };
+      row.append(info, revoke);
+      area.append(row);
+    }
+  } catch (error) {
+    if (load !== browserPermissionLoad) return;
+    area.replaceChildren(textNode("p", String(error.message || error)));
+    // An unreadable permissions file can only be replaced, never edited here.
+    if (error.status === 503) {
+      const clear = textNode("button", "Remove all saved permissions", "subtle");
+      clear.type = "button";
+      clear.onclick = async () => {
+        clear.disabled = true;
+        try {
+          await api("browser-permissions", undefined, "DELETE");
+          await loadBrowserPermissions();
+          area.tabIndex = -1;
+          area.focus();
+          $("settings-result").textContent = "Saved browser permissions removed.";
+        } catch (failure) { clear.disabled = false; settingsError(failure); }
+      };
+      area.append(clear);
+    }
+  }
 }
 /** Keep the original Markdown of the answer's visible text, including code indentation. */
 function responseMarkdown(turn) {
@@ -1096,6 +1273,9 @@ function renderTask(force = false) {
     queued && [queued.queue_id, queued.message, queued.prompt_attachments],
     state.edit?.id,
     state.catalog?.backup_retention_days,
+    task.browser_retry,
+    // Approval panels depend on whether any chat is working.
+    state.active,
   ]);
   if (!force && signature === state.signature) {
     // Its place in line can change without the conversation being redrawn.
@@ -2517,6 +2697,7 @@ $("settings-button").onclick = async () => {
   $("save-agents").disabled = true;
   const results = await Promise.allSettled([
     loadLogin(),
+    loadBrowserPermissions(),
     api("agents").then((data) => {
       $("agents").value = data.content || "";
       $("agents").disabled = false;
@@ -2570,7 +2751,7 @@ async function refresh() {
       showError(error);
     }
   }
-  refreshTimer = setTimeout(refresh, state.active ? 3000 : 12000);
+  refreshTimer = setTimeout(refresh, state.task?.browser_retry ? 1000 : state.active ? 3000 : 12000);
 }
 sidebar(false);
 controls();

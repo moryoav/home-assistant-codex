@@ -37,7 +37,7 @@ from flask import Flask, Response, jsonify, request, send_file
 
 # Also support the existing importlib-based test harness.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification
+from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification, public_check
 from approvals import APPROVAL_GONE, AppServerSession
 from ha_data import HomeAssistantData
 
@@ -1889,8 +1889,12 @@ def find_attachment(task: dict[str, Any], attachment_id: str) -> dict[str, Any] 
     return None
 
 
-def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, Any]:
-    """Return a task as the API sends it: a short summary for lists, or the full record with its turns."""
+def task_payload(task: dict[str, Any], *, summary: bool = False, private: bool = True) -> dict[str, Any]:
+    """Return a task as the API sends it: a short summary for lists, or the full record with its turns.
+
+    Exact blocked browser requests are part of the human Ingress review only;
+    with `private` False, each verification check carries their labels instead.
+    """
     if summary:
         fields = ("task_id", "title", "status", "created_at", "updated_at", "summary", "question")
         result = {key: task.get(key, "") for key in fields}
@@ -1901,11 +1905,35 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
         result["chat_settings"] = current_chat_settings(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
         result["turns"] = task_turns(task)
         result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
+        result["browser_retry"] = verification.retry_status(task.get("task_id"))
+        if not private:
+            for record in [result, *result["turns"]]:
+                if isinstance(record.get("verification"), list):
+                    record["verification"] = [public_check(check) for check in record["verification"]]
     result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES
     result["permission_required"] = task.get("status") == "running" and any(
         item.get("status") == "pending" for item in task.get("approvals") or []
     )
     return result
+
+
+def _save_task_update(task_id: str, updates: dict[str, Any], *, touch: bool) -> bool:
+    """Apply changes under the lock and persist them; see update_task and update_task_evidence."""
+    with lock:
+        if not touch and task_id not in tasks:
+            return False
+        task = tasks.setdefault(task_id, {"task_id": task_id})
+        if task.get("cancellation_requested") and updates.get("status") != "cancelled" and updates.get("cancellation_requested") is not False:
+            return False
+        task.update(updates)
+        if touch:
+            task["updated_at"] = utc_now()
+        sync_current_turn(task)
+        task_dir = get_task_dir(task_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(task_dir / "task.json", task)
+    save_task_index()
+    return True
 
 
 def update_task(task_id: str, **updates: Any) -> bool:
@@ -1914,18 +1942,16 @@ def update_task(task_id: str, **updates: Any) -> bool:
     Once cancellation was requested, nothing is changed and False is returned,
     unless the update sets the cancelled status or clears the request.
     """
-    with lock:
-        task = tasks.setdefault(task_id, {"task_id": task_id})
-        if task.get("cancellation_requested") and updates.get("status") != "cancelled" and updates.get("cancellation_requested") is not False:
-            return False
-        task.update(updates)
-        task["updated_at"] = utc_now()
-        sync_current_turn(task)
-        task_dir = get_task_dir(task_id)
-        task_dir.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(task_dir / "task.json", task)
-    save_task_index()
-    return True
+    return _save_task_update(task_id, updates, touch=True)
+
+
+def update_task_evidence(task_id: str, **updates: Any) -> bool:
+    """Record evidence on an existing chat's current exchange without touching updated_at.
+
+    A dashboard inspection retried after the exchange ended must neither move
+    the chat in the recent list nor make it the integration's latest task.
+    """
+    return _save_task_update(task_id, updates, touch=False)
 
 
 def normalize_title(value: Any) -> str:
@@ -4427,7 +4453,8 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         "backups": backups,
         "lovelace_results": lovelace_results,
         "attachments": attachments,
-        "verification": copy.deepcopy(tasks.get(task_id, {}).get("verification") or []),
+        # Home Assistant events and its recorder get request labels, not exact blocked requests.
+        "verification": [public_check(check) for check in copy.deepcopy(tasks.get(task_id, {}).get("verification") or [])],
         "verification_attachments": copy.deepcopy(tasks.get(task_id, {}).get("verification_attachments") or []),
         "response": {
             "status": status,
@@ -4882,6 +4909,8 @@ def status() -> Response:
     with lock:
         task_values = sorted(tasks.values(), key=lambda task: task.get("updated_at") or task.get("created_at", ""))
         latest = {key: copy.deepcopy(value) for key, value in task_values[-1].items() if key != "turns"} if task_values else None
+        if latest is not None and not is_ingress_request() and isinstance(latest.get("verification"), list):
+            latest["verification"] = [public_check(check) for check in latest["verification"]]
         queued = len(message_queue)
     return jsonify(
         {
@@ -4985,7 +5014,8 @@ def list_tasks() -> Response:
         page = ordered[offset:offset + limit] if limit is not None else ordered[offset:]
         # Preserve the original unfiltered response shape for existing automations.
         summaries = request.args.get("summary") == "true"
-        result = [task_payload(task, summary=summaries) for task in page]
+        private = is_ingress_request()
+        result = [task_payload(task, summary=summaries, private=private) for task in page]
         active = _active_task_id_locked()
         waiting = queue_payload_locked()
     next_offset = offset + len(page)
@@ -5161,7 +5191,7 @@ def get_task(task_id: str) -> Response:
     with lock:
         task = tasks.get(task_id)
         queued = next(iter(queue_payload_locked(task_id)), None)
-        result = task_payload(task) if task else None
+        result = task_payload(task, private=is_ingress_request()) if task else None
         if result is not None:
             result["queued_message"] = queued
         elif queued and queued.get("new_chat"):
@@ -5323,6 +5353,76 @@ def decide_approval(task_id: str, approval_id: str) -> Response:
         except OSError:
             return jsonify({"ok": False, "error": "Could not deliver the decision. The exchange was stopped."}), 503
     return jsonify({"ok": True, "approval_id": approval_id, "decision": payload["decision"]})
+
+
+def require_ingress(func):
+    """Let only the human Ingress UI use a route; the worker API token is refused.
+
+    Stack it under require_auth, which answers requests with no credentials.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        """Run the route only for an Ingress request."""
+        if not is_ingress_request():
+            return jsonify({"ok": False, "error": "Browser permissions must be managed through Home Assistant Ingress"}), 403
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+@app.get("/browser-permissions")
+@require_auth
+@require_ingress
+def browser_permissions_list():
+    """Let the human Ingress UI inspect remembered browser permissions."""
+    try:
+        return jsonify({"ok": True, "permissions": verification.permissions.list()})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "unreadable": True}), 503
+
+
+@app.delete("/browser-permissions")
+@require_auth
+@require_ingress
+def browser_permissions_clear():
+    """Remove every saved exception, which also recovers from an unreadable permissions file."""
+    try:
+        verification.permissions.clear()
+        return jsonify({"ok": True})
+    except (OSError, ValueError):
+        return jsonify({"ok": False, "error": "Could not save browser permissions. Try again."}), 503
+
+
+@app.delete("/browser-permissions/<permission_id>")
+@require_auth
+@require_ingress
+def browser_permissions_revoke(permission_id: str):
+    """Revoke one saved exception from Ingress; API tokens cannot grant or revoke."""
+    try:
+        verification.permissions.revoke(permission_id)
+        return jsonify({"ok": True})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError:
+        return jsonify({"ok": False, "error": "Could not save browser permissions. Try again."}), 503
+
+
+@app.post("/tasks/<task_id>/browser-permissions")
+@require_auth
+@require_ingress
+def browser_permissions_approve(task_id: str):
+    """Approve a selected batch and retry only its dashboard capture, through Ingress."""
+    if (request.content_length or 0) > 8192:
+        return jsonify({"ok": False, "error": "Browser permission request is too large"}), 413
+    try:
+        result = verification.request_retry(task_id, request.get_json(silent=True))
+        return jsonify({"ok": True, **result}), 202
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    except OSError:
+        return jsonify({"ok": False, "error": "Could not save browser permissions. Try again."}), 503
 
 
 @app.post("/tasks/<task_id>/reply")

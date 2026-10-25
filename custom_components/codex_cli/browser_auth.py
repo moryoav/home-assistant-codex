@@ -127,6 +127,7 @@ class BrowserSessions:
             timer = self.hass.loop.call_later(SESSION_SECONDS, self.revoke, refresh.id)
             self.sessions[refresh.id] = (refresh, timer)
             return {"session_id": refresh.id, "access_token": access,
+                    "installation_id": self.user.id,
                     "expires_in": SESSION_SECONDS, "url": url,
                     "resources": resources}
 

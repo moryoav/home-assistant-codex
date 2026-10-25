@@ -10,6 +10,7 @@ const https = require('node:https');
 const dns = require('node:dns').promises;
 const {EventEmitter} = require('node:events');
 const { inspect, allowMessage, allowRequest } = require('../browser.cjs');
+const { rule } = require('../browser_permissions.cjs');
 
 /**
  * Check the message and request rules, then run inspect against a fake Home
@@ -49,9 +50,18 @@ async function main() {
   let redirectedRequests = 0;
   const redirectTarget = http.createServer((_request, response) => { redirectedRequests++; response.end('external'); });
   await new Promise(resolve => redirectTarget.listen(0, '127.0.0.1', resolve));
-  let bad = false, reject = false, external = false;
+  let bad = false, reject = false, external = false, permissionRequests = false, malformedMap = false, busyReads = true;
   const server = http.createServer((request, response) => {
     requests.push(request.url);
+    if (request.url.startsWith('/api/map_tiles/raster/')) {
+      assert.equal(new URL(request.url, 'http://fixture').searchParams.get('token'), 'private-map-access');
+      response.setHeader('Content-Type', 'image/png');
+      response.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9kAAAAASUVORK5CYII=', 'base64'));
+      return;
+    }
+    if (request.url.startsWith('/api/custom/data')) {
+      response.setHeader('Content-Type', 'application/json'); response.end('{}'); return;
+    }
     if (request.url.startsWith('/api/states') || request.url.startsWith('/api/calendars/')) {
       assert.equal(request.headers.authorization, 'Bearer temporary-browser-token');
       response.setHeader('Content-Type', 'application/json');
@@ -73,32 +83,60 @@ async function main() {
     response.setHeader('Content-Type', 'text/html');
     response.end(`<!doctype html><html><body><script src="/browser_mod.js"></script><script src="/custom_icons/main.js"></script><script src="/integration-a/frontend.js?v=123"></script><home-assistant></home-assistant><script>
       if (window.loadedAssets !== 3) console.error('Dashboard assets failed to execute');
+      const report = name => fetch('/api/states/sensor.' + name, {headers:{Authorization:'Bearer verification-session'}});
+      // A page script must never see Core's real socket or credentials, even
+      // through Playwright's in-page WebSocket plumbing.
+      const dispatch = globalThis.__pwWebSocketDispatch;
+      if (dispatch) globalThis.__pwWebSocketDispatch = request => {
+        const text = JSON.stringify(request);
+        if (text.includes('temporary-browser-token') || text.includes('private-map-access')) report('page_saw_real_credentials');
+        return dispatch(request);
+      };
       const ha = document.querySelector('home-assistant');
       ha.attachShadow({mode:'open'}).innerHTML = '<hui-view><h1>Home dashboard</h1><p>Kitchen light: on</p></hui-view>';
       ha.shadowRoot.innerHTML += '<hui-error-card style="display:none">Hidden loading placeholder</hui-error-card>';
       window.externalAuthSetToken = async (_, token) => {
         if (token.access_token !== 'verification-session') throw Error('Real token reached the page');
         const ws = new WebSocket('ws://' + location.host + '/api/websocket');
+        // Home Assistant requires request IDs to increase on each connection.
+        let nextId = 1;
+        const ids = {};
+        const send = message => { const id = nextId++; ws.send(JSON.stringify({id, ...message})); return id; };
         ws.onmessage = async event => {
-          const msg = JSON.parse(event.data);
+          if (event.data.includes('private-map-access')) report('map_token_leaked');
+          const parsed = JSON.parse(event.data);
+          const msg = Array.isArray(parsed) ? parsed[0] : parsed;
           if (msg.type === 'auth_required') ws.send(JSON.stringify({type:'auth',access_token:token.access_token}));
           if (msg.type === 'auth_ok') {
             ha.hass = {connection:ws,user:{name:'Verification'}};
-            ws.send(JSON.stringify({id:1,type:'get_states'}));
-            ws.send(JSON.stringify({id:3,type:'weather/subscribe_forecast',entity_id:'weather.fixture',forecast_type:'daily'}));
-            ws.send(JSON.stringify({id:4,type:'call_service',domain:'system_log',service:'write'}));
-            ws.send(JSON.stringify({id:5,type:'call_service',domain:'persistent_notification',service:'create'}));
-            ws.send(JSON.stringify({id:20,type:'knob_swipe_navigation/config'}));
-            ws.send(JSON.stringify({id:23,type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']}));
-            ws.send(JSON.stringify({id:24,type:'camera/capabilities',entity_id:'camera.fixture'}));
-            ${bad ? `ws.send(JSON.stringify({id:21,type:'knob_swipe_navigation/subscribe_rotations'}));
-            ws.send(JSON.stringify({id:22,type:'knob_swipe_navigation/navigation_result',result:'navigated'}));
-            ws.send(JSON.stringify({id:25,type:'camera/stream',entity_id:'camera.fixture'}));
-            ws.send(JSON.stringify({id:26,type:'recorder/clear_statistics',statistic_ids:['sensor.fixture']}));` : ''}
-            ws.send(JSON.stringify({id:6,type:'lovelace/resources'}));
+            if (ws._ws) report('page_reached_core_socket');
+            send({type:'get_states'});
+            send({type:'weather/subscribe_forecast',entity_id:'weather.fixture',forecast_type:'daily'});
+            send({type:'call_service',domain:'system_log',service:'write'});
+            send({type:'call_service',domain:'persistent_notification',service:'create'});
+            send({type:'knob_swipe_navigation/config'});
+            send({type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']});
+            send({type:'camera/capabilities',entity_id:'camera.fixture'});
+            ${permissionRequests ? `
+            send({type:'bubble_card_tools/list_modules'});
+            send({type:'subscribe_condition',condition:{condition:'state',entity_id:'light.fixture',state:'on'}});
+            ids.map = send({type:'map_tiles/access_token'});
+            send({type:'auth/sign_path',path:'/api/camera_proxy/camera.fixture'});
+            send({type:'call_service',domain:'light',service:'turn_on'});
+            fetch('/api/custom/data?entity_id=sensor.fixture').catch(()=>{});
+            ` : ''}
+            ${bad ? `send({type:'knob_swipe_navigation/subscribe_rotations'});
+            send({type:'knob_swipe_navigation/navigation_result',result:'navigated'});
+            send({type:'camera/stream',entity_id:'camera.fixture'});
+            send({type:'recorder/clear_statistics',statistic_ids:['sensor.fixture']});` : ''}
+            ids.resources = send({type:'lovelace/resources'});
+            ${busyReads ? `for (let index = 0; index < 650; index++) ids.lastPing = send({type:'ping'});` : ''}
             await fetch('/api/states/light.kitchen', {headers:{Authorization:'Bearer '+token.access_token}});
             await fetch('/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02', {headers:{Authorization:'Bearer '+token.access_token}});
-            ${bad ? `ws.send(JSON.stringify({id:2,type:'call_service',domain:'light',service:'turn_on'}));
+            ${bad ? `send({type:'call_service',domain:'light',service:'turn_on'});
+            // A reused ID is refused, as Core would, and the connection keeps working.
+            ws.send(JSON.stringify({id:1,type:'get_states'}));
+            ids.afterReuse = send({type:'get_states'});
             fetch('/api/services/light/turn_on',{method:'POST'}).catch(()=>{});
             const script=document.createElement('script');script.src='/local/missing.js';document.body.append(script);
             const redirect=document.createElement('script');redirect.src='/local/redirect.js';document.body.append(redirect);
@@ -109,18 +147,29 @@ async function main() {
             ha.shadowRoot.querySelector('hui-view').innerHTML+='<hui-error-card>Custom element does not exist: missing-card</hui-error-card>';
             console.error('Fixture custom card error');` : ''}
           }
-          if (msg.id === 6 && msg.success) {
+          if (msg.id === ids.resources && msg.success) {
             for (const resource of msg.result) {
               const script = document.createElement('script'); script.type = 'module'; script.src = resource.url; document.body.append(script);
             }
           }
+          if (msg.id === ids.map && msg.success) {
+            if (msg.result.token !== 'verification-map-session') throw Error('Map credential reached page scripts');
+            const image = new Image();
+            image.src = '/api/map_tiles/raster/3/4/5.png?token=' + msg.result.token;
+            ha.shadowRoot.append(image);
+          }
+          if (ids.lastPing && msg.id === ids.lastPing && msg.success) report('busy_connection_survived');
+          if (ids.afterReuse && msg.id === ids.afterReuse && msg.success) report('connection_survived_reused_id');
         };
       };
       window.externalApp.getExternalAuth(JSON.stringify({callback:'externalAuthSetToken'}));
     </script></body></html>`);
   });
   const wss = new WebSocketServer({ server });
+  const malformedCloseDelays = [];
   wss.on('connection', ws => {
+    let malformedAt;
+    ws.on('close', () => { if (malformedAt) malformedCloseDelays.push(Date.now() - malformedAt); });
     ws.send(JSON.stringify({type:'auth_required'}));
     ws.on('message', raw => {
       const message = JSON.parse(String(raw));
@@ -128,6 +177,9 @@ async function main() {
       if (message.type === 'auth') {
         tokens.push(message.access_token);
         ws.send(JSON.stringify({type: reject ? 'auth_invalid' : 'auth_ok'}));
+      } else if (message.type === 'map_tiles/access_token') {
+        if (malformedMap) malformedAt = Date.now();
+        ws.send(JSON.stringify([...(malformedMap ? [null] : []), {id:message.id,type:'result',success:true,result:{token:'private-map-access'}}]));
       } else ws.send(JSON.stringify({id:message.id,type:'result',success:true,result:message.type === 'lovelace/resources'
         ? [{url: '/integration-b/panel.mjs?version=456', type: 'module'},
           ...(external ? [{url: 'https://registered.example.test/card/main.js', type: 'module'}] : [])] : []}));
@@ -142,6 +194,11 @@ async function main() {
     assert.equal(first.status, 'captured', JSON.stringify(first));
     assert.deepEqual(first.errors, []);
     assert.deepEqual(first.blocked, []);
+    assert.equal(requests.filter(url => url === '/api/states/sensor.busy_connection_survived').length, 2);
+    busyReads = false;
+    // Core's socket lives in the controller, never inside the page.
+    assert(!requests.includes('/api/states/sensor.page_reached_core_socket'));
+    assert(!requests.includes('/api/states/sensor.page_saw_real_credentials'));
     assert.equal(requests.filter(url => url === '/integration-b/panel.mjs?version=456').length, 2);
     assert.equal(requests.filter(url => url === '/api/states/sensor.registered_bundle_loaded').length, 2);
     assert(first.findings.every(item => item.kind === 'diagnostic' && item.count === 2));
@@ -168,7 +225,8 @@ async function main() {
           try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
         });
       child.stdin.on('error', reject);
-      child.stdin.end(JSON.stringify({...input, session_id: 'fixture-session'}));
+      child.stdin.end(JSON.stringify({...input, session_id: 'fixture-session', installation_id: 'a'.repeat(32),
+        fixture_permissions: Array.from({length:128}, (_, index) => rule('websocket', {type:'custom/get', index, payload:'x'.repeat(700)}))}));
     });
     assert.equal(worker.status, 'captured', JSON.stringify(worker));
     assert.deepEqual(worker.stored_images.map(image => image.viewport), ['desktop', 'mobile']);
@@ -226,6 +284,34 @@ async function main() {
     } finally {
       dns.lookup = originalLookup; https.request = originalRequest; external = false;
     }
+    permissionRequests = true;
+    const pending = await inspect(input);
+    assert.equal(pending.permission_candidates.length, 4, JSON.stringify(pending));
+    assert(!JSON.stringify(pending).includes('private-map-access'));
+    assert(!upstream.includes('bubble_card_tools/list_modules'));
+    const granted = await inspect({...input, permissions: pending.permission_candidates});
+    assert.equal(granted.permission_candidates.length, 0, JSON.stringify(granted));
+    assert.equal(granted.permissions_used.length, 4);
+    assert(upstream.includes('bubble_card_tools/list_modules'));
+    assert(upstream.includes('subscribe_condition'));
+    assert(upstream.includes('map_tiles/access_token'));
+    assert(!upstream.includes('auth/sign_path'));
+    assert(!upstream.includes('call_service'));
+    assert.equal(requests.filter(url => url.startsWith('/api/map_tiles/raster/')).length, 2);
+    assert.equal(requests.filter(url => url.startsWith('/api/custom/data')).length, 2);
+    assert(!JSON.stringify(granted).includes('private-map-access'));
+    assert(!requests.includes('/api/states/sensor.page_saw_real_credentials'), 'the real map token must stay out of page scripts');
+    malformedMap = true;
+    const malformed = await inspect({...input, permissions: pending.permission_candidates});
+    assert(!requests.includes('/api/states/sensor.map_token_leaked'), 'malformed batches must never bypass token scrubbing');
+    assert(malformed.errors.some(error => error.includes('Home Assistant sent an invalid frame')), JSON.stringify(malformed));
+    // The controller closes Core's side at once instead of leaving it open until the page closes.
+    assert(malformedCloseDelays.length > 0 && malformedCloseDelays.every(delay => delay < 1000), JSON.stringify(malformedCloseDelays));
+    malformedMap = false;
+    // Removing the grants restores the exact same blocked candidate batch.
+    const revoked = await inspect(input);
+    assert.deepEqual(revoked.permission_candidates.map(item => item.id).sort(), pending.permission_candidates.map(item => item.id).sort());
+    permissionRequests = false;
     bad = true;
     const second = await inspect(input);
     assert.equal(second.status, 'issues');
@@ -236,6 +322,8 @@ async function main() {
     assert(second.blocked.includes('WebSocket knob_swipe_navigation/navigation_result'));
     assert(second.blocked.includes('WebSocket camera/stream'));
     assert(second.blocked.includes('WebSocket recorder/clear_statistics'));
+    assert(second.blocked.includes('WebSocket get_states (invalid or reused request ID)'));
+    assert.equal(requests.filter(url => url === '/api/states/sensor.connection_survived_reused_id').length, 2);
     assert(second.blocked.includes('GET /unsafe-action.js'));
     assert(!requests.includes('/unsafe-action.js'));
     assert(second.blocked.includes('GET /integration-b/other.mjs'));

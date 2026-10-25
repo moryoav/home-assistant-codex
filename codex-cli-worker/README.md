@@ -14,6 +14,8 @@ Browser sign-in is automatic and uses a temporary, local, read-only identity. Up
 
 For setup, security notes, and action examples, see the [repository README](https://github.com/moryoav/home-assistant-codex/blob/main/README.md) and [app documentation](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md).
 
+When a dashboard inspection blocks additional browser requests, open **Review blocked browser requests** in its result to approve a selected batch and retry the capture. Choose **Remember for this dashboard** to reuse those exceptions, and revoke them under **Settings > Browser permissions**. Approving a custom request is a trust decision. Known controls, writes, URL signing and camera signaling stay blocked. See [permission scopes and limits](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/VERIFICATION.md#approving-additional-browser-requests).
+
 ## History and statistics
 
 Codex can analyze Home Assistant state history and recorder statistics through separate read-only MCP tools. They use the worker's automatic authentication and work in sandboxed modes without shell approval or the `HA_TOKEN` option. Queries support multiple IDs, explicit time windows, and five-minute, hourly, daily, weekly, and monthly statistics. Results are saved in private temporary JSON files so Codex can calculate over the data without large tool outputs being cut off. Query limits and any incomplete series are reported explicitly. See [the tools and limits](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#historical-data-and-statistics).

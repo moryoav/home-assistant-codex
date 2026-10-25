@@ -118,6 +118,8 @@ async function inspect(input) {
     return { status: 'unavailable', stage: 'launch', message: 'Dashboard verification needs Node.js 22 or newer for its Home Assistant connection.' };
   const errors = [], blocked = [], screenshots = [];
   const findings = new Map();
+  // Share the condition limit across sockets so opening another cannot bypass it.
+  const conditionBudget = {active: 0, limit: LIMITS.condition_subscriptions};
   let omitted = 0;
   const policy = new ResourcePolicy(origin, input.resources);
   const permissions = new BrowserPermissions(input.permissions);
@@ -241,7 +243,7 @@ async function inspect(input) {
       const upstream = new WebSocket(url.href);
       upstream.binaryType = 'arraybuffer';
       upstreams.add(upstream);
-      const commands = new CommandTracker();
+      const commands = new CommandTracker(1000, conditionBudget);
       const pending = [];
       let authenticated = false, closed = false;
       /** Send to Core once it is connected; nothing is sent after either side closes. */
@@ -254,15 +256,17 @@ async function inspect(input) {
       const closeBoth = (reason, kind = 'home_assistant') => {
         if (closed) return;
         closed = true;
+        commands.close();
         add(errors, `Dashboard connection closed: ${reason}`, kind);
         route.close({ code: 4008, reason: 'Blocked by dashboard verification' }).catch(() => {});
         try { upstream.close(); } catch (_) { /* Already closing. */ }
       };
       /** Answer a refused request the way Core answers an error, without forwarding it. */
       const refuse = (message, reason, code = 'unauthorized') => {
-        add(blocked, `WebSocket ${String(message.type)} (${reason})`, 'policy');
+        const explanation = `${reason}. Approval is unavailable.`;
+        add(blocked, `WebSocket ${String(message.type)} (${reason}): Approval is unavailable.`, 'policy');
         if (Number.isInteger(message.id)) route.send(JSON.stringify({
-          id: message.id, type: 'result', success: false, error: { code, message: 'Blocked by dashboard verification' },
+          id: message.id, type: 'result', success: false, error: { code, message: `Blocked by dashboard verification: ${explanation}` },
         }));
       };
       upstream.addEventListener('open', () => {
@@ -275,6 +279,7 @@ async function inspect(input) {
         upstreams.delete(upstream);
         if (closed) return;
         closed = true;
+        commands.close();
         route.close().catch(() => {});
       });
       upstream.addEventListener('message', event => {
@@ -310,6 +315,7 @@ async function inspect(input) {
       route.onClose(() => {
         if (closed) return;
         closed = true;
+        commands.close();
         try { upstream.close(); } catch (_) { /* Already closing. */ }
       });
       route.onMessage(raw => {

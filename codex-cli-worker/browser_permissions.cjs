@@ -129,18 +129,29 @@ function validate(saved) {
  */
 class CommandTracker {
   /** Start a connection with no requests and Core's initial ID. */
-  constructor(limit = 1000) {
+  constructor(limit = 1000, conditionBudget = {active: 0, limit: LIMITS.condition_subscriptions}) {
     this.lastId = 0;
     this.limit = limit;
     this.pending = new Map();
+    this.conditionBudget = conditionBudget;
+    this.conditions = new Set();
+    this.unsubscribing = new Map();
   }
 
   /** Track a request, or return why it cannot be forwarded unambiguously. */
   accept(message) {
     if (!Number.isSafeInteger(message.id) || message.id <= this.lastId) return 'invalid or reused request ID';
     if (this.pending.size >= this.limit) return 'too many unanswered requests';
+    if (message.type === 'subscribe_condition' && this.conditionBudget.active >= this.conditionBudget.limit)
+      return `too many active condition subscriptions (limit ${this.conditionBudget.limit})`;
     this.lastId = message.id;
     this.pending.set(message.id, message.type);
+    if (message.type === 'subscribe_condition') {
+      this.conditions.add(message.id);
+      this.conditionBudget.active++;
+    }
+    if (message.type === 'unsubscribe_events' && this.conditions.has(message.subscription))
+      this.unsubscribing.set(message.id, message.subscription);
     return null;
   }
 
@@ -151,7 +162,22 @@ class CommandTracker {
 
   /** Forget a request once Core answered it; subscription events keep only the ID. */
   settle(message) {
-    if (message.type === 'result' || message.type === 'pong') this.pending.delete(message.id);
+    if (message.type !== 'result' && message.type !== 'pong') return;
+    if (message.type === 'result') {
+      const subscription = message.success === false ? message.id :
+        message.success === true ? this.unsubscribing.get(message.id) : undefined;
+      if (this.conditions.delete(subscription)) this.conditionBudget.active--;
+    }
+    this.pending.delete(message.id);
+    this.unsubscribing.delete(message.id);
+  }
+
+  /** Release all condition slots and request records when either socket closes. */
+  close() {
+    this.conditionBudget.active -= this.conditions.size;
+    this.conditions.clear();
+    this.unsubscribing.clear();
+    this.pending.clear();
   }
 }
 

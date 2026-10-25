@@ -10,7 +10,7 @@ const https = require('node:https');
 const dns = require('node:dns').promises;
 const {EventEmitter} = require('node:events');
 const { inspect, allowMessage, allowRequest } = require('../browser.cjs');
-const { rule } = require('../browser_permissions.cjs');
+const { rule, LIMITS } = require('../browser_permissions.cjs');
 
 /**
  * Check the message and request rules, then run inspect against a fake Home
@@ -83,7 +83,7 @@ async function main() {
   let redirectedRequests = 0;
   const redirectTarget = http.createServer((_request, response) => { redirectedRequests++; response.end('external'); });
   await new Promise(resolve => redirectTarget.listen(0, '127.0.0.1', resolve));
-  let bad = false, reject = false, external = false, permissionRequests = false, malformedMap = false, busyReads = true, deniedRead = false;
+  let bad = false, reject = false, external = false, permissionRequests = false, malformedMap = false, busyReads = true, deniedRead = false, fillConditions = false;
   const server = http.createServer((request, response) => {
     requests.push(request.url);
     if (request.url.startsWith('/api/map_tiles/raster/')) {
@@ -150,6 +150,8 @@ async function main() {
             send({type:'knob_swipe_navigation/config'});
             send({type:'knob_swipe_navigation/subscribe_rotations'});
             for (const condition of ${JSON.stringify(readConditions)}) send({type:'subscribe_condition',condition});
+            ${fillConditions ? `for (let index = 0; index < ${LIMITS.condition_subscriptions}; index++)
+              send({type:'subscribe_condition',condition:{condition:'numeric_state',entity_id:'sensor.fixture',above:0}});` : ''}
             send({type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']});
             send({type:'camera/capabilities',entity_id:'camera.fixture'});
             ${permissionRequests ? `
@@ -195,6 +197,8 @@ async function main() {
           }
           if (ids.lastPing && msg.id === ids.lastPing && msg.success) report('busy_connection_survived');
           if (ids.afterReuse && msg.id === ids.afterReuse && msg.success) report('connection_survived_reused_id');
+          if (msg.error?.code === 'id_reuse' && msg.error.message.includes('invalid or reused request ID') &&
+              msg.error.message.includes('Approval is unavailable')) report('id_refusal_explained');
         };
       };
       window.externalApp.getExternalAuth(JSON.stringify({callback:'externalAuthSetToken'}));
@@ -366,7 +370,8 @@ async function main() {
     assert(second.blocked.some(item => item.startsWith('WebSocket subscribe_events (zha_event):') && item.includes('Listening is read-only') && item.includes('administrators')));
     assert(second.blocked.some(item => item.startsWith('WebSocket camera/stream:') && item.includes('Approval is unavailable')));
     assert(second.blocked.some(item => item.startsWith('WebSocket recorder/clear_statistics:')));
-    assert(second.blocked.includes('WebSocket get_states (invalid or reused request ID)'));
+    assert(second.blocked.includes('WebSocket get_states (invalid or reused request ID): Approval is unavailable.'));
+    assert.equal(requests.filter(url => url === '/api/states/sensor.id_refusal_explained').length, 2);
     assert.equal(requests.filter(url => url === '/api/states/sensor.connection_survived_reused_id').length, 2);
     assert(second.blocked.includes('GET /unsafe-action.js'));
     assert(!requests.includes('/unsafe-action.js'));
@@ -386,6 +391,14 @@ async function main() {
     assert(!requests.some(url => url.startsWith('/api/services')));
     assert(!second.permission_candidates.some(item => item.kind === 'websocket'), 'unsupported WebSocket operations must not be offered for approval');
     bad = false;
+    fillConditions = true;
+    const beforeConditions = upstream.filter(type => type === 'subscribe_condition').length;
+    const limited = await inspect(input);
+    assert.equal(upstream.filter(type => type === 'subscribe_condition').length - beforeConditions, LIMITS.condition_subscriptions * 2,
+      'cap active subscriptions after acknowledgement and release slots between viewports');
+    assert(limited.blocked.some(item => item.includes('too many active condition subscriptions') && item.includes('Approval is unavailable')));
+    assert.deepEqual(limited.permission_candidates, []);
+    fillConditions = false;
     deniedRead = true;
     const denied = await inspect(input);
     assert(denied.errors.some(error => error.includes('Home Assistant get_states: unauthorized') && error.includes('Browser approval cannot change Home Assistant permissions')));

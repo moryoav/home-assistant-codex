@@ -55,7 +55,10 @@ Built-in `state` and `numeric_state` condition subscriptions, including nested
 values and report changes to a condition's result. The controller checks the
 predicate types and fields and bounds the request's size and nesting; Home
 Assistant validates the condition values. Unfamiliar condition types still need
-review. Knob Swipe Navigation's configuration and rotation subscriptions are
+review. At most 64 condition subscriptions can be active across the inspection's
+connections at once. A failed subscription, successful unsubscription, or closed
+connection releases its slots. This resource limit cannot be raised by approval.
+Knob Swipe Navigation's configuration and rotation subscriptions are
 also allowed automatically because they only read configuration or listen for
 events. Reporting navigation results remains blocked because it updates the
 integration's state.

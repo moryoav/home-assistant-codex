@@ -21,6 +21,8 @@ jobs:
             pytest-ha: '0.13.337'
           - core: '2026.9.4'
             pytest-ha: '0.13.367'
+          - core: '2026.10.3'
+            pytest-ha: '0.13.374'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6

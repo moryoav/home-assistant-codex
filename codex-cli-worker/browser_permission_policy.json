@@ -8,6 +8,7 @@
     "path_length": 512,
     "query_pairs": 12,
     "depth": 12,
+    "condition_subscriptions": 64,
     "controller_input_bytes": 1048576
   },
   "type_pattern": "[a-z][a-z0-9_]*(?:/[a-z][a-z0-9_]*){0,5}",

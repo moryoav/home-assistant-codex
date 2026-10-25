@@ -1,7 +1,7 @@
 // A bounded, observational HA browser. No click, evaluate, or arbitrary URL tool.
 const { chromium } = require('playwright-core');
 const { ResourcePolicy, createExternalFetcher } = require('./browser_resources.cjs');
-const { BrowserPermissions, CommandTracker, LIMITS, raster, boundedResult } = require('./browser_permissions.cjs');
+const { BrowserPermissions, CommandTracker, LIMITS, raster, boundedResult, websocketBlockReason } = require('./browser_permissions.cjs');
 
 const READ_MESSAGES = new Set([
   'get_config', 'get_states', 'get_services', 'auth/current_user', 'supported_features',
@@ -22,6 +22,31 @@ const READ_MESSAGES = new Set([
   'energy/get_prefs', 'energy/info', 'get_panels', 'manifest/list', 'camera/capabilities',
 ]);
 
+/** Recognize bounded built-in predicates; Core still validates their values. */
+function readOnlyCondition(condition) {
+  let remaining = 512;
+  const bounded = (value, depth = 0) => {
+    if (--remaining < 0 || depth > LIMITS.depth) return false;
+    if (typeof value === 'string') return value.length <= 4096;
+    if (value && typeof value === 'object') return Object.values(value).every(item => bounded(item, depth + 1));
+    return value === null || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value));
+  };
+  const predicate = value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const common = ['condition', 'alias', 'enabled'];
+    if (['and', 'or', 'not'].includes(value.condition))
+      return Object.keys(value).every(key => [...common, 'conditions'].includes(key)) &&
+        Array.isArray(value.conditions) && value.conditions.every(predicate);
+    const fields = value.condition === 'state' ? ['entity_id', 'state', 'attribute', 'for', 'match'] :
+      value.condition === 'numeric_state' ? ['entity_id', 'attribute', 'above', 'below', 'value_template'] : null;
+    return !!fields && Object.keys(value).every(key => [...common, ...fields].includes(key)) &&
+      Object.hasOwn(value, 'entity_id') && (value.condition === 'state' ? Object.hasOwn(value, 'state') :
+        Object.hasOwn(value, 'above') || Object.hasOwn(value, 'below'));
+  };
+  // Bound the whole value before serializing or traversing the predicate tree.
+  return bounded(condition) && Buffer.byteLength(JSON.stringify(condition)) <= 16 * 1024 && predicate(condition);
+}
+
 /**
  * Return whether a WebSocket message from the dashboard may be forwarded to
  * Home Assistant. Only the read-only commands listed here and subscriptions
@@ -29,9 +54,11 @@ const READ_MESSAGES = new Set([
  */
 function allowMessage(message) {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
-  // This handler only returns frontend configuration. Do not subscribe this
-  // capture browser to physical knob events or report navigation results.
-  if (message.type === 'knob_swipe_navigation/config')
+  if (message.type === 'subscribe_condition')
+    return Object.keys(message).every(key => ['id', 'type', 'condition'].includes(key)) && readOnlyCondition(message.condition);
+  // These handlers only return configuration or listen for rotation events.
+  // Reporting navigation results remains blocked because it updates HA state.
+  if (['knob_swipe_navigation/config', 'knob_swipe_navigation/subscribe_rotations'].includes(message.type))
     return Object.keys(message).every(key => ['id', 'type'].includes(key));
   // These custom_icons handlers only return active sets, icon lists, cached
   // icons, or one icon. Selection/download handlers remain blocked. Bound names
@@ -91,6 +118,8 @@ async function inspect(input) {
     return { status: 'unavailable', stage: 'launch', message: 'Dashboard verification needs Node.js 22 or newer for its Home Assistant connection.' };
   const errors = [], blocked = [], screenshots = [];
   const findings = new Map();
+  // Share the condition limit across sockets so opening another cannot bypass it.
+  const conditionBudget = {active: 0, limit: LIMITS.condition_subscriptions};
   let omitted = 0;
   const policy = new ResourcePolicy(origin, input.resources);
   const permissions = new BrowserPermissions(input.permissions);
@@ -129,7 +158,7 @@ async function inspect(input) {
   /** Return the errors, blocked items, and findings gathered so far. */
   const evidence = () => ({errors, blocked, findings: [...findings.values()], findings_omitted: omitted, ...permissions.evidence()});
   const policyNote = () => blocked.length
-    ? ' Read-only policy blocks limit this inspection; they do not establish faults on another device.' : '';
+    ? ' Inspection policy blocks limit this capture. A blocked request is not necessarily a write or a fault on another device. Each WebSocket block explains whether approval is available.' : '';
   try {
     browser = await chromium.launch({
       executablePath: process.env.HA_BROWSER_EXECUTABLE || '/usr/bin/chromium-browser',
@@ -214,7 +243,7 @@ async function inspect(input) {
       const upstream = new WebSocket(url.href);
       upstream.binaryType = 'arraybuffer';
       upstreams.add(upstream);
-      const commands = new CommandTracker();
+      const commands = new CommandTracker(1000, conditionBudget);
       const pending = [];
       let authenticated = false, closed = false;
       /** Send to Core once it is connected; nothing is sent after either side closes. */
@@ -227,15 +256,17 @@ async function inspect(input) {
       const closeBoth = (reason, kind = 'home_assistant') => {
         if (closed) return;
         closed = true;
+        commands.close();
         add(errors, `Dashboard connection closed: ${reason}`, kind);
         route.close({ code: 4008, reason: 'Blocked by dashboard verification' }).catch(() => {});
         try { upstream.close(); } catch (_) { /* Already closing. */ }
       };
       /** Answer a refused request the way Core answers an error, without forwarding it. */
       const refuse = (message, reason, code = 'unauthorized') => {
-        add(blocked, `WebSocket ${String(message.type)} (${reason})`, 'policy');
+        const explanation = `${reason}. Approval is unavailable.`;
+        add(blocked, `WebSocket ${String(message.type)} (${reason}): Approval is unavailable.`, 'policy');
         if (Number.isInteger(message.id)) route.send(JSON.stringify({
-          id: message.id, type: 'result', success: false, error: { code, message: 'Blocked by dashboard verification' },
+          id: message.id, type: 'result', success: false, error: { code, message: `Blocked by dashboard verification: ${explanation}` },
         }));
       };
       upstream.addEventListener('open', () => {
@@ -248,6 +279,7 @@ async function inspect(input) {
         upstreams.delete(upstream);
         if (closed) return;
         closed = true;
+        commands.close();
         route.close().catch(() => {});
       });
       upstream.addEventListener('message', event => {
@@ -274,7 +306,8 @@ async function inspect(input) {
               ['lovelace/resources', 'lovelace/resources/list'].includes(type) && Array.isArray(message.result))
             for (const resource of message.result.slice(0, 256)) policy.register(resource?.url);
           if (message.type === 'result' && message.success === false)
-            add(errors, `Home Assistant ${type || 'request'}: ${message.error?.code || 'error'}`, 'home_assistant');
+            add(errors, `Home Assistant ${type || 'request'}: ${message.error?.code || 'error'}${message.error?.code === 'unauthorized'
+              ? '. Home Assistant denied access for the read-only browser account. Browser approval cannot change Home Assistant permissions.' : ''}`, 'home_assistant');
           commands.settle(message);
         }
         route.send(outgoing);
@@ -282,6 +315,7 @@ async function inspect(input) {
       route.onClose(() => {
         if (closed) return;
         closed = true;
+        commands.close();
         try { upstream.close(); } catch (_) { /* Already closing. */ }
       });
       route.onMessage(raw => {
@@ -303,11 +337,12 @@ async function inspect(input) {
           const service = message.type === 'call_service' && /^[a-z_]+$/.test(message.domain) && /^[a-z_]+$/.test(message.service)
             ? `${message.domain}.${message.service}` : '';
           const diagnostic = ['system_log.write', 'persistent_notification.create'].includes(service);
-          add(diagnostic ? null : blocked, `WebSocket ${String(message.type)}${service ? ` (${service})` : message.event_type ? ` (${message.event_type})` : ''}`,
+          const reason = websocketBlockReason(message);
+          add(diagnostic ? null : blocked, `WebSocket ${String(message.type)}${service ? ` (${service})` : message.event_type ? ` (${message.event_type})` : ''}: ${reason}`,
             diagnostic ? 'diagnostic' : 'policy');
           if (Number.isInteger(message.id)) route.send(JSON.stringify({
             id: message.id, type: 'result', success: false,
-            error: { code: 'unauthorized', message: 'Blocked by dashboard verification' },
+            error: { code: 'unauthorized', message: `Blocked by dashboard verification: ${reason}` },
           }));
         }
       });

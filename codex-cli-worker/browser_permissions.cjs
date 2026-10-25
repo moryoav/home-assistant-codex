@@ -57,7 +57,7 @@ function raster(url) {
 /**
  * Build a rule only for eligible reads; an unknown handler is still a trust
  * decision. Commands the controller restricts by name or parameters (knob
- * events, icon sets, event subscriptions, Browser Mod) are never eligible, so
+ * handlers, icon sets, event subscriptions, Browser Mod) are never eligible, so
  * an approval cannot widen those restrictions.
  */
 function rule(kind, value) {
@@ -85,6 +85,34 @@ function rule(kind, value) {
   return { id, kind, request: snapshot };
 }
 
+/** Explain a controller refusal without treating every unrecognized read as a write. */
+function websocketBlockReason(message) {
+  const type = message.type;
+  if (typeof type !== 'string') return 'Invalid request type. Approval is unavailable.';
+  if (type === 'browser_mod/connect')
+    return 'Browser Mod can update stored browser details and attach a command channel. It needs separate support; approval is unavailable.';
+  if (type === 'browser_mod' || type.startsWith('browser_mod/'))
+    return 'Browser Mod needs separate support for this inspection. Approval is unavailable.';
+  if (type === 'subscribe_events')
+    return message.event_type === 'zha_event'
+      ? 'Listening is read-only, but Home Assistant restricts this event stream to administrators. User approval cannot grant administrator access.'
+      : 'This event stream is outside the supported event allowlist. Listening is not a write, but approval is unavailable.';
+  if (rule('websocket', message))
+    return type === 'subscribe_condition'
+      ? 'This condition is outside the automatic built-in read checks. Review this exact request for approval.'
+      : 'This request is outside the automatic read allowlist. Review this exact request for approval.';
+  if (type === 'knob_swipe_navigation/navigation_result')
+    return 'Reporting navigation results updates integration state. Approval is unavailable in this observational browser.';
+  if (type === 'knob_swipe_navigation/subscribe_rotations' || type === 'knob_swipe_navigation/config')
+    return 'This read handler accepts only id and type. Extra parameters are unsupported; approval is unavailable.';
+  if (type === 'auth' || type.startsWith('auth/'))
+    return 'Authentication changes and URL signing need separate support. Approval is unavailable.';
+  if (type === 'camera/stream' || type === 'camera/webrtc' || type.startsWith('camera/webrtc/'))
+    return 'Camera streaming and signaling need separate support. Approval is unavailable.';
+  if (writes(type)) return 'Device actions and write-like commands are not supported by this observational browser. Approval is unavailable.';
+  return 'This request is outside the supported read policy or cannot be safely reviewed. Approval is unavailable; this does not establish that it is a write.';
+}
+
 /** Revalidate saved rules, including their fingerprint, at the enforcement boundary. */
 function validate(saved) {
   try {
@@ -101,18 +129,29 @@ function validate(saved) {
  */
 class CommandTracker {
   /** Start a connection with no requests and Core's initial ID. */
-  constructor(limit = 1000) {
+  constructor(limit = 1000, conditionBudget = {active: 0, limit: LIMITS.condition_subscriptions}) {
     this.lastId = 0;
     this.limit = limit;
     this.pending = new Map();
+    this.conditionBudget = conditionBudget;
+    this.conditions = new Set();
+    this.unsubscribing = new Map();
   }
 
   /** Track a request, or return why it cannot be forwarded unambiguously. */
   accept(message) {
     if (!Number.isSafeInteger(message.id) || message.id <= this.lastId) return 'invalid or reused request ID';
     if (this.pending.size >= this.limit) return 'too many unanswered requests';
+    if (message.type === 'subscribe_condition' && this.conditionBudget.active >= this.conditionBudget.limit)
+      return `too many active condition subscriptions (limit ${this.conditionBudget.limit})`;
     this.lastId = message.id;
     this.pending.set(message.id, message.type);
+    if (message.type === 'subscribe_condition') {
+      this.conditions.add(message.id);
+      this.conditionBudget.active++;
+    }
+    if (message.type === 'unsubscribe_events' && this.conditions.has(message.subscription))
+      this.unsubscribing.set(message.id, message.subscription);
     return null;
   }
 
@@ -123,7 +162,22 @@ class CommandTracker {
 
   /** Forget a request once Core answered it; subscription events keep only the ID. */
   settle(message) {
-    if (message.type === 'result' || message.type === 'pong') this.pending.delete(message.id);
+    if (message.type !== 'result' && message.type !== 'pong') return;
+    if (message.type === 'result') {
+      const subscription = message.success === false ? message.id :
+        message.success === true ? this.unsubscribing.get(message.id) : undefined;
+      if (this.conditions.delete(subscription)) this.conditionBudget.active--;
+    }
+    this.pending.delete(message.id);
+    this.unsubscribing.delete(message.id);
+  }
+
+  /** Release all condition slots and request records when either socket closes. */
+  close() {
+    this.conditionBudget.active -= this.conditions.size;
+    this.conditions.clear();
+    this.unsubscribing.clear();
+    this.pending.clear();
   }
 }
 
@@ -202,4 +256,4 @@ class BrowserPermissions {
   }
 }
 
-module.exports = { BrowserPermissions, CommandTracker, LIMITS, POLICY, canonical, rule, validate, raster, writes, boundedResult };
+module.exports = { BrowserPermissions, CommandTracker, LIMITS, POLICY, canonical, rule, validate, raster, writes, boundedResult, websocketBlockReason };

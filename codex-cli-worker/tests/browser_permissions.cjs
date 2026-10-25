@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-const { BrowserPermissions, CommandTracker, LIMITS, canonical, rule, validate, boundedResult } = require('../browser_permissions.cjs');
+const { BrowserPermissions, CommandTracker, LIMITS, canonical, rule, validate, boundedResult, websocketBlockReason } = require('../browser_permissions.cjs');
 
 const moduleList = { id: 1, type: 'bubble_card_tools/list_modules' };
 const first = new BrowserPermissions();
@@ -40,6 +40,14 @@ for (const message of [{ type: 'knob_swipe_navigation/subscribe_rotations' }, { 
   { type: 'subscribe_events' }, { type: 'subscribe_events', event_type: 'call_service' }, { type: 'browser_mod/settings/get' }]) {
   assert.equal(rule('websocket', message), null, JSON.stringify(message));
 }
+assert.match(websocketBlockReason(moduleList), /Review this exact request for approval/);
+assert.match(websocketBlockReason({type: 'subscribe_events', event_type: 'zha_event'}), /read-only.*administrators/);
+assert.match(websocketBlockReason({type: 'browser_mod/connect'}), /stored browser details.*separate support/);
+assert.match(websocketBlockReason({type: 'subscribe_events'}), /Listening is not a write.*approval is unavailable/);
+assert.match(websocketBlockReason({type: 'knob_swipe_navigation/navigation_result'}), /updates integration state/);
+assert.match(websocketBlockReason({type: 'knob_swipe_navigation/subscribe_rotations', extra: true}), /Extra parameters.*approval is unavailable/);
+assert.match(websocketBlockReason({type: 'custom/get', password: 'hidden'}), /Approval is unavailable/);
+assert.match(websocketBlockReason({type: null}), /Invalid request type/);
 
 const origin = 'http://homeassistant:8123';
 const http = new BrowserPermissions();
@@ -116,6 +124,33 @@ assert.equal(commands.type(1), undefined);
 const busy = new CommandTracker(3);
 for (let id = 1; id <= 3; id++) assert.equal(busy.accept({id, type: 'get_states'}), null);
 assert.equal(busy.accept({id: 4, type: 'get_states'}), 'too many unanswered requests');
+// Acknowledged subscriptions retain slots, across sockets, until Core confirms cleanup.
+const budget = {active: 0, limit: 2};
+const subscriptions = new CommandTracker(1000, budget);
+const otherSocket = new CommandTracker(1000, budget);
+assert.equal(subscriptions.accept({id: 1, type: 'subscribe_condition'}), null);
+subscriptions.settle({id: 1, type: 'result', success: true});
+assert.equal(otherSocket.accept({id: 1, type: 'subscribe_condition'}), null);
+otherSocket.settle({id: 1, type: 'result', success: true});
+assert.equal(subscriptions.pending.size, 0);
+assert.match(subscriptions.accept({id: 2, type: 'subscribe_condition'}), /too many active condition subscriptions/);
+assert.match(otherSocket.accept({id: 2, type: 'subscribe_condition'}), /too many active condition subscriptions/);
+assert.equal(subscriptions.accept({id: 3, type: 'unsubscribe_events', subscription: 1}), null);
+subscriptions.settle({id: 3, type: 'result', success: false});
+assert.equal(budget.active, 2, 'a failed unsubscribe retains the active slot');
+assert.equal(subscriptions.accept({id: 4, type: 'unsubscribe_events', subscription: 1}), null);
+assert.match(subscriptions.accept({id: 5, type: 'subscribe_condition'}), /too many active condition subscriptions/);
+subscriptions.settle({id: 4, type: 'result', success: true});
+assert.equal(budget.active, 1, 'release only when Core acknowledges the unsubscribe');
+assert.equal(subscriptions.accept({id: 6, type: 'subscribe_condition'}), null);
+subscriptions.settle({id: 6, type: 'result', success: false});
+assert.equal(budget.active, 1, 'a condition validation or access error releases its slot');
+assert.equal(subscriptions.accept({id: 7, type: 'subscribe_condition'}), null);
+subscriptions.close();
+subscriptions.close();
+assert.equal(budget.active, 1, 'close is idempotent and releases pending subscriptions');
+otherSocket.close();
+assert.equal(budget.active, 0);
 // Saved rules plus every one-off grant an exchange's retries can carry are all loaded.
 const grantLimit = LIMITS.saved_rules + LIMITS.candidates * LIMITS.retries;
 const allGrants = Array.from({length: grantLimit}, (_, index) => rule('websocket', {type: 'custom/get', index}));

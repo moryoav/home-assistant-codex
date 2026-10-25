@@ -232,6 +232,58 @@ async def test_read_only_session_cannot_save_dashboard(hass, hass_ws_client):
         broker.close()
 
 
+async def test_read_only_conditions_and_admin_event_boundary(hass, hass_ws_client):
+    """Core 2026.10 accepts passive predicates; older Core and raw ZHA retain access checks."""
+    from homeassistant.const import MAJOR_VERSION, MINOR_VERSION
+    supports_read_only_conditions = (MAJOR_VERSION, MINOR_VERSION) >= (2026, 10)
+    assert await async_setup_component(hass, "websocket_api", {})
+    broker = auth.BrowserSessions(hass, "paired-worker")
+    await broker.setup()
+    try:
+        with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"):
+            session = await broker.issue()
+        websocket_response = web.WebSocketResponse
+        with patch("homeassistant.components.websocket_api.http.web.WebSocketResponse",
+                   side_effect=lambda **kwargs: websocket_response(**{**kwargs, "heartbeat": None})):
+            client = await hass_ws_client(hass, access_token=session["access_token"])
+        hass.states.async_set("input_text.alexa_howmuchis", "")
+        hass.states.async_set("sensor.condition_probe", "0")
+        conditions = [
+            {"condition": "and", "conditions": [
+                {"condition": "not", "conditions": [{"condition": "state", "entity_id": "input_text.alexa_howmuchis", "state": ""}]},
+                {"condition": "not", "conditions": [{"condition": "state", "entity_id": "input_text.alexa_howmuchis", "state": "unknown"}]},
+            ]},
+            {"condition": "numeric_state", "entity_id": "sensor.condition_probe", "above": 0},
+        ]
+        for identifier, condition in enumerate(conditions, 1):
+            await client.send_json({"id": identifier, "type": "subscribe_condition", "condition": condition})
+            response = await client.receive_json()
+            if not supports_read_only_conditions:
+                assert response["success"] is False and response["error"]["code"] == "unauthorized", response
+                continue
+            assert response["success"] is True, response
+            event = await client.receive_json()
+            assert event["id"] == identifier and event["event"]["result"] is False, event
+        if supports_read_only_conditions:
+            hass.states.async_set("input_text.alexa_howmuchis", "ready")
+            hass.states.async_set("sensor.condition_probe", "1")
+            await hass.async_block_till_done()
+            events = [await client.receive_json(), await client.receive_json()]
+            assert {event["id"] for event in events} == {1, 2}
+            assert all(event["event"]["result"] is True for event in events)
+            for identifier in (1, 2):
+                await client.send_json({"id": identifier + 2, "type": "unsubscribe_events", "subscription": identifier})
+                assert (await client.receive_json())["success"] is True
+        await client.send_json({"id": 5, "type": "subscribe_events", "event_type": "zha_event"})
+        response = await client.receive_json()
+        assert response["success"] is False and response["error"]["code"] == "unauthorized", response
+        assert not broker.user.is_admin
+        await client.close()
+        await hass.async_block_till_done()
+    finally:
+        broker.close()
+
+
 async def test_browser_url_uses_internal_tls_configuration(hass):
     """Do not substitute the plain Supervisor address when Core requires TLS."""
     hass.config.api = types.SimpleNamespace(use_ssl=True, port=8123, local_ip="192.0.2.1")

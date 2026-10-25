@@ -1,6 +1,7 @@
 """Bounded HA diagnostics and browser evidence, owned by the worker, not the model."""
 from __future__ import annotations
 
+import copy
 import hmac
 import json
 import os
@@ -118,6 +119,7 @@ class Verification:
                                and item.get("operation") == "dashboard"), None)
                 if (not source or not HEX.fullmatch(str(source.get("permission_scope", "")))
                     or not PATH_RE.fullmatch(str(source.get("path", "")))
+                    or source.get("permission_review")
                     or any(item.get("retry_of") == payload["check_id"] for item in entries)):
                     raise RuntimeError("This inspection is no longer available for approval. Refresh the conversation.")
                 if len(entries) >= MAX_CHECKS or sum(bool(item.get("retry_of")) for item in entries) >= MAX_BROWSERS:
@@ -129,21 +131,36 @@ class Verification:
                 rules = [candidates[item] for item in payload["candidate_ids"]]
                 if any(self.worker.redact(rule["request"]) != rule["request"] for rule in rules):
                     raise ValueError("Requests with hidden credentials cannot be approved")
-                if payload["remember"]:
-                    self.permissions.remember(source["permission_scope"], source["path"], rules)
+                previous = copy.deepcopy(task)
+                reviewed = {**source, "permission_review": {"remember": payload["remember"],
+                            "reviewed_at": self.worker.utc_now(), "approved": [describe(rule) for rule in rules]}}
+                try:
+                    # Consume the approval durably before starting any capture.
+                    # A restart must not turn an accepted one-off into a replay.
+                    self.worker.update_task(task_id, verification=[reviewed if item is source else item for item in entries])
+                    if payload["remember"]:
+                        self.permissions.remember(source["permission_scope"], source["path"], rules)
+                except (OSError, ValueError):
+                    self.worker.tasks[task_id] = previous
+                    try:
+                        self.worker.atomic_json_write(self.worker.get_task_dir(task_id) / "task.json", previous)
+                        self.worker.save_task_index()
+                    except OSError:
+                        pass  # A persisted receipt is conservative if rollback cannot be saved.
+                    raise
                 capture = {"capability": secrets.token_urlsafe(32), "turn_id": payload["turn_id"],
                            "source_check_id": payload["check_id"], "scope": source["permission_scope"],
                            "path": source["path"], "rules": rules, "remember": payload["remember"]}
                 with self.lock:
                     self.ui_captures[task_id] = capture
             thread = threading.Thread(target=self._retry_capture, args=(task_id, capture), daemon=True)
+            handed_off = True
             try:
                 thread.start()
             except RuntimeError:
                 # The permission was accepted; retain an explicit failed retry
                 # rather than pretending that saved grants were rolled back.
                 self._retry_capture(task_id, capture, launch_failed=True)
-            handed_off = True
             return {"accepted": True}
         finally:
             if not handed_off:

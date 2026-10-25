@@ -82,6 +82,7 @@ class BrowserPermissionTests(unittest.TestCase):
             capture = self.engine.ui_captures["chat"]
             self.assertEqual(server.task_payload(server.tasks["chat"])["browser_retry"]["turn_id"], self.turn_id)
             self.assertNotIn(capture["capability"], json.dumps(server.task_payload(server.tasks["chat"])))
+            self.assertEqual(self.client.post("/tasks/chat/browser-permissions", json=self.payload(), **self.ingress).status_code, 409)
             self.engine._retry_capture("chat", capture)
         self.assertEqual(browser.call_args.kwargs["grants"], self.rules)
         self.assertEqual(browser.call_args.args[1], {"path": "/lovelace/home"})
@@ -92,6 +93,21 @@ class BrowserPermissionTests(unittest.TestCase):
         self.assertEqual(self.engine.permissions.list(), [])
         self.assertIsNone(self.engine.retry_status("chat"))
         self.assertEqual(self.client.post("/tasks/chat/browser-permissions", json=self.payload(), **self.ingress).status_code, 409)
+
+    def test_accepted_batch_cannot_be_replayed_after_worker_restart(self):
+        """An accepted one-off stays consumed even if its capture never completed."""
+        with patch("verification.threading.Thread.start"):
+            self.engine.request_retry("chat", self.payload())
+        capture = self.engine.ui_captures["chat"]
+        persisted = json.loads((server.get_task_dir("chat") / "task.json").read_text())
+        self.assertTrue(persisted["verification"][0]["permission_review"])
+        server.tasks["chat"] = persisted
+        replacement = Verification(server)
+        with self.assertRaises(RuntimeError):
+            replacement.request_retry("chat", self.payload())
+        with patch.object(self.engine, "browser", return_value={"status": "captured"}):
+            self.engine._retry_capture("chat", capture)
+        self.assertEqual(replacement.permissions.list(), [])
 
     def test_remembered_batch_survives_restart_is_scoped_and_can_be_revoked(self):
         """Remembering covers this Core identity and view; revocation survives a fresh store."""
@@ -149,6 +165,7 @@ class BrowserPermissionTests(unittest.TestCase):
         self.assertEqual(self.client.get("/browser-permissions", **self.ingress).status_code, 503)
         self.assertEqual(self.client.post("/tasks/chat/browser-permissions", json=self.payload(True), **self.ingress).status_code, 400)
         self.assertEqual(path.read_text(), '{"broken": true}')
+        self.assertNotIn("permission_review", server.tasks["chat"]["verification"][0])
         path.unlink()
         with patch("browser_permissions.os.replace", side_effect=OSError("private path")):
             response = self.client.post("/tasks/chat/browser-permissions", json=self.payload(True), **self.ingress)
@@ -156,6 +173,18 @@ class BrowserPermissionTests(unittest.TestCase):
         self.assertNotIn("private path", response.get_data(as_text=True))
         self.assertEqual(self.engine.permissions.list(), [])
         self.assertIsNone(self.engine.retry_status("chat"))
+
+    def test_failed_thread_start_records_failure_and_releases_the_capture_slot(self):
+        """An accepted batch gets an explicit failure if its capture cannot start."""
+        with patch("verification.threading.Thread.start", side_effect=RuntimeError("No threads")), \
+             patch.object(self.engine, "browser") as browser:
+            response = self.client.post("/tasks/chat/browser-permissions", json=self.payload(), **self.ingress)
+        self.assertEqual(response.status_code, 202)
+        browser.assert_not_called()
+        self.assertEqual(server.tasks["chat"]["verification"][-1]["status"], "unavailable")
+        self.assertIsNone(self.engine.retry_status("chat"))
+        self.assertTrue(self.engine.execution_lock.acquire(blocking=False))
+        self.engine.execution_lock.release()
 
     def test_sensitive_write_and_malformed_rules_are_never_eligible(self):
         """Validation refuses dangerous commands even with a correctly computed fingerprint."""

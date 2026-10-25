@@ -75,7 +75,6 @@ async function task(page) {
     await page.reload();
     await page.setViewportSize({width: 1440, height: 1000});
     await page.getByRole('button', {name: 'Open settings', exact: true}).click();
-    const settings = page.getByRole('dialog', {name: 'Settings', exact: true});
     const list = page.locator('#browser-permissions');
     await list.getByRole('button').first().waitFor();
     assert.equal(await list.getByRole('button').count(), 4);

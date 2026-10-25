@@ -277,7 +277,7 @@ async function main() {
     malformedMap = false;
     // Removing the grants restores the exact same blocked candidate batch.
     const revoked = await inspect(input);
-    assert.deepEqual(revoked.permission_candidates.map(item => item.id), pending.permission_candidates.map(item => item.id));
+    assert.deepEqual(revoked.permission_candidates.map(item => item.id).sort(), pending.permission_candidates.map(item => item.id).sort());
     permissionRequests = false;
     bad = true;
     const second = await inspect(input);

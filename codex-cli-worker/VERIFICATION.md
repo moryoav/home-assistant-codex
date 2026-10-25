@@ -63,6 +63,9 @@ this dashboard** to reuse the selected permissions in later captures of that
 exact view. Saved permissions survive worker restarts and are bound to the
 paired worker, Core installation identity, and Core origin. Moving to another
 installation or changing the pairing or origin requires new approvals.
+Accepted batches are recorded before a capture starts, so an interrupted retry
+cannot make an old approval reusable after a restart. Start a new inspection if
+the worker stops before it can record the retry result.
 
 Open **Settings > Browser permissions** to inspect and revoke saved exceptions.
 Revocation stops captures already using loaded exceptions. Permissions are kept

@@ -1007,6 +1007,8 @@ function renderBrowserPermissions(check, turn, taskId) {
   if (!candidates.length || !check.check_id) return null;
   if ((turn.verification || []).some(item => item.retry_of === check.check_id))
     return textNode("p", "This batch was reviewed in a later inspection.", "muted");
+  if (check.permission_review)
+    return textNode("p", "This batch was already approved. If no retry result is available, start a new inspection.", "muted");
   if (turn.turn_id !== state.task?.current_turn_id) return null;
   const panel = textNode("div", "", "browser-permission-review");
   panel.append(textNode("h4", "Review blocked browser requests"));

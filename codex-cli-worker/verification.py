@@ -137,9 +137,11 @@ class Verification:
                 try:
                     # Consume the approval durably before starting any capture.
                     # A restart must not turn an accepted one-off into a replay.
-                    self.worker.update_task(task_id, verification=[reviewed if item is source else item for item in entries])
-                    if payload["remember"]:
-                        self.permissions.remember(source["permission_scope"], source["path"], rules)
+                    with self.permissions.lock:
+                        self.worker.update_task(task_id, verification=[reviewed if item is source else item for item in entries])
+                        if payload["remember"]:
+                            self.permissions.remember(source["permission_scope"], source["path"], rules)
+                        permission_revision = self.permissions.revision
                 except (OSError, ValueError):
                     self.worker.tasks[task_id] = previous
                     try:
@@ -150,7 +152,8 @@ class Verification:
                     raise
                 capture = {"capability": secrets.token_urlsafe(32), "turn_id": payload["turn_id"],
                            "source_check_id": payload["check_id"], "scope": source["permission_scope"],
-                           "path": source["path"], "rules": rules, "remember": payload["remember"]}
+                           "path": source["path"], "rules": rules, "remember": payload["remember"],
+                           "permission_revision": permission_revision}
                 with self.lock:
                     self.ui_captures[task_id] = capture
             thread = threading.Thread(target=self._retry_capture, args=(task_id, capture), daemon=True)
@@ -177,7 +180,8 @@ class Verification:
                 if launch_failed:
                     raise ValueError("The capture could not start. Start a new inspection to retry.")
                 entry.update(self.browser(task_id, {"path": capture["path"]}, capture["turn_id"],
-                                          capture["capability"], grants=capture["rules"], expected_scope=capture["scope"]))
+                                          capture["capability"], grants=capture["rules"], expected_scope=capture["scope"],
+                                          expected_revision=capture["permission_revision"]))
             except Exception as exc:
                 detail = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
                 entry.update(status="unavailable", message=f"Inspection retry could not finish: {detail[:200]}")
@@ -337,7 +341,7 @@ class Verification:
                  " differs from the saved configuration." if expected is not None else "."),
                 "view_count": len(actual.get("views", []))}
 
-    def browser(self, task_id, payload, turn_id=None, capability=None, *, grants=None, expected_scope=None):
+    def browser(self, task_id, payload, turn_id=None, capability=None, *, grants=None, expected_scope=None, expected_revision=None):
         """Capture a dashboard within the configured budget and retain turn evidence."""
         if turn_id is None:
             turn_id = self.worker.tasks.get(task_id, {}).get("current_turn_id")
@@ -360,6 +364,8 @@ class Verification:
             if expected_scope is not None and installation != expected_scope:
                 raise ValueError("The paired Home Assistant installation changed. Run a new inspection before approving requests.")
             with self.permissions.lock:
+                if expected_revision is not None and self.permissions.revision != expected_revision:
+                    raise ValueError("Browser permissions changed. Run a new inspection.")
                 rules = self.permissions.rules(installation, path) if installation else []
                 permission_revision = self.permissions.revision
             rules = list({rule["id"]: rule for rule in [*rules, *(grants or [])]}.values())

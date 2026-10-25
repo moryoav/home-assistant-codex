@@ -283,6 +283,20 @@ class BrowserPermissionTests(unittest.TestCase):
         self.assertIsNotNone(processes[0].poll())
         core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "private-lease"})
 
+    def test_revocation_before_a_pending_capture_does_not_resurrect_saved_access(self):
+        """A retry cannot reintroduce its selected grants after Settings revokes one."""
+        with patch("verification.threading.Thread.start"):
+            self.engine.request_retry("chat", self.payload(True))
+        capture = self.engine.ui_captures["chat"]
+        self.engine.permissions.revoke(self.engine.permissions.list()[0]["id"])
+        with patch.object(self.engine, "core", return_value=self.session), patch("verification.subprocess.Popen") as launch:
+            self.engine._retry_capture("chat", capture)
+        launch.assert_not_called()
+        result = server.tasks["chat"]["verification"][-1]
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("permissions changed", result["message"])
+        self.assertEqual(len(self.engine.permissions.rules(self.scope, "/lovelace/home")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

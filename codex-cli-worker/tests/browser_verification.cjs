@@ -49,7 +49,7 @@ async function main() {
   let redirectedRequests = 0;
   const redirectTarget = http.createServer((_request, response) => { redirectedRequests++; response.end('external'); });
   await new Promise(resolve => redirectTarget.listen(0, '127.0.0.1', resolve));
-  let bad = false, reject = false, external = false, permissionRequests = false, malformedMap = false;
+  let bad = false, reject = false, external = false, permissionRequests = false, malformedMap = false, busyReads = true;
   const server = http.createServer((request, response) => {
     requests.push(request.url);
     if (request.url.startsWith('/api/map_tiles/raster/')) {
@@ -117,6 +117,7 @@ async function main() {
             ws.send(JSON.stringify({id:25,type:'camera/stream',entity_id:'camera.fixture'}));
             ws.send(JSON.stringify({id:26,type:'recorder/clear_statistics',statistic_ids:['sensor.fixture']}));` : ''}
             ws.send(JSON.stringify({id:6,type:'lovelace/resources'}));
+            ${busyReads ? `for (let id = 100; id < 750; id++) ws.send(JSON.stringify({id,type:'ping'}));` : ''}
             await fetch('/api/states/light.kitchen', {headers:{Authorization:'Bearer '+token.access_token}});
             await fetch('/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02', {headers:{Authorization:'Bearer '+token.access_token}});
             ${bad ? `ws.send(JSON.stringify({id:2,type:'call_service',domain:'light',service:'turn_on'}));
@@ -141,6 +142,8 @@ async function main() {
             image.src = '/api/map_tiles/raster/3/4/5.png?token=' + msg.result.token;
             ha.shadowRoot.append(image);
           }
+          if (msg.id === 749 && msg.success)
+            fetch('/api/states/sensor.busy_connection_survived', {headers:{Authorization:'Bearer verification-session'}});
         };
       };
       window.externalApp.getExternalAuth(JSON.stringify({callback:'externalAuthSetToken'}));
@@ -171,6 +174,8 @@ async function main() {
     assert.equal(first.status, 'captured', JSON.stringify(first));
     assert.deepEqual(first.errors, []);
     assert.deepEqual(first.blocked, []);
+    assert.equal(requests.filter(url => url === '/api/states/sensor.busy_connection_survived').length, 2);
+    busyReads = false;
     assert.equal(requests.filter(url => url === '/integration-b/panel.mjs?version=456').length, 2);
     assert.equal(requests.filter(url => url === '/api/states/sensor.registered_bundle_loaded').length, 2);
     assert(first.findings.every(item => item.kind === 'diagnostic' && item.count === 2));

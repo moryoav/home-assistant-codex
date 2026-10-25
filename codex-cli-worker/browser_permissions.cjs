@@ -38,7 +38,7 @@ function rule(kind, value) {
   if (kind === 'map_tiles') {
     request = { type: 'map_tiles/raster' };
   } else if (kind === 'websocket') {
-    if (!value || !TYPE.test(value.type) || value.type.length > 160 || WRITE.test(value.type) ||
+    if (!value || typeof value.type !== 'string' || !TYPE.test(value.type) || value.type.length > 160 || WRITE.test(value.type) ||
         /^(auth|config|hassio|cloud|stream|backup|person|automation|script)(?:\/|$)/.test(value.type) ||
         /^camera\/(?:webrtc|stream)(?:\/|$)/.test(value.type) ||
         SENSITIVE.test(value.type) || !/(?:^|\/)(?:get|list|subscribe)(?:_|$)|\/(?:config|info|capabilities)$/.test(value.type)) return null;
@@ -68,13 +68,33 @@ function validate(saved) {
   } catch (_) { return null; }
 }
 
-/** Describe exact request parameters using text, never executable markup. */
-function describe(item) {
-  const request = JSON.parse(item.request);
-  return item.kind === 'map_tiles'
-    ? { label: 'Load raster map tiles', description: 'Allows the map-only token and validated raster tile images. The token stays outside page scripts.' }
-    : { label: item.kind === 'websocket' ? `WebSocket ${request.type}` : `${request.method} ${request.path}`,
-        description: item.request };
+/** Bound metadata while always correlating token requests and rejecting reused tracked IDs. */
+function trackCommand(commands, message) {
+  const tokenRequest = message.type === 'map_tiles/access_token';
+  if (!Number.isSafeInteger(message.id) || message.id < 0 || commands.has(message.id) ||
+      (tokenRequest && commands.size >= 500)) return false;
+  if (commands.size < 500) commands.set(message.id, message.type);
+  return true;
+}
+
+/** Keep complete capture output within the worker's limit, dropping duplicates first. */
+function boundedResult(result) {
+  const fits = () => Buffer.byteLength(JSON.stringify(result)) < 60 * 1024;
+  if (fits()) return result;
+  // These arrays duplicate structured findings; screenshots also duplicate cards.
+  result.errors = [];
+  result.blocked = [];
+  for (const shot of result.screenshots || []) delete shot.error_cards;
+  while (!fits() && result.permission_candidates?.length) {
+    result.permission_candidates.pop();
+    result.permission_candidates_omitted = (result.permission_candidates_omitted || 0) + 1;
+  }
+  while (!fits() && result.findings?.length) {
+    result.findings.pop();
+    result.findings_omitted = (result.findings_omitted || 0) + 1;
+  }
+  if (!fits()) return {status: 'unavailable', message: 'Dashboard evidence exceeded its output limit.', screenshots: []};
+  return result;
 }
 
 /** Match grants and aggregate blocked candidates across both viewport captures. */
@@ -84,14 +104,18 @@ class BrowserPermissions {
     this.grants = new Set((Array.isArray(grants) ? grants : []).slice(0, 128).map(validate).filter(Boolean).map(item => item.id));
     this.candidates = new Map();
     this.used = new Set();
+    this.omitted = 0;
   }
 
   /** Record one eligible blocked request, without persisting tokens or request IDs. */
   check(item, viewport) {
     if (!item) return false;
     if (this.grants.has(item.id)) { this.used.add(item.id); return true; }
-    if (!this.candidates.has(item.id) && this.candidates.size < MAX_CANDIDATES)
-      this.candidates.set(item.id, { ...item, ...describe(item), count: 0, viewports: [] });
+    if (!this.candidates.has(item.id)) {
+      if (this.candidates.size < MAX_CANDIDATES)
+        this.candidates.set(item.id, { id: item.id, kind: item.kind, request: item.request, count: 0, viewports: [] });
+      else this.omitted++;
+    }
     const candidate = this.candidates.get(item.id);
     if (candidate) {
       candidate.count++;
@@ -118,8 +142,8 @@ class BrowserPermissions {
 
   /** Return bounded evidence without including grants or any token values. */
   evidence() {
-    return { permission_candidates: [...this.candidates.values()], permissions_used: [...this.used] };
+    return { permission_candidates: [...this.candidates.values()], permissions_used: [...this.used], permission_candidates_omitted: this.omitted };
   }
 }
 
-module.exports = { BrowserPermissions, canonical, rule, validate, describe, raster };
+module.exports = { BrowserPermissions, canonical, rule, validate, raster, trackCommand, boundedResult };

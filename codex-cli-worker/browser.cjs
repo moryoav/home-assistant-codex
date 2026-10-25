@@ -1,7 +1,7 @@
 // A bounded, observational HA browser. No click, evaluate, or arbitrary URL tool.
 const { chromium } = require('playwright-core');
 const { ResourcePolicy, createExternalFetcher } = require('./browser_resources.cjs');
-const { BrowserPermissions, raster } = require('./browser_permissions.cjs');
+const { BrowserPermissions, raster, trackCommand, boundedResult } = require('./browser_permissions.cjs');
 
 const READ_MESSAGES = new Set([
   'get_config', 'get_states', 'get_services', 'auth/current_user', 'supported_features',
@@ -241,11 +241,10 @@ async function inspect(input) {
         } else if (authenticated && (allowMessage(message) || permissions.message(message, activeViewport?.name))) {
           // Never forward a token-producing request without an unambiguous
           // response correlation, even if page scripts reuse or exhaust IDs.
-          if (!Number.isSafeInteger(message.id) || message.id < 0 || commands.has(message.id) || commands.size >= 500) {
+          if (!trackCommand(commands, message)) {
             route.close({ code: 1008, reason: 'Dashboard request limit or invalid request ID' });
             return;
           }
-          commands.set(message.id, message.type);
           upstream.send(raw);
         } else {
           const service = message.type === 'call_service' && /^[a-z_]+$/.test(message.domain) && /^[a-z_]+$/.test(message.service)
@@ -336,8 +335,8 @@ async function inspect(input) {
       await page.close();
     }
     await context.close();
-    return { status: errors.length || blocked.length || omitted ? 'issues' : 'captured', ...evidence(), screenshots,
-      message: 'Screenshots captured for visual inspection. This is not proof of correct layout or automation behavior.' + policyNote() };
+    return boundedResult({ status: errors.length || blocked.length || omitted ? 'issues' : 'captured', ...evidence(), screenshots,
+      message: 'Screenshots captured for visual inspection. This is not proof of correct layout or automation behavior.' + policyNote() });
   } catch (_) {
     if (activePage && !activePage.isClosed()) {
       try {
@@ -346,8 +345,8 @@ async function inspect(input) {
         screenshots.push({...activeViewport, file});
       } catch (_) { /* The page may already have crashed. */ }
     }
-    return { status: 'unavailable', stage, ...evidence(), screenshots,
-      message: `Dashboard verification could not finish during ${stage}.` + policyNote() };
+    return boundedResult({ status: 'unavailable', stage, ...evidence(), screenshots,
+      message: `Dashboard verification could not finish during ${stage}.` + policyNote() });
   } finally {
     await browser?.close();
   }

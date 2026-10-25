@@ -78,7 +78,7 @@ def main():
                     "message": "Fixture dashboard inspection.", "permission_candidates": pending,
                     "permissions_used": sorted(allowed)}
 
-        def permission_capture(task_id, payload, turn_id=None, capability=None, *, grants=None, expected_scope=None):
+        def permission_capture(task_id, payload, turn_id=None, capability=None, *, grants=None, expected_scope=None, expected_revision=None):
             """Simulate only capture, leaving the actual retry ownership and routes intact."""
             time.sleep(0.4)
             remembered = server.verification.permissions.rules(permission_scope, payload["path"])

@@ -1,6 +1,6 @@
 // Rule enforcement tests do not need a browser or Home Assistant.
 const assert = require('node:assert/strict');
-const { BrowserPermissions, rule, validate } = require('../browser_permissions.cjs');
+const { BrowserPermissions, rule, validate, trackCommand, boundedResult } = require('../browser_permissions.cjs');
 
 const moduleList = { id: 1, type: 'bubble_card_tools/list_modules' };
 const first = new BrowserPermissions();
@@ -9,6 +9,7 @@ assert.equal(first.message({ type: moduleList.type, id: 77 }, 'mobile'), false);
 const candidates = first.evidence().permission_candidates;
 assert.equal(candidates.length, 1);
 assert.equal(candidates[0].count, 2);
+assert.deepEqual(Object.keys(candidates[0]).sort(), ['id', 'kind', 'request', 'count', 'viewports'].sort());
 assert.deepEqual(candidates[0].viewports, ['desktop', 'mobile']);
 const allowed = new BrowserPermissions(candidates);
 assert.equal(allowed.message({ ...moduleList, id: 2 }), true);
@@ -24,6 +25,8 @@ assert.equal(rule('websocket', { type: 'custom/get', value: 'Bearer secret' }), 
 assert.equal(rule('websocket', { type: 'custom/get', value: Infinity }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: 2 ** 60 }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: 'x'.repeat(1300) }), null);
+for (const message of [{id: 1}, {id: 2, type: null}, {id: 3, type: 77}])
+  assert.equal(new BrowserPermissions().message(message), false);
 assert.equal(rule('websocket', { type: 'camera/webrtc/get_client_config', entity_id: 'camera.front' }), null);
 const condition = rule('websocket', { type: 'subscribe_condition', condition: { condition: 'state', entity_id: 'light.kitchen', state: 'on' } });
 assert.ok(condition);
@@ -59,4 +62,22 @@ for (const path of ['/api/map_tiles/raster/3/8/0.png', '/api/map_tiles/raster/30
 const bounded = new BrowserPermissions();
 for (let index = 0; index < 50; index++) bounded.message({ type: 'custom/get', entity: index });
 assert.equal(bounded.evidence().permission_candidates.length, 16);
+const commands = new Map();
+assert.equal(trackCommand(commands, {id: 0, type: 'map_tiles/access_token'}), true);
+for (let id = 1; id <= 650; id++) assert.equal(trackCommand(commands, {id, type: 'ping'}), true);
+assert.equal(commands.size, 500);
+assert.equal(commands.get(0), 'map_tiles/access_token');
+assert.equal(trackCommand(commands, {id: 651, type: 'map_tiles/access_token'}), false);
+assert.equal(trackCommand(commands, {id: 0, type: 'ping'}), false);
+const large = new BrowserPermissions();
+for (let index = 0; index < 16; index++) large.message({type: 'custom/get', index, payload: '"'.repeat(550)});
+assert.equal(large.evidence().permission_candidates.length, 16);
+const findings = Array.from({length: 40}, (_, index) => ({kind: 'dashboard', message: '\\'.repeat(297) + String(index), count: 2, viewports: ['desktop', 'mobile']}));
+const result = boundedResult({status: 'issues', ...large.evidence(), errors: findings.map(item => item.message), blocked: [], findings,
+  screenshots: [{name: 'desktop', file: 'desktop.png', error_cards: findings.map(item => item.message)}, {name: 'mobile', file: 'mobile.png'}]});
+assert.ok(Buffer.byteLength(JSON.stringify(result)) < 60 * 1024);
+assert.equal(result.status, 'issues');
+assert.equal(result.findings.length, 40, 'keep structured evidence and screenshots when pruning duplicated output');
+assert.equal(result.screenshots.length, 2);
+for (const candidate of result.permission_candidates) assert.ok(validate(candidate), 'never truncate an approvable request');
 console.log('PASS: exact browser grants, payload changes, hard blocks, secret rejection, raster capability, origin/method checks, and bounded evidence.');

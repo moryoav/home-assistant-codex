@@ -992,6 +992,8 @@ function renderVerification(turn, taskId) {
     }
     if (check.permissions_used?.length)
       row.append(textNode("p", `${check.permissions_used.length} user-approved browser permission(s) used.`));
+    if (check.permission_candidates_omitted)
+      row.append(textNode("p", "Some additional requests were omitted because the review limit was reached."));
     const review = renderBrowserPermissions(check, turn, taskId);
     if (review) row.append(review);
     section.append(row);

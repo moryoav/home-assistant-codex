@@ -1,6 +1,7 @@
 // A bounded, observational HA browser. No click, evaluate, or arbitrary URL tool.
 const { chromium } = require('playwright-core');
 const { ResourcePolicy, createExternalFetcher } = require('./browser_resources.cjs');
+const { BrowserPermissions, raster } = require('./browser_permissions.cjs');
 
 const READ_MESSAGES = new Set([
   'get_config', 'get_states', 'get_services', 'auth/current_user', 'supported_features',
@@ -89,6 +90,8 @@ async function inspect(input) {
   const findings = new Map();
   let omitted = 0;
   const policy = new ResourcePolicy(origin, input.resources);
+  const permissions = new BrowserPermissions(input.permissions);
+  let mapToken;
   const fetchExternal = createExternalFetcher(policy);
   const blockedURLs = new Set();
   /** Name a resource by its path, preceded by the host when it is external. */
@@ -115,7 +118,7 @@ async function inspect(input) {
     if (activeViewport && !finding.viewports.includes(activeViewport.name)) finding.viewports.push(activeViewport.name);
   };
   /** Return the errors, blocked items, and findings gathered so far. */
-  const evidence = () => ({errors, blocked, findings: [...findings.values()], findings_omitted: omitted});
+  const evidence = () => ({errors, blocked, findings: [...findings.values()], findings_omitted: omitted, ...permissions.evidence()});
   const policyNote = () => blocked.length
     ? ' Read-only policy blocks limit this inspection; they do not establish faults on another device.' : '';
   try {
@@ -149,7 +152,8 @@ async function inspect(input) {
           return route.abort('blockedbyclient').catch(() => {});
         }
       }
-      if (!allowRequest(url, origin, req.method(), input.path) && !policy.local(url, req.method(), req.resourceType())) {
+      if (!allowRequest(url, origin, req.method(), input.path) && !policy.local(url, req.method(), req.resourceType()) &&
+          !permissions.http(url, origin, req.method(), activeViewport?.name)) {
         add(blocked, `${req.method()} ${resourceLabel(url)}`, 'resource');
         if (blockedURLs.size < 256) blockedURLs.add(url.href);
         return route.abort('blockedbyclient').catch(() => {});
@@ -158,9 +162,20 @@ async function inspect(input) {
       const headers = { ...req.headers() };
       if (url.pathname.startsWith('/api/') && headers.authorization === 'Bearer verification-session')
         headers.authorization = `Bearer ${input.access_token}`;
+      const fetchURL = new URL(url);
+      if (raster(url)) {
+        if (fetchURL.searchParams.get('token') === 'verification-map-session') {
+          if (!mapToken) return route.abort('blockedbyclient').catch(() => {});
+          fetchURL.searchParams.set('token', mapToken);
+        }
+        if (headers['x-map-tiles-token'] === 'verification-map-session') {
+          if (!mapToken) return route.abort('blockedbyclient').catch(() => {});
+          headers['x-map-tiles-token'] = mapToken;
+        }
+      }
       let response;
       try {
-        response = await route.fetch({ headers, maxRedirects: 0, timeout: 15000 });
+        response = await route.fetch({ url: fetchURL.href, headers, maxRedirects: 0, timeout: 15000 });
         if (response.status() >= 300 && response.status() < 400) {
           add(blocked, `Redirect ${url.pathname}`, 'resource');
           if (blockedURLs.size < 256) blockedURLs.add(url.href);
@@ -188,17 +203,33 @@ async function inspect(input) {
       let authenticated = false;
       const commands = new Map();
       upstream.onMessage(raw => {
+        let outgoing = raw;
         try {
           const parsed = JSON.parse(String(raw));
-          for (const message of (Array.isArray(parsed) ? parsed : [parsed])) {
+          const messages = Array.isArray(parsed) ? parsed : [parsed];
+          // Scrub every token response before any other response processing can
+          // fail. Unexpected frames are closed, never forwarded unsanitized.
+          for (const message of messages) {
+            if (!message || typeof message !== 'object' || Array.isArray(message)) throw Error('Invalid frame');
+            if (message.type === 'result' && message.success && commands.get(message.id) === 'map_tiles/access_token' &&
+                typeof message.result?.token === 'string') {
+              mapToken = message.result.token;
+              message.result = { token: 'verification-map-session' };
+              outgoing = JSON.stringify(parsed);
+            }
+          }
+          for (const message of messages) {
             if (message.type === 'result' && message.success &&
                 ['lovelace/resources', 'lovelace/resources/list'].includes(commands.get(message.id)) && Array.isArray(message.result))
               for (const resource of message.result.slice(0, 256)) policy.register(resource?.url);
             if (message.type === 'result' && message.success === false)
               add(errors, `Home Assistant ${commands.get(message.id) || 'request'}: ${message.error?.code || 'error'}`, 'home_assistant');
           }
-        } catch (_) { /* Forward opaque frames without logging their contents. */ }
-        route.send(raw);
+        } catch (_) {
+          route.close({ code: 1008, reason: 'Invalid dashboard response' });
+          return;
+        }
+        route.send(outgoing);
       });
       route.onMessage(raw => {
         let message;
@@ -207,8 +238,14 @@ async function inspect(input) {
         if (message.type === 'auth' && !authenticated) {
           authenticated = true;
           upstream.send(JSON.stringify({ type: 'auth', access_token: input.access_token }));
-        } else if (authenticated && allowMessage(message)) {
-          if (commands.size < 500) commands.set(message.id, message.type);
+        } else if (authenticated && (allowMessage(message) || permissions.message(message, activeViewport?.name))) {
+          // Never forward a token-producing request without an unambiguous
+          // response correlation, even if page scripts reuse or exhaust IDs.
+          if (!Number.isSafeInteger(message.id) || message.id < 0 || commands.has(message.id) || commands.size >= 500) {
+            route.close({ code: 1008, reason: 'Dashboard request limit or invalid request ID' });
+            return;
+          }
+          commands.set(message.id, message.type);
           upstream.send(raw);
         } else {
           const service = message.type === 'call_service' && /^[a-z_]+$/.test(message.domain) && /^[a-z_]+$/.test(message.service)

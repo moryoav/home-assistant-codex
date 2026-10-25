@@ -46,6 +46,47 @@ a guarantee of correct layout. API results distinguish `observed`, `passed`, and
 Policy blocks limit what this browser can verify; they do not establish faults
 on a tablet or other browser where the dashboard is used.
 
+## Approving additional browser requests
+
+After an inspection, open its verification result and choose requests under
+**Review blocked browser requests**. Select individual requests or **Select all
+requests**, inspect their details, then choose **Allow selected and retry**.
+Unselected requests stay blocked. **Keep blocked** closes the result without
+granting access. A batch is available only for the current exchange after tasks
+have finished, and can be approved once. Each exchange permits up to four retries.
+
+An approval starts a fresh dashboard capture with a new short-lived session.
+It does not rerun the task, save dashboard changes, reload Home Assistant, or
+change the original answer. Approval choices and new evidence remain with the
+exchange. A one-off approval lasts for that retry only. Select **Remember for
+this dashboard** to reuse the selected permissions in later captures of that
+exact view. Saved permissions survive worker restarts and are bound to the
+paired worker, Core installation identity, and Core origin. Moving to another
+installation or changing the pairing or origin requires new approvals.
+
+Open **Settings > Browser permissions** to inspect and revoke saved exceptions.
+Revocation stops captures already using loaded exceptions. Permissions are kept
+in private app storage, outside `/config`, with bounded, atomic storage. They
+cannot be granted or revoked through the integration API token or the model's
+verification tool; management requires the human Home Assistant Ingress UI.
+Update both the worker and integration for approval support. An older integration
+can still supply screenshots but cannot identify an installation for approvals.
+
+User approval is a trust decision, not certification that an unfamiliar custom
+handler has no side effects. Generic exceptions cover bounded read-like WebSocket
+operations with their exact parameters, or exact same-origin GET/HEAD resources
+and query parameters. Changing the request parameters requires another approval.
+Request IDs and object-key order do not change a WebSocket permission. Requests
+with hidden credentials, oversized details, or unsupported actions cannot be
+approved. Known device controls, writes, sign-in changes, URL signing, camera
+WebRTC setup/signaling, redirects and arbitrary external access stay blocked.
+
+**Load raster map tiles** is one bounded permission for the map-only token and
+valid raster tile coordinates, rather than a permission per image URL. The real
+map token remains in the controller; page scripts receive a placeholder. Signing
+URLs and camera WebRTC setup/signaling require separate support. These permissions do not
+observe a physical WallPanel or reproduce its app transitions.
+
 Each turn retains `verification` and `verification_attachments` in the task API,
 `codex_cli.get_task`, and normal task-result events. The chat shows expandable
 results and private screenshots. Automatic captures after the final answer are

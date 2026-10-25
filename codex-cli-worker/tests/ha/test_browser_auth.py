@@ -95,6 +95,7 @@ async def test_real_read_only_identity_lease_and_revocation(hass):
     with patch.object(auth, "get_supervisor_network_url", return_value="http://homeassistant:8123"):
         session = await broker.issue()
         refresh = hass.auth.async_validate_access_token(session["access_token"])
+        assert session["installation_id"] == broker.user.id
         assert refresh.user.id == broker.user.id
         with pytest.raises(web.HTTPTooManyRequests):
             await broker.issue()

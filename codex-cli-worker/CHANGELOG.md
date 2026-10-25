@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added batch approval of additional dashboard browser requests, with capture-only retries and optional remembered permissions for the paired installation and exact dashboard view.
+- Added permission inspection and revocation in Settings, stale-request rejection, bounded storage, approval history, and cancellation of captures using revoked permissions.
+- Added a bounded raster map capability that keeps map tokens outside page scripts. Kept known controls, writes, URL signing and camera signaling blocked; physical WallPanel observation is separate.
+
 ## 0.1.76
 
 - Fixed read-only dashboard verification blocking `recorder/statistic_during_period` and `camera/capabilities` reads.

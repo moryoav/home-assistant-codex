@@ -49,9 +49,18 @@ async function main() {
   let redirectedRequests = 0;
   const redirectTarget = http.createServer((_request, response) => { redirectedRequests++; response.end('external'); });
   await new Promise(resolve => redirectTarget.listen(0, '127.0.0.1', resolve));
-  let bad = false, reject = false, external = false;
+  let bad = false, reject = false, external = false, permissionRequests = false, malformedMap = false;
   const server = http.createServer((request, response) => {
     requests.push(request.url);
+    if (request.url.startsWith('/api/map_tiles/raster/')) {
+      assert.equal(new URL(request.url, 'http://fixture').searchParams.get('token'), 'private-map-access');
+      response.setHeader('Content-Type', 'image/png');
+      response.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9kAAAAASUVORK5CYII=', 'base64'));
+      return;
+    }
+    if (request.url.startsWith('/api/custom/data')) {
+      response.setHeader('Content-Type', 'application/json'); response.end('{}'); return;
+    }
     if (request.url.startsWith('/api/states') || request.url.startsWith('/api/calendars/')) {
       assert.equal(request.headers.authorization, 'Bearer temporary-browser-token');
       response.setHeader('Content-Type', 'application/json');
@@ -80,7 +89,11 @@ async function main() {
         if (token.access_token !== 'verification-session') throw Error('Real token reached the page');
         const ws = new WebSocket('ws://' + location.host + '/api/websocket');
         ws.onmessage = async event => {
-          const msg = JSON.parse(event.data);
+          if (event.data.includes('private-map-access')) {
+            fetch('/api/states/sensor.map_token_leaked', {headers:{Authorization:'Bearer verification-session'}});
+          }
+          const parsed = JSON.parse(event.data);
+          const msg = Array.isArray(parsed) ? parsed[0] : parsed;
           if (msg.type === 'auth_required') ws.send(JSON.stringify({type:'auth',access_token:token.access_token}));
           if (msg.type === 'auth_ok') {
             ha.hass = {connection:ws,user:{name:'Verification'}};
@@ -91,6 +104,14 @@ async function main() {
             ws.send(JSON.stringify({id:20,type:'knob_swipe_navigation/config'}));
             ws.send(JSON.stringify({id:23,type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']}));
             ws.send(JSON.stringify({id:24,type:'camera/capabilities',entity_id:'camera.fixture'}));
+            ${permissionRequests ? `
+            ws.send(JSON.stringify({id:30,type:'bubble_card_tools/list_modules'}));
+            ws.send(JSON.stringify({id:31,type:'subscribe_condition',condition:{condition:'state',entity_id:'light.fixture',state:'on'}}));
+            ws.send(JSON.stringify({id:32,type:'map_tiles/access_token'}));
+            ws.send(JSON.stringify({id:33,type:'auth/sign_path',path:'/api/camera_proxy/camera.fixture'}));
+            ws.send(JSON.stringify({id:34,type:'call_service',domain:'light',service:'turn_on'}));
+            fetch('/api/custom/data?entity_id=sensor.fixture').catch(()=>{});
+            ` : ''}
             ${bad ? `ws.send(JSON.stringify({id:21,type:'knob_swipe_navigation/subscribe_rotations'}));
             ws.send(JSON.stringify({id:22,type:'knob_swipe_navigation/navigation_result',result:'navigated'}));
             ws.send(JSON.stringify({id:25,type:'camera/stream',entity_id:'camera.fixture'}));
@@ -114,6 +135,12 @@ async function main() {
               const script = document.createElement('script'); script.type = 'module'; script.src = resource.url; document.body.append(script);
             }
           }
+          if (msg.id === 32 && msg.success) {
+            if (msg.result.token !== 'verification-map-session') throw Error('Map credential reached page scripts');
+            const image = new Image();
+            image.src = '/api/map_tiles/raster/3/4/5.png?token=' + msg.result.token;
+            ha.shadowRoot.append(image);
+          }
         };
       };
       window.externalApp.getExternalAuth(JSON.stringify({callback:'externalAuthSetToken'}));
@@ -128,6 +155,8 @@ async function main() {
       if (message.type === 'auth') {
         tokens.push(message.access_token);
         ws.send(JSON.stringify({type: reject ? 'auth_invalid' : 'auth_ok'}));
+      } else if (message.type === 'map_tiles/access_token') {
+        ws.send(JSON.stringify([...(malformedMap ? [null] : []), {id:message.id,type:'result',success:true,result:{token:'private-map-access'}}]));
       } else ws.send(JSON.stringify({id:message.id,type:'result',success:true,result:message.type === 'lovelace/resources'
         ? [{url: '/integration-b/panel.mjs?version=456', type: 'module'},
           ...(external ? [{url: 'https://registered.example.test/card/main.js', type: 'module'}] : [])] : []}));
@@ -226,6 +255,30 @@ async function main() {
     } finally {
       dns.lookup = originalLookup; https.request = originalRequest; external = false;
     }
+    permissionRequests = true;
+    const pending = await inspect(input);
+    assert.equal(pending.permission_candidates.length, 4, JSON.stringify(pending));
+    assert(!JSON.stringify(pending).includes('private-map-access'));
+    assert(!upstream.includes('bubble_card_tools/list_modules'));
+    const granted = await inspect({...input, permissions: pending.permission_candidates});
+    assert.equal(granted.permission_candidates.length, 0, JSON.stringify(granted));
+    assert.equal(granted.permissions_used.length, 4);
+    assert(upstream.includes('bubble_card_tools/list_modules'));
+    assert(upstream.includes('subscribe_condition'));
+    assert(upstream.includes('map_tiles/access_token'));
+    assert(!upstream.includes('auth/sign_path'));
+    assert(!upstream.includes('call_service'));
+    assert.equal(requests.filter(url => url.startsWith('/api/map_tiles/raster/')).length, 2);
+    assert.equal(requests.filter(url => url.startsWith('/api/custom/data')).length, 2);
+    assert(!JSON.stringify(granted).includes('private-map-access'));
+    malformedMap = true;
+    await inspect({...input, permissions: pending.permission_candidates});
+    assert(!requests.includes('/api/states/sensor.map_token_leaked'), 'malformed batches must never bypass token scrubbing');
+    malformedMap = false;
+    // Removing the grants restores the exact same blocked candidate batch.
+    const revoked = await inspect(input);
+    assert.deepEqual(revoked.permission_candidates.map(item => item.id), pending.permission_candidates.map(item => item.id));
+    permissionRequests = false;
     bad = true;
     const second = await inspect(input);
     assert.equal(second.status, 'issues');

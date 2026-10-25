@@ -49,6 +49,7 @@ jobs:
       - name: Exercise browser protocol and restrictions
         run: |
           node codex-cli-worker/tests/browser_resources.cjs
+          node codex-cli-worker/tests/browser_permissions.cjs
           node codex-cli-worker/tests/browser_verification.cjs
       - name: Exercise chat evidence on desktop and mobile
         run: |
@@ -61,6 +62,7 @@ jobs:
           done
           node codex-cli-worker/tests/browser_smoke.cjs
           node codex-cli-worker/tests/browser_copy.cjs
+          node codex-cli-worker/tests/browser_permissions_ui.cjs
 
   container:
     name: Container (${{ matrix.arch }})

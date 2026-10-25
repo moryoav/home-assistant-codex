@@ -1,0 +1,259 @@
+"""Human-only browser grants, retry ownership, persistence and revocation."""
+import hashlib
+import json
+import tempfile
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from test_server import server
+from browser_permissions import BrowserPermissionStore, describe, scope, valid_rule
+from verification import Verification
+
+
+def request_rule(kind="websocket", request=None):
+    """Build a controller-format rule without needing Home Assistant or a browser."""
+    request = request or {"type": "bubble_card_tools/list_modules"}
+    snapshot = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {"id": hashlib.sha256(f"{kind}\n{snapshot}".encode()).hexdigest(), "kind": kind, "request": snapshot}
+
+
+class BrowserPermissionTests(unittest.TestCase):
+    """Exercise real worker routes with a completed capture and private storage."""
+
+    def setUp(self):
+        """Create a paired installation and two eligible blocked requests."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.engine = Verification(server)
+        self.options = {**server.DEFAULT_OPTIONS, "task_root": str(self.root / "tasks")}
+        self.session = {"installation_id": "a" * 32, "url": "http://homeassistant:8123",
+                        "session_id": "private-lease", "access_token": "private-access"}
+        self.scope = scope(self.session, "paired-worker")
+        self.rules = [request_rule(), request_rule(request={"type": "subscribe_condition", "condition": {"condition": "state", "entity_id": "light.kitchen", "state": "on"}})]
+        turn = server.new_turn("Inspect my dashboard")
+        self.turn_id = turn["turn_id"]
+        self.check = {"operation": "dashboard", "check_id": "capture-one", "status": "issues", "path": "/lovelace/home",
+                      "permission_scope": self.scope, "permission_candidates": [{**rule, **describe(rule)} for rule in self.rules]}
+        task = {"task_id": "chat", "status": "completed", "current_turn_id": self.turn_id, "turns": [turn],
+                "verification": [self.check], "verification_attachments": [], "summary": "Original task answer"}
+        server.sync_current_turn(task)
+        for key, value in {"DATA_ROOT": self.root, "CONFIG_ROOT": self.root / "config", "tasks": {"chat": task},
+                           "TASK_STATE_FILE": self.root / "index.json", "verification": self.engine,
+                           "active_task_runners": set(), "running_processes": {}}.items():
+            patcher = patch.object(server, key, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (("read_options", self.options), ("api_token", "paired-worker")):
+            patcher = patch.object(server, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.client = server.app.test_client()
+        self.ingress = {"headers": {"X-Ingress-Path": "/preview"},
+                        "environ_overrides": {"REMOTE_ADDR": server.INGRESS_PROXY_IP}}
+
+    def payload(self, remember=False):
+        """Select the complete batch from the recorded capture."""
+        return {"turn_id": self.turn_id, "check_id": self.check["check_id"],
+                "candidate_ids": [rule["id"] for rule in self.rules], "remember": remember}
+
+    def test_only_ingress_can_manage_permissions_even_with_worker_credentials(self):
+        """A model/integration API credential cannot grant, list or revoke UI permissions."""
+        routes = (("get", "/browser-permissions", None), ("delete", "/browser-permissions/missing", None),
+                  ("post", "/tasks/chat/browser-permissions", self.payload(True)))
+        for method, path, payload in routes:
+            with self.subTest(method=method):
+                response = getattr(self.client, method)(path, json=payload, headers={"Authorization": "Bearer paired-worker"})
+                self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.engine.permissions.list(), [])
+        self.assertEqual(self.client.get("/browser-permissions").status_code, 401)
+        response = self.client.post("/tasks/chat/browser-permissions", json=self.payload(),
+                                    headers={"X-Ingress-Path": "/preview"})
+        self.assertEqual(response.status_code, 403, "a forged Ingress header is insufficient")
+
+    def test_once_retries_only_capture_and_preserves_the_completed_exchange(self):
+        """A one-off batch never reruns the model, changes its answer or persists grants."""
+        with patch("verification.threading.Thread.start"), patch.object(self.engine, "browser", return_value={"status": "captured", "permission_candidates": []}) as browser:
+            response = self.client.post("/tasks/chat/browser-permissions", json=self.payload(), **self.ingress)
+            self.assertEqual(response.status_code, 202)
+            capture = self.engine.ui_captures["chat"]
+            self.assertEqual(server.task_payload(server.tasks["chat"])["browser_retry"]["turn_id"], self.turn_id)
+            self.assertNotIn(capture["capability"], json.dumps(server.task_payload(server.tasks["chat"])))
+            self.engine._retry_capture("chat", capture)
+        self.assertEqual(browser.call_args.kwargs["grants"], self.rules)
+        self.assertEqual(browser.call_args.args[1], {"path": "/lovelace/home"})
+        task = server.tasks["chat"]
+        self.assertEqual((task["status"], task["summary"]), ("completed", "Original task answer"))
+        self.assertEqual(task["verification"][-1]["retry_of"], "capture-one")
+        self.assertFalse(task["verification"][-1]["permission_decision"]["remember"])
+        self.assertEqual(self.engine.permissions.list(), [])
+        self.assertIsNone(self.engine.retry_status("chat"))
+        self.assertEqual(self.client.post("/tasks/chat/browser-permissions", json=self.payload(), **self.ingress).status_code, 409)
+
+    def test_remembered_batch_survives_restart_is_scoped_and_can_be_revoked(self):
+        """Remembering covers this Core identity and view; revocation survives a fresh store."""
+        with patch("verification.threading.Thread.start"):
+            self.assertEqual(self.client.post("/tasks/chat/browser-permissions", json=self.payload(True), **self.ingress).status_code, 202)
+        capture = self.engine.ui_captures["chat"]
+        with patch.object(self.engine, "browser", return_value={"status": "captured"}):
+            self.engine._retry_capture("chat", capture)
+        store = BrowserPermissionStore(server)
+        self.assertEqual(store.rules(self.scope, "/lovelace/home"), self.rules)
+        self.assertEqual(store.rules(self.scope, "/lovelace/other"), [])
+        self.assertEqual(store.rules("b" * 64, "/lovelace/home"), [])
+        listing = self.client.get("/browser-permissions", **self.ingress).get_json()["permissions"]
+        self.assertEqual(len(listing), 2)
+        self.assertNotIn(self.scope, json.dumps(listing))
+        revision = self.engine.permissions.revision
+        self.assertEqual(self.client.delete("/browser-permissions/" + listing[0]["id"], **self.ingress).status_code, 200)
+        self.assertGreater(self.engine.permissions.revision, revision)
+        self.assertEqual(len(store.rules(self.scope, "/lovelace/home")), 1)
+        self.assertEqual(self.client.delete("/browser-permissions/" + listing[0]["id"], **self.ingress).status_code, 400)
+
+    def test_partial_selection_and_invalid_batches_never_grant_unselected_requests(self):
+        """Select one request atomically, refusing fabricated IDs, duplicates and hidden bodies."""
+        for changes in ({"candidate_ids": ["f" * 64]}, {"candidate_ids": []},
+                        {"candidate_ids": [self.rules[0]["id"]] * 2}, {"remember": "yes"},
+                        {"extra_rule": self.rules[0]}, {"turn_id": "older-turn"}):
+            with self.subTest(changes=changes):
+                response = self.client.post("/tasks/chat/browser-permissions", json={**self.payload(True), **changes}, **self.ingress)
+                self.assertIn(response.status_code, {400, 409})
+                self.assertEqual(self.engine.permissions.list(), [])
+        with patch("verification.threading.Thread.start"):
+            response = self.client.post("/tasks/chat/browser-permissions", json={**self.payload(True), "candidate_ids": [self.rules[0]["id"]]}, **self.ingress)
+        self.assertEqual(response.status_code, 202)
+        capture = self.engine.ui_captures["chat"]
+        with patch.object(self.engine, "browser", return_value={"status": "captured"}):
+            self.engine._retry_capture("chat", capture)
+        self.assertEqual(self.engine.permissions.rules(self.scope, "/lovelace/home"), self.rules[:1])
+
+    def test_busy_turns_stale_checks_and_deleted_chats_fail_before_start(self):
+        """Never apply old approvals to a working, replaced, cancelled or removed exchange."""
+        task = server.tasks["chat"]
+        for field, value in (("status", "running"), ("current_turn_id", "new-turn"), ("cancellation_requested", True)):
+            with self.subTest(field=field), patch.dict(task, {field: value}):
+                self.assertEqual(self.client.post("/tasks/chat/browser-permissions", json=self.payload(True), **self.ingress).status_code, 409)
+        with patch.dict(server.tasks, {}, clear=True):
+            self.assertEqual(self.client.post("/tasks/chat/browser-permissions", json=self.payload(True), **self.ingress).status_code, 409)
+        self.assertEqual(self.engine.permissions.list(), [])
+        self.assertTrue(self.engine.execution_lock.acquire(blocking=False))
+        self.engine.execution_lock.release()
+
+    def test_corrupt_storage_and_failed_writes_do_not_silently_grant_access(self):
+        """Keep corrupt state intact and make failed persistence actionable to the user."""
+        path = self.root / "browser-permissions.json"
+        path.write_text('{"broken": true}')
+        self.assertEqual(self.client.get("/browser-permissions", **self.ingress).status_code, 503)
+        self.assertEqual(self.client.post("/tasks/chat/browser-permissions", json=self.payload(True), **self.ingress).status_code, 400)
+        self.assertEqual(path.read_text(), '{"broken": true}')
+        path.unlink()
+        with patch("browser_permissions.os.replace", side_effect=OSError("private path")):
+            response = self.client.post("/tasks/chat/browser-permissions", json=self.payload(True), **self.ingress)
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("private path", response.get_data(as_text=True))
+        self.assertEqual(self.engine.permissions.list(), [])
+        self.assertIsNone(self.engine.retry_status("chat"))
+
+    def test_sensitive_write_and_malformed_rules_are_never_eligible(self):
+        """Validation refuses dangerous commands even with a correctly computed fingerprint."""
+        bad = [request_rule(request={"type": name}) for name in (
+            "call_service", "auth/sign_path", "map_tiles/access_token", "camera/webrtc/get_client_config", "camera/webrtc/offer", "camera/webrtc/candidate",
+            "custom_tools/get_and_delete", "custom_tools/register", "config/list", "execute_script")]
+        bad += [request_rule(request={"type": "custom/get", "password": "hidden"}),
+                request_rule(request={"type": "custom/get", "query": "Bearer secret"}),
+                request_rule("http", {"method": "POST", "path": "/api/custom/read", "query": []}),
+                request_rule("http", {"method": "GET", "path": "/api/custom/get_token", "query": []}),
+                request_rule(request={"type": "custom/get", "value": 10 ** 1000}),
+                request_rule("http", {"method": "GET", "path": "/api/custom/read", "query": [["token", "hidden"]]})]
+        for rule in bad:
+            with self.subTest(rule=rule):
+                self.assertIsNone(valid_rule(rule))
+        self.assertIsNone(valid_rule({**self.rules[0], "id": "0" * 64}))
+        self.assertIsNotNone(valid_rule(request_rule("map_tiles", {"type": "map_tiles/raster"})))
+        self.assertIsNone(valid_rule({"kind": [], "request": "{}", "id": "f" * 64}))
+
+    def test_pairing_identity_origin_and_worker_token_all_isolate_rules(self):
+        """A backup moved to another Core identity or changed pairing does not inherit grants."""
+        self.assertIsNone(scope({"url": self.session["url"]}, "paired-worker"))
+        for changes, token in (({"installation_id": "b" * 32}, "paired-worker"),
+                               ({"url": "http://other:8123"}, "paired-worker"), ({}, "other-worker")):
+            self.assertNotEqual(scope({**self.session, **changes}, token), self.scope)
+
+    def test_changed_installation_is_rejected_and_its_session_is_revoked(self):
+        """A new Core identity cannot consume an approval collected on the previous one."""
+        with patch("verification.threading.Thread.start"):
+            self.engine.request_retry("chat", self.payload())
+        with patch.object(self.engine, "core", return_value={**self.session, "installation_id": "b" * 32}) as core, \
+             patch("verification.subprocess.Popen") as launch:
+            self.engine._retry_capture("chat", self.engine.ui_captures["chat"])
+        launch.assert_not_called()
+        core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "private-lease"})
+        result = server.tasks["chat"]["verification"][-1]
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("installation changed", result["message"])
+
+    def test_new_turn_or_deletion_during_retry_drops_its_result(self):
+        """Late capture results cannot attach to a new message or recreate a deleted task."""
+        with patch("verification.threading.Thread.start"):
+            self.engine.request_retry("chat", self.payload())
+        capture = self.engine.ui_captures["chat"]
+        with patch.object(self.engine, "browser", side_effect=lambda *args, **kwargs: server.tasks.clear() or {"status": "captured"}):
+            self.engine._retry_capture("chat", capture)
+        self.assertNotIn("chat", server.tasks)
+        self.assertIsNone(self.engine.retry_status("chat"))
+
+    def test_saved_rules_reach_controller_and_model_payload_cannot_add_grants(self):
+        """The worker supplies grants from private storage, ignoring model-supplied extras."""
+        self.engine.permissions.remember(self.scope, "/lovelace/home", self.rules[:1])
+        server.tasks["chat"]["status"] = "running"
+        self.engine.begin("chat")
+        original = subprocess.Popen
+        sent = []
+
+        def launch(_args, **kwargs):
+            """Make the controller return its received grants as bounded evidence."""
+            program = "import sys,json; p=json.load(sys.stdin); print(json.dumps({'status':'issues','screenshots':[],'message':json.dumps(p['permissions'])}))"
+            process = original([sys.executable, "-c", program], **kwargs)
+            sent.append(process)
+            return process
+
+        with patch.object(self.engine, "core", return_value=self.session), patch("verification.subprocess.Popen", side_effect=launch):
+            result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/home",
+                                               "permissions": self.rules, "grants": self.rules})
+        self.assertEqual(json.loads(result["message"]), self.rules[:1])
+        self.assertIsNotNone(sent[0].poll())
+
+    def test_revocation_stops_a_running_capture_and_revokes_its_core_session(self):
+        """A capture cannot keep using the grants it loaded before a revocation."""
+        self.engine.permissions.remember(self.scope, "/lovelace/home", self.rules[:1])
+        saved = self.engine.permissions.list()[0]
+        server.tasks["chat"]["status"] = "running"
+        self.engine.begin("chat")
+        original = subprocess.Popen
+        processes = []
+
+        def launch(_args, **kwargs):
+            """Keep a real child alive until the worker's revocation guard stops it."""
+            process = original([sys.executable, "-c", "import sys,time; sys.stdin.read(); time.sleep(60)"], **kwargs)
+            processes.append(process)
+            return process
+
+        def revoke(_pid, _tracked):
+            """Revoke after the controller starts and before its next lifecycle check."""
+            self.engine.permissions.revoke(saved["id"])
+            return 0
+
+        with patch.object(self.engine, "core", return_value=self.session) as core, \
+             patch("verification.subprocess.Popen", side_effect=launch), patch("verification.track_browser_processes", side_effect=revoke):
+            result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/home"})
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("permissions changed", result["message"])
+        self.assertIsNotNone(processes[0].poll())
+        core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "private-lease"})
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1901,6 +1901,7 @@ def task_payload(task: dict[str, Any], *, summary: bool = False) -> dict[str, An
         result["chat_settings"] = current_chat_settings(task.get("chat_settings", DEFAULT_CHAT_SETTINGS))
         result["turns"] = task_turns(task)
         result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
+        result["browser_retry"] = verification.retry_status(task.get("task_id"))
     result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES
     result["permission_required"] = task.get("status") == "running" and any(
         item.get("status") == "pending" for item in task.get("approvals") or []
@@ -5323,6 +5324,52 @@ def decide_approval(task_id: str, approval_id: str) -> Response:
         except OSError:
             return jsonify({"ok": False, "error": "Could not deliver the decision. The exchange was stopped."}), 503
     return jsonify({"ok": True, "approval_id": approval_id, "decision": payload["decision"]})
+
+
+@app.get("/browser-permissions")
+@require_auth
+def browser_permissions_list():
+    """Let the human Ingress UI inspect remembered browser permissions."""
+    if not is_ingress_request():
+        return jsonify({"ok": False, "error": "Browser permissions must be managed through Home Assistant Ingress"}), 403
+    try:
+        return jsonify({"ok": True, "permissions": verification.permissions.list()})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+
+
+@app.delete("/browser-permissions/<permission_id>")
+@require_auth
+def browser_permissions_revoke(permission_id: str):
+    """Revoke one saved exception from Ingress; API tokens cannot grant or revoke."""
+    if not is_ingress_request():
+        return jsonify({"ok": False, "error": "Browser permissions must be managed through Home Assistant Ingress"}), 403
+    try:
+        verification.permissions.revoke(permission_id)
+        return jsonify({"ok": True})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError:
+        return jsonify({"ok": False, "error": "Could not save browser permissions. Try again."}), 503
+
+
+@app.post("/tasks/<task_id>/browser-permissions")
+@require_auth
+def browser_permissions_approve(task_id: str):
+    """Approve a selected batch and retry only its dashboard capture, through Ingress."""
+    if not is_ingress_request():
+        return jsonify({"ok": False, "error": "Browser permissions must be managed through Home Assistant Ingress"}), 403
+    if (request.content_length or 0) > 8192:
+        return jsonify({"ok": False, "error": "Browser permission request is too large"}), 413
+    try:
+        result = verification.request_retry(task_id, request.get_json(silent=True))
+        return jsonify({"ok": True, **result}), 202
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    except OSError:
+        return jsonify({"ok": False, "error": "Could not save browser permissions. Try again."}), 503
 
 
 @app.post("/tasks/<task_id>/reply")

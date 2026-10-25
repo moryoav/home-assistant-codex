@@ -905,6 +905,94 @@ h1 {
   margin-top: 15px;
   line-height: 1.5;
 }
+.browser-permission-review {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.browser-permission-review > p {
+  line-height: 1.6;
+  max-width: 70ch;
+}
+.browser-permission-review fieldset {
+  min-width: 0;
+  margin: 16px 0;
+  padding: 0;
+  border: 0;
+}
+.browser-permission-review legend {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.browser-permission-choice {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 44px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.browser-permission-choice input {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.browser-permission-choice input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.browser-permission-request {
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+.browser-permission-details {
+  margin: 4px 0 8px 28px;
+}
+.browser-permission-details summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.browser-permission-details pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}
+.browser-permission-remember {
+  margin-top: 16px;
+}
+.browser-permission-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.browser-permission-actions button,
+.saved-browser-permission button {
+  min-height: 44px;
+}
+.browser-permission-feedback,
+.browser-permission-progress {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.saved-browser-permission {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.saved-browser-permission-info {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.saved-browser-permission-info p {
+  margin: 6px 0;
+}
 .attachments {
   display: flex;
   flex-wrap: wrap;

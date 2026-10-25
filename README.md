@@ -38,6 +38,8 @@ The sidebar shows recently active chats first and includes **Load older chats**.
 
 The chat formats Markdown in your messages and in Codex's answers. Wrap code in triple backticks to send it as a code block, or in single backticks for inline code. Headings, bold and italic text, lists, tables, quotes, and links are formatted too.
 
+Dashboard verification can collect additional blocked browser requests for you to approve together. Open **Review blocked browser requests** in the inspection result, select requests you trust, and choose **Allow selected and retry**. You can remember exceptions for that dashboard and revoke them in **Settings > Browser permissions**. Approvals retry only the capture; they do not rerun the task. See [browser permission scopes and limits](codex-cli-worker/VERIFICATION.md#approving-additional-browser-requests).
+
 Use **Copy response** below an answer to copy its summary, details, and any question as original Markdown, including code blocks and YAML indentation. This also works for saved answers. If automatic copying is blocked, a dialog offers the selected text for manual copying. Images, activity logs, and separate configuration/backup/verification cards are not included.
 
 The worker runs one task at a time. While a chat is working, you can still send messages in new chats or other saved chats: they wait under **In queue** at the top of the sidebar and start one after another when the running chat finishes. A waiting message can be edited or removed until it starts.

@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 import requests
 import websocket
 
+from browser_permissions import BrowserPermissionStore, HEX, MAX_CANDIDATES, describe, scope, valid_rule
+
 MAX_CHECKS = 24
 MAX_BROWSERS = 4
 DEFAULT_BROWSER_MEMORY_LIMIT_MIB = 1536
@@ -37,6 +39,8 @@ class Verification:
         self.capabilities = {}
         self.lock = threading.RLock()
         self.execution_lock = threading.Lock()
+        self.permissions = BrowserPermissionStore(worker)
+        self.ui_captures = {}
 
     def begin(self, task_id):
         """Issue a new capability for the task's turn, clear its recorded checks, and delete expired screenshots."""
@@ -73,11 +77,102 @@ class Verification:
         """Reject checks that outlive cancellation, completion, or a replaced turn."""
         with self.lock:
             current = self.capabilities.get(task_id)
+            manual = self.ui_captures.get(task_id, {})
         with self.worker.lock:
             task = self.worker.tasks.get(task_id, {})
-            return bool(capability and current == capability and task.get("status") == "running"
-                        and task.get("current_turn_id") == turn_id
+            authorized = (current == capability and task.get("status") == "running") or (
+                manual.get("capability") == capability and manual.get("turn_id") == turn_id
+                and task.get("status") not in {"running", "queued", "in_queue"})
+            return bool(capability and task and authorized and task.get("current_turn_id") == turn_id
                         and not self.worker.task_cancellation_requested(task_id))
+
+    def retry_status(self, task_id):
+        """Expose progress to the UI without exposing its private capture capability."""
+        with self.lock:
+            item = self.ui_captures.get(task_id)
+            return {"source_check_id": item["source_check_id"], "turn_id": item["turn_id"]} if item else None
+
+    def request_retry(self, task_id, payload):
+        """Accept an Ingress user's selected batch, then run a fresh observational capture.
+
+        This entry point is never exposed by the model's MCP tool. Only candidate
+        IDs from an unreviewed check in the current completed turn are accepted.
+        """
+        if (not isinstance(payload, dict) or set(payload) != {"turn_id", "check_id", "candidate_ids", "remember"}
+            or type(payload.get("remember")) is not bool or not isinstance(payload.get("candidate_ids"), list)
+            or not 1 <= len(payload["candidate_ids"]) <= MAX_CANDIDATES
+            or any(not isinstance(item, str) or not HEX.fullmatch(item) for item in payload["candidate_ids"])
+            or len(set(payload["candidate_ids"])) != len(payload["candidate_ids"])):
+            raise ValueError("Select one or more complete browser requests and a permission duration")
+        if not self.execution_lock.acquire(blocking=False):
+            raise RuntimeError("Another verification is running. Wait for it to finish, then retry.")
+        handed_off = False
+        try:
+            with self.worker.lock:
+                task = self.worker.tasks.get(task_id)
+                if (not task or task.get("current_turn_id") != payload["turn_id"]
+                    or task.get("cancellation_requested") or self.worker._active_task_ids_locked()):
+                    raise RuntimeError("The conversation changed or a task is still working. Refresh and retry after it finishes.")
+                entries = list(task.get("verification") or [])
+                source = next((item for item in entries if item.get("check_id") == payload["check_id"]
+                               and item.get("operation") == "dashboard"), None)
+                if (not source or not HEX.fullmatch(str(source.get("permission_scope", "")))
+                    or not PATH_RE.fullmatch(str(source.get("path", "")))
+                    or any(item.get("retry_of") == payload["check_id"] for item in entries)):
+                    raise RuntimeError("This inspection is no longer available for approval. Refresh the conversation.")
+                if len(entries) >= MAX_CHECKS or sum(bool(item.get("retry_of")) for item in entries) >= MAX_BROWSERS:
+                    raise RuntimeError("Inspection retry limit reached for this exchange. Start a new inspection.")
+                candidates = {item["id"]: valid_rule(item) for item in source.get("permission_candidates", [])
+                              if isinstance(item, dict) and valid_rule(item)}
+                if any(item not in candidates for item in payload["candidate_ids"]):
+                    raise RuntimeError("The selected requests no longer match this inspection. Refresh and try again.")
+                rules = [candidates[item] for item in payload["candidate_ids"]]
+                if any(self.worker.redact(rule["request"]) != rule["request"] for rule in rules):
+                    raise ValueError("Requests with hidden credentials cannot be approved")
+                if payload["remember"]:
+                    self.permissions.remember(source["permission_scope"], source["path"], rules)
+                capture = {"capability": secrets.token_urlsafe(32), "turn_id": payload["turn_id"],
+                           "source_check_id": payload["check_id"], "scope": source["permission_scope"],
+                           "path": source["path"], "rules": rules, "remember": payload["remember"]}
+                with self.lock:
+                    self.ui_captures[task_id] = capture
+            thread = threading.Thread(target=self._retry_capture, args=(task_id, capture), daemon=True)
+            try:
+                thread.start()
+            except RuntimeError:
+                # The permission was accepted; retain an explicit failed retry
+                # rather than pretending that saved grants were rolled back.
+                self._retry_capture(task_id, capture, launch_failed=True)
+            handed_off = True
+            return {"accepted": True}
+        finally:
+            if not handed_off:
+                self.execution_lock.release()
+
+    def _retry_capture(self, task_id, capture, launch_failed=False):
+        """Capture without rerunning the agent or changing its completed task status."""
+        entry = {"operation": "dashboard", "check_id": secrets.token_hex(16),
+                 "checked_at": self.worker.utc_now(), "path": capture["path"],
+                 "retry_of": capture["source_check_id"], "permission_decision": {
+                     "remember": capture["remember"], "approved": [describe(rule) for rule in capture["rules"]]}}
+        try:
+            try:
+                if launch_failed:
+                    raise ValueError("The capture could not start. Start a new inspection to retry.")
+                entry.update(self.browser(task_id, {"path": capture["path"]}, capture["turn_id"],
+                                          capture["capability"], grants=capture["rules"], expected_scope=capture["scope"]))
+            except Exception as exc:
+                detail = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+                entry.update(status="unavailable", message=f"Inspection retry could not finish: {detail[:200]}")
+            entry = json.loads(self.worker.redact(json.dumps(entry)))
+            with self.worker.lock:
+                if self.active(task_id, capture["turn_id"], capture["capability"]):
+                    entries = list(self.worker.tasks[task_id].get("verification") or [])
+                    self.worker.update_task(task_id, verification=[*entries, entry])
+        finally:
+            with self.lock:
+                self.ui_captures.pop(task_id, None)
+            self.execution_lock.release()
 
     def core(self, method, path, **kwargs):
         """Call a Core API path through the Supervisor proxy and return the JSON of its answer.
@@ -151,6 +246,8 @@ class Verification:
                 return {"status": "unavailable", "message": "Verification limit reached for this turn"}
             operation = payload.get("operation")
             entry = {"operation": str(operation)[:40], "checked_at": self.worker.utc_now()}
+            if operation == "dashboard":
+                entry["check_id"] = secrets.token_hex(16)
             try:
                 if operation == "entity":
                     entry.update(self.entity(payload))
@@ -223,7 +320,7 @@ class Verification:
                  " differs from the saved configuration." if expected is not None else "."),
                 "view_count": len(actual.get("views", []))}
 
-    def browser(self, task_id, payload, turn_id=None, capability=None):
+    def browser(self, task_id, payload, turn_id=None, capability=None, *, grants=None, expected_scope=None):
         """Capture a dashboard within the configured budget and retain turn evidence."""
         if turn_id is None:
             turn_id = self.worker.tasks.get(task_id, {}).get("current_turn_id")
@@ -242,6 +339,13 @@ class Verification:
             url = urlparse(session["url"])
             if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password:
                 raise ValueError("Home Assistant supplied an invalid browser address")
+            installation = scope(session, self.worker.api_token()) if session.get("installation_id") else None
+            if expected_scope is not None and installation != expected_scope:
+                raise ValueError("The paired Home Assistant installation changed. Run a new inspection before approving requests.")
+            with self.permissions.lock:
+                rules = self.permissions.rules(installation, path) if installation else []
+                permission_revision = self.permissions.revision
+            rules = list({rule["id"]: rule for rule in [*rules, *(grants or [])]}.values())
             with tempfile.TemporaryDirectory(prefix="ha-verification-") as directory, tempfile.TemporaryFile(mode="w+t", dir=directory) as output_file:
                 environment = {key: os.environ[key] for key in ("PATH", "NODE_PATH", "HA_BROWSER_EXECUTABLE", "SystemRoot") if key in os.environ}
                 process = subprocess.Popen(
@@ -250,7 +354,7 @@ class Verification:
                     text=True, env=environment, start_new_session=os.name != "nt",
                 )
                 try:
-                    request = json.dumps({**session, "path": path, "directory": directory})
+                    request = json.dumps({**session, "path": path, "directory": directory, "permissions": rules})
                     process.stdin.write(request)
                     process.stdin.close()
                     # A temporary output file avoids a pipe deadlock on verbose diagnostics.
@@ -260,6 +364,8 @@ class Verification:
                     while process.poll() is None:
                         if not self.active(task_id, turn_id, capability) or time.monotonic() >= deadline:
                             raise ValueError("Dashboard verification cancelled or timed out")
+                        if rules and self.permissions.revision != permission_revision:
+                            raise ValueError("Browser permissions changed. Run a new inspection.")
                         memory = track_browser_processes(process.pid, tracked)
                         peak_memory = max(peak_memory, memory)
                         if memory > memory_limit_mib * 1024 * 1024:
@@ -270,6 +376,14 @@ class Verification:
                     if len(output) > 65536:
                         raise ValueError("Browser output limit exceeded")
                     result = json.loads(output)
+                    # Only complete, inspectable rules from the controller are
+                    # offered. Redacted/truncated requests remain blocked.
+                    candidates = []
+                    for candidate in result.pop("permission_candidates", [])[:MAX_CANDIDATES]:
+                        rule = valid_rule(candidate)
+                        if installation and rule and self.worker.redact(rule["request"]) == rule["request"]:
+                            candidates.append({**rule, **describe(rule)})
+                    result.update(permission_candidates=candidates, permission_scope=installation)
                     result.update(memory_peak_mib=round(peak_memory / 1024 ** 2, 1),
                                   memory_limit_mib=memory_limit_mib)
                 finally:
@@ -286,6 +400,8 @@ class Verification:
                     process.wait(timeout=10)
                 if not self.active(task_id, turn_id, capability):
                     raise ValueError("Dashboard verification cancelled")
+                if rules and self.permissions.revision != permission_revision:
+                    raise ValueError("Browser permissions changed. Run a new inspection.")
                 images = []
                 for shot in result.pop("screenshots", [])[:2]:
                     name = shot.get("name")

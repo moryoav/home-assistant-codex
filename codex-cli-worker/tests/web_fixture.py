@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import struct
@@ -42,6 +43,7 @@ def main():
     spec.loader.exec_module(server)
     with tempfile.TemporaryDirectory(prefix="codex-chat-preview-") as temp:
         root = Path(temp)
+        server.DATA_ROOT = root
         server.task_root = lambda: root / "tasks"
         server.TASK_STATE_FILE = root / "index.json"
         server.MESSAGE_QUEUE_FILE = root / "queue.json"
@@ -52,6 +54,37 @@ def main():
         server.fire_ha_event = lambda *args: (True, "")
         server.notify = lambda *args, **kwargs: None
         server.refresh_usage_status_async = lambda **kwargs: None
+        from browser_permissions import describe, scope
+
+        permission_scope = scope({"installation_id": "a" * 32, "url": "http://fixture:8123"}, "preview-only")
+        permission_requests = [
+            ("websocket", {"type": "bubble_card_tools/list_modules"}),
+            ("websocket", {"type": "subscribe_condition", "condition": {"condition": "state", "entity_id": "light.kitchen", "state": "on"}}),
+            ("map_tiles", {"type": "map_tiles/raster"}),
+            ("websocket", {"type": "custom/get", "query": "<img src=x onerror=alert(1)>"}),
+        ]
+        permission_rules = []
+        for kind, body in permission_requests:
+            snapshot = json.dumps(body, sort_keys=True, separators=(",", ":"))
+            rule = {"id": hashlib.sha256(f"{kind}\n{snapshot}".encode()).hexdigest(), "kind": kind, "request": snapshot}
+            permission_rules.append({**rule, **describe(rule)})
+
+        def permission_check(grants=()):
+            """Make fixture evidence while the real worker handles approval and persistence."""
+            allowed = {item["id"] for item in grants}
+            pending = [item for item in permission_rules if item["id"] not in allowed]
+            return {"operation": "dashboard", "check_id": server.uuid.uuid4().hex, "path": "/lovelace/home",
+                    "status": "issues" if pending else "captured", "permission_scope": permission_scope,
+                    "message": "Fixture dashboard inspection.", "permission_candidates": pending,
+                    "permissions_used": sorted(allowed)}
+
+        def permission_capture(task_id, payload, turn_id=None, capability=None, *, grants=None, expected_scope=None):
+            """Simulate only capture, leaving the actual retry ownership and routes intact."""
+            time.sleep(0.4)
+            remembered = server.verification.permissions.rules(permission_scope, payload["path"])
+            return permission_check([*remembered, *(grants or [])])
+
+        server.verification.browser = permission_capture
         # Connected unless POST fixture/integration says otherwise, so the line about
         # the integration stays out of the other checks.
         integration = {"state": "ok", "version": server.MIN_INTEGRATION_VERSION,
@@ -195,6 +228,8 @@ def main():
                 else:
                     server.update_task(task_id, status="completed", session_id=session_id, summary=summary,
                                        details="", question="", completed_at=server.utc_now())
+                    if (reply or prompt).startswith("Inspect with blocked browser requests"):
+                        server.update_task(task_id, verification=[permission_check()])
                 server.finish_activity(task_id)
                 server.active_task_runners.discard(task_id)
                 # The real runner starts the next queued message when it ends.

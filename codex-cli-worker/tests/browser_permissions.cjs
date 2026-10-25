@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-const { BrowserPermissions, CommandTracker, LIMITS, canonical, rule, validate, boundedResult } = require('../browser_permissions.cjs');
+const { BrowserPermissions, CommandTracker, LIMITS, canonical, rule, validate, boundedResult, websocketBlockReason } = require('../browser_permissions.cjs');
 
 const moduleList = { id: 1, type: 'bubble_card_tools/list_modules' };
 const first = new BrowserPermissions();
@@ -40,6 +40,14 @@ for (const message of [{ type: 'knob_swipe_navigation/subscribe_rotations' }, { 
   { type: 'subscribe_events' }, { type: 'subscribe_events', event_type: 'call_service' }, { type: 'browser_mod/settings/get' }]) {
   assert.equal(rule('websocket', message), null, JSON.stringify(message));
 }
+assert.match(websocketBlockReason(moduleList), /Review this exact request for approval/);
+assert.match(websocketBlockReason({type: 'subscribe_events', event_type: 'zha_event'}), /read-only.*administrators/);
+assert.match(websocketBlockReason({type: 'browser_mod/connect'}), /stored browser details.*separate support/);
+assert.match(websocketBlockReason({type: 'subscribe_events'}), /Listening is not a write.*approval is unavailable/);
+assert.match(websocketBlockReason({type: 'knob_swipe_navigation/navigation_result'}), /updates integration state/);
+assert.match(websocketBlockReason({type: 'knob_swipe_navigation/subscribe_rotations', extra: true}), /Extra parameters.*approval is unavailable/);
+assert.match(websocketBlockReason({type: 'custom/get', password: 'hidden'}), /Approval is unavailable/);
+assert.match(websocketBlockReason({type: null}), /Invalid request type/);
 
 const origin = 'http://homeassistant:8123';
 const http = new BrowserPermissions();

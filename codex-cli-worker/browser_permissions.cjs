@@ -57,7 +57,7 @@ function raster(url) {
 /**
  * Build a rule only for eligible reads; an unknown handler is still a trust
  * decision. Commands the controller restricts by name or parameters (knob
- * events, icon sets, event subscriptions, Browser Mod) are never eligible, so
+ * handlers, icon sets, event subscriptions, Browser Mod) are never eligible, so
  * an approval cannot widen those restrictions.
  */
 function rule(kind, value) {
@@ -83,6 +83,34 @@ function rule(kind, value) {
   if (Buffer.byteLength(snapshot) > LIMITS.request_bytes) return null;
   const id = createHash('sha256').update(`${kind}\n${snapshot}`).digest('hex');
   return { id, kind, request: snapshot };
+}
+
+/** Explain a controller refusal without treating every unrecognized read as a write. */
+function websocketBlockReason(message) {
+  const type = message.type;
+  if (typeof type !== 'string') return 'Invalid request type. Approval is unavailable.';
+  if (type === 'browser_mod/connect')
+    return 'Browser Mod can update stored browser details and attach a command channel. It needs separate support; approval is unavailable.';
+  if (type === 'browser_mod' || type.startsWith('browser_mod/'))
+    return 'Browser Mod needs separate support for this inspection. Approval is unavailable.';
+  if (type === 'subscribe_events')
+    return message.event_type === 'zha_event'
+      ? 'Listening is read-only, but Home Assistant restricts this event stream to administrators. User approval cannot grant administrator access.'
+      : 'This event stream is outside the supported event allowlist. Listening is not a write, but approval is unavailable.';
+  if (rule('websocket', message))
+    return type === 'subscribe_condition'
+      ? 'This condition is outside the automatic built-in read checks. Review this exact request for approval.'
+      : 'This request is outside the automatic read allowlist. Review this exact request for approval.';
+  if (type === 'knob_swipe_navigation/navigation_result')
+    return 'Reporting navigation results updates integration state. Approval is unavailable in this observational browser.';
+  if (type === 'knob_swipe_navigation/subscribe_rotations' || type === 'knob_swipe_navigation/config')
+    return 'This read handler accepts only id and type. Extra parameters are unsupported; approval is unavailable.';
+  if (type === 'auth' || type.startsWith('auth/'))
+    return 'Authentication changes and URL signing need separate support. Approval is unavailable.';
+  if (type === 'camera/stream' || type === 'camera/webrtc' || type.startsWith('camera/webrtc/'))
+    return 'Camera streaming and signaling need separate support. Approval is unavailable.';
+  if (writes(type)) return 'Device actions and write-like commands are not supported by this observational browser. Approval is unavailable.';
+  return 'This request is outside the supported read policy or cannot be safely reviewed. Approval is unavailable; this does not establish that it is a write.';
 }
 
 /** Revalidate saved rules, including their fingerprint, at the enforcement boundary. */
@@ -202,4 +230,4 @@ class BrowserPermissions {
   }
 }
 
-module.exports = { BrowserPermissions, CommandTracker, LIMITS, POLICY, canonical, rule, validate, raster, writes, boundedResult };
+module.exports = { BrowserPermissions, CommandTracker, LIMITS, POLICY, canonical, rule, validate, raster, writes, boundedResult, websocketBlockReason };

@@ -30,11 +30,44 @@ async function main() {
   assert(!allowMessage({type: 'custom_icons/activesets', active: true}));
   assert(allowMessage({id: 6, type: 'knob_swipe_navigation/config'}));
   assert(!allowMessage({type: 'knob_swipe_navigation/config', navigation_enabled: true}));
-  for (const type of ['knob_swipe_navigation/subscribe_rotations', 'knob_swipe_navigation/navigation_result']) assert(!allowMessage({type}));
+  assert(allowMessage({id: 7, type: 'knob_swipe_navigation/subscribe_rotations'}));
+  assert(!allowMessage({type: 'knob_swipe_navigation/subscribe_rotations', device_id: 'other'}));
+  assert(!allowMessage({type: 'knob_swipe_navigation/navigation_result'}));
+  const alexaCondition = {condition: 'and', conditions: [
+    {condition: 'not', conditions: [{condition: 'state', entity_id: 'input_text.alexa_howmuchis', state: ''}]},
+    {condition: 'not', conditions: [{condition: 'state', entity_id: 'input_text.alexa_howmuchis', state: 'unknown'}]},
+  ]};
+  const readConditions = [alexaCondition,
+    {condition: 'or', conditions: [
+      {condition: 'state', entity_id: 'switch.washing_machine_start', state: 'on'},
+      {condition: 'state', entity_id: 'binary_sensor.dryer_on_status', state: 'on'},
+    ]},
+    {condition: 'or', conditions: [1, 2, 3, 4].map(index =>
+      ({condition: 'numeric_state', entity_id: `sensor.ibbq_probe_${index}`, above: 0}))},
+    {condition: 'numeric_state', entity_id: 'todo.alexa_shopping_list_3', above: 0},
+    {condition: 'state', entity_id: ['light.kitchen', 'light.bedroom'], state: ['on', 'off'], match: 'any',
+      attribute: 'status', for: {minutes: 1}, alias: 'Wait for status', enabled: true},
+    {condition: 'numeric_state', entity_id: 'sensor.temperature', below: 'input_number.limit',
+      value_template: '{{ state.state | float }}'},
+  ];
+  for (const condition of readConditions) assert(allowMessage({type: 'subscribe_condition', condition}), JSON.stringify(condition));
+  for (const condition of [null, [], {}, {condition: 'state'}, {condition: 'numeric_state', entity_id: 'sensor.temperature'},
+    {condition: 'custom.condition', entity_id: 'light.kitchen'},
+    {condition: 'and', conditions: [{condition: 'device', device_id: 'physical'}]},
+    {condition: 'or', conditions: {condition: 'state'}},
+    {condition: 'state', entity_id: 'light.kitchen', state: 'on', action: 'turn_on'},
+    {condition: 'state', entity_id: 'light.kitchen', state: 'x'.repeat(4097)},
+    {condition: 'and', conditions: Array(513).fill({condition: 'state', entity_id: 'light.kitchen', state: 'on'})},
+  ]) assert(!allowMessage({type: 'subscribe_condition', condition}), JSON.stringify(condition));
+  let nested = readConditions[3];
+  for (let depth = 0; depth < 14; depth++) nested = {condition: 'not', conditions: [nested]};
+  assert(!allowMessage({type: 'subscribe_condition', condition: nested}));
+  assert(!allowMessage({type: 'subscribe_condition', condition: alexaCondition, extra: true}));
   for (const type of ['frontend/get_icons', 'render_template', 'sensor/numeric_device_classes', 'weather/subscribe_forecast',
     'recorder/statistic_during_period', 'recorder/statistics_during_period', 'camera/capabilities']) assert(allowMessage({type}));
   for (const type of ['camera/stream', 'camera/update_prefs', 'recorder/clear_statistics', 'recorder/import_statistics']) assert(!allowMessage({type}));
   assert(allowMessage({ type: 'subscribe_events', event_type: 'state_changed' }));
+  assert(!allowMessage({type: 'subscribe_events', event_type: 'zha_event'}));
   assert(!allowRequest(new URL('http://evil.test/local/card.js'), 'http://ha.test', 'GET'));
   assert(!allowRequest(new URL('http://ha.test/api/webhook/action'), 'http://ha.test', 'GET'));
   assert(!allowRequest(new URL('http://ha.test/custom-action/on'), 'http://ha.test', 'GET', '/lovelace/0'));
@@ -50,7 +83,7 @@ async function main() {
   let redirectedRequests = 0;
   const redirectTarget = http.createServer((_request, response) => { redirectedRequests++; response.end('external'); });
   await new Promise(resolve => redirectTarget.listen(0, '127.0.0.1', resolve));
-  let bad = false, reject = false, external = false, permissionRequests = false, malformedMap = false, busyReads = true;
+  let bad = false, reject = false, external = false, permissionRequests = false, malformedMap = false, busyReads = true, deniedRead = false;
   const server = http.createServer((request, response) => {
     requests.push(request.url);
     if (request.url.startsWith('/api/map_tiles/raster/')) {
@@ -115,18 +148,20 @@ async function main() {
             send({type:'call_service',domain:'system_log',service:'write'});
             send({type:'call_service',domain:'persistent_notification',service:'create'});
             send({type:'knob_swipe_navigation/config'});
+            send({type:'knob_swipe_navigation/subscribe_rotations'});
+            for (const condition of ${JSON.stringify(readConditions)}) send({type:'subscribe_condition',condition});
             send({type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']});
             send({type:'camera/capabilities',entity_id:'camera.fixture'});
             ${permissionRequests ? `
             send({type:'bubble_card_tools/list_modules'});
-            send({type:'subscribe_condition',condition:{condition:'state',entity_id:'light.fixture',state:'on'}});
             ids.map = send({type:'map_tiles/access_token'});
             send({type:'auth/sign_path',path:'/api/camera_proxy/camera.fixture'});
             send({type:'call_service',domain:'light',service:'turn_on'});
             fetch('/api/custom/data?entity_id=sensor.fixture').catch(()=>{});
             ` : ''}
-            ${bad ? `send({type:'knob_swipe_navigation/subscribe_rotations'});
-            send({type:'knob_swipe_navigation/navigation_result',result:'navigated'});
+            ${bad ? `send({type:'knob_swipe_navigation/navigation_result',result:'navigated'});
+            send({type:'browser_mod/connect',browserID:'fixture'});
+            send({type:'subscribe_events',event_type:'zha_event'});
             send({type:'camera/stream',entity_id:'camera.fixture'});
             send({type:'recorder/clear_statistics',statistic_ids:['sensor.fixture']});` : ''}
             ids.resources = send({type:'lovelace/resources'});
@@ -180,6 +215,8 @@ async function main() {
       } else if (message.type === 'map_tiles/access_token') {
         if (malformedMap) malformedAt = Date.now();
         ws.send(JSON.stringify([...(malformedMap ? [null] : []), {id:message.id,type:'result',success:true,result:{token:'private-map-access'}}]));
+      } else if (deniedRead && message.type === 'get_states') {
+        ws.send(JSON.stringify({id:message.id,type:'result',success:false,error:{code:'unauthorized'}}));
       } else ws.send(JSON.stringify({id:message.id,type:'result',success:true,result:message.type === 'lovelace/resources'
         ? [{url: '/integration-b/panel.mjs?version=456', type: 'module'},
           ...(external ? [{url: 'https://registered.example.test/card/main.js', type: 'module'}] : [])] : []}));
@@ -194,6 +231,7 @@ async function main() {
     assert.equal(first.status, 'captured', JSON.stringify(first));
     assert.deepEqual(first.errors, []);
     assert.deepEqual(first.blocked, []);
+    assert.deepEqual(first.permission_candidates, [], 'ordinary conditions and knob subscriptions need no approvals');
     assert.equal(requests.filter(url => url === '/api/states/sensor.busy_connection_survived').length, 2);
     busyReads = false;
     // Core's socket lives in the controller, never inside the page.
@@ -214,6 +252,8 @@ async function main() {
     assert.equal(localHttp.screenshots.length, 2);
     assert(upstream.includes('weather/subscribe_forecast'));
     assert(upstream.includes('knob_swipe_navigation/config'));
+    assert(upstream.includes('knob_swipe_navigation/subscribe_rotations'));
+    assert.equal(upstream.filter(type => type === 'subscribe_condition').length, readConditions.length * 4);
     assert(upstream.includes('recorder/statistic_during_period'));
     assert(upstream.includes('camera/capabilities'));
     assert(requests.includes('/integration-a/frontend.js?v=123'));
@@ -286,12 +326,14 @@ async function main() {
     }
     permissionRequests = true;
     const pending = await inspect(input);
-    assert.equal(pending.permission_candidates.length, 4, JSON.stringify(pending));
+    assert.equal(pending.permission_candidates.length, 3, JSON.stringify(pending));
+    assert(!pending.permission_candidates.some(item => item.request.includes('subscribe_condition')));
+    assert(pending.blocked.some(item => item.includes('bubble_card_tools/list_modules:') && item.includes('Review this exact request for approval')));
     assert(!JSON.stringify(pending).includes('private-map-access'));
     assert(!upstream.includes('bubble_card_tools/list_modules'));
     const granted = await inspect({...input, permissions: pending.permission_candidates});
     assert.equal(granted.permission_candidates.length, 0, JSON.stringify(granted));
-    assert.equal(granted.permissions_used.length, 4);
+    assert.equal(granted.permissions_used.length, 3);
     assert(upstream.includes('bubble_card_tools/list_modules'));
     assert(upstream.includes('subscribe_condition'));
     assert(upstream.includes('map_tiles/access_token'));
@@ -317,11 +359,13 @@ async function main() {
     assert.equal(second.status, 'issues');
     assert(second.errors.some(error => error.includes('Custom element')));
     assert(second.errors.some(error => error.includes('HTTP 404')));
-    assert(second.blocked.includes('WebSocket call_service (light.turn_on)'));
-    assert(second.blocked.includes('WebSocket knob_swipe_navigation/subscribe_rotations'));
-    assert(second.blocked.includes('WebSocket knob_swipe_navigation/navigation_result'));
-    assert(second.blocked.includes('WebSocket camera/stream'));
-    assert(second.blocked.includes('WebSocket recorder/clear_statistics'));
+    assert(second.blocked.some(item => item.startsWith('WebSocket call_service (light.turn_on):') && item.includes('Approval is unavailable')));
+    assert(!second.blocked.some(item => item.includes('WebSocket knob_swipe_navigation/subscribe_rotations')));
+    assert(second.blocked.some(item => item.startsWith('WebSocket knob_swipe_navigation/navigation_result:') && item.includes('updates integration state')));
+    assert(second.blocked.some(item => item.startsWith('WebSocket browser_mod/connect:') && item.includes('separate support')));
+    assert(second.blocked.some(item => item.startsWith('WebSocket subscribe_events (zha_event):') && item.includes('Listening is read-only') && item.includes('administrators')));
+    assert(second.blocked.some(item => item.startsWith('WebSocket camera/stream:') && item.includes('Approval is unavailable')));
+    assert(second.blocked.some(item => item.startsWith('WebSocket recorder/clear_statistics:')));
     assert(second.blocked.includes('WebSocket get_states (invalid or reused request ID)'));
     assert.equal(requests.filter(url => url === '/api/states/sensor.connection_survived_reused_id').length, 2);
     assert(second.blocked.includes('GET /unsafe-action.js'));
@@ -334,11 +378,19 @@ async function main() {
     assert(second.blocked.includes('Redirect /local/redirect.js'));
     assert.equal(redirectedRequests, 0);
     assert(!upstream.includes('call_service'));
-    assert(!upstream.includes('knob_swipe_navigation/subscribe_rotations'));
+    assert(!upstream.includes('browser_mod/connect'));
+    assert(!upstream.includes('subscribe_events'));
     assert(!upstream.includes('knob_swipe_navigation/navigation_result'));
     assert(!upstream.includes('camera/stream'));
     assert(!upstream.includes('recorder/clear_statistics'));
     assert(!requests.some(url => url.startsWith('/api/services')));
+    assert(!second.permission_candidates.some(item => item.kind === 'websocket'), 'unsupported WebSocket operations must not be offered for approval');
+    bad = false;
+    deniedRead = true;
+    const denied = await inspect(input);
+    assert(denied.errors.some(error => error.includes('Home Assistant get_states: unauthorized') && error.includes('Browser approval cannot change Home Assistant permissions')));
+    assert.deepEqual(denied.permission_candidates, []);
+    deniedRead = false;
     reject = true;
     assert.equal((await inspect(input)).status, 'unavailable');
     const executable = process.env.HA_BROWSER_EXECUTABLE;

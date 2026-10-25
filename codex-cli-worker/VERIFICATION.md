@@ -44,7 +44,26 @@ a guarantee of correct layout. API results distinguish `observed`, `passed`, and
 `failed`; browser results distinguish `captured`, `issues`, `unavailable`, and
 `disabled`. Problems stay visible even when the edit itself completes.
 Policy blocks limit what this browser can verify; they do not establish faults
-on a tablet or other browser where the dashboard is used.
+on a tablet or other browser where the dashboard is used. A policy block does
+not mean the request changes anything. Each blocked WebSocket request explains
+why it was refused and whether it can be reviewed for approval. Home Assistant
+access errors are reported separately; browser approval cannot change the
+permissions of the temporary read-only Home Assistant account.
+
+Built-in `state` and `numeric_state` condition subscriptions, including nested
+`and`, `or`, and `not` combinations, are allowed automatically. They read entity
+values and report changes to a condition's result. The controller checks the
+predicate types and fields and bounds the request's size and nesting; Home
+Assistant validates the condition values. Unfamiliar condition types still need
+review. Knob Swipe Navigation's configuration and rotation subscriptions are
+also allowed automatically because they only read configuration or listen for
+events. Reporting navigation results remains blocked because it updates the
+integration's state.
+
+Core versions before 2026.10 also require administrator access for
+`subscribe_condition`. The controller allows supported read-only predicates
+through, but those versions of Home Assistant can still refuse them. The result
+explains the account restriction; an extra browser approval cannot resolve it.
 
 ## Approving additional browser requests
 
@@ -106,6 +125,14 @@ external access stay blocked. Commands the controller restricts by name or
 parameters (Knob Swipe Navigation, Custom Icons, Browser Mod and event
 subscriptions) cannot be widened by an approval. `browser_permission_policy.json`
 holds these rules for both the controller and the worker.
+
+Browser Mod remains separate. Its `connect` handler can update stored browser
+details and attach a registered browser to its command channel, so it needs
+dedicated support rather than a generic approval. A `zha_event` subscription is
+read-only, but Home Assistant restricts that event stream to administrators.
+The inspection browser keeps its read-only account, so this subscription is
+unavailable even with user approval. Listening through the supported knob
+rotation subscription does not require access to that administrator event stream.
 
 **Load raster map tiles** is one bounded permission for the map-only token and
 valid raster tile coordinates, rather than a permission per image URL. The real

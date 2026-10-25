@@ -1352,6 +1352,7 @@ function pngBuffer(width = 8, height = 6) {
     await page.locator(".chat-row").first().waitFor();
     assert.equal(await page.locator("#chat-title").textContent(), "New chat");
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => document.querySelector("#sidebar").inert);
     assert.equal(
       await page.locator("#sidebar").evaluate((el) => el.inert),
       true,

@@ -191,7 +191,8 @@ class BrowserPermissions {
     const query = [...url.searchParams.entries()];
     // Malformed escapes decode to U+FFFD, so one grant would match several raw queries.
     if (query.some(pair => pair.some(item => item.includes('�')))) return false;
-    query.sort((a, b) => byCodeUnit(canonical(a), canonical(b)));
+    // Stable key sorting preserves which repeated value a handler reads first.
+    query.sort((a, b) => byCodeUnit(a[0], b[0]));
     return this.check(rule('http', { method, path: url.pathname, query }), viewport);
   }
 

@@ -69,6 +69,9 @@ class Verification:
         self.execution_lock = threading.Lock()
         self.permissions = BrowserPermissionStore(worker)
         self.ui_captures = {}
+        # Authority stays in worker memory, never in agent-writable task.json.
+        # Restarting the worker expires one-off grants; audit records remain.
+        self.retry_grants = {}
 
     def begin(self, task_id):
         """Issue a new capability for the task's turn, clear its recorded checks, and delete expired screenshots."""
@@ -160,8 +163,13 @@ class Verification:
                     raise RuntimeError("The selected requests no longer match this inspection. Refresh and try again.")
                 selected = [candidates[item] for item in payload["candidate_ids"]]
                 # One-off approvals made earlier in this exchange keep applying to
-                # its later retries, so requests that depend on them can be approved.
-                carried = [rule for rule in map(valid_rule, source.get("permission_grants") or []) if rule]
+                # its later retries. Task metadata, including legacy grant fields,
+                # is editable by the agent and cannot authorize carried access.
+                grant_key = (task_id, payload["turn_id"], payload["check_id"])
+                with self.lock:
+                    self.retry_grants = {key: rules for key, rules in self.retry_grants.items()
+                                         if self.worker.tasks.get(key[0], {}).get("current_turn_id") == key[1]}
+                    carried = [rule for rule in map(valid_rule, self.retry_grants.get(grant_key, [])) if rule]
                 if any(self.worker.redact(rule["request"]) != rule["request"] for rule in [*selected, *carried]):
                     raise ValueError("Requests with hidden credentials cannot be approved")
                 grants = list({rule["id"]: rule for rule in [*carried, *([] if payload["remember"] else selected)]}.values())
@@ -189,6 +197,7 @@ class Verification:
                            "path": source["path"], "selected": selected, "carried": carried, "grants": grants,
                            "remember": payload["remember"]}
                 with self.lock:
+                    self.retry_grants.pop(grant_key, None)
                     self.ui_captures[task_id] = capture
                 # The retry is worker activity: new messages wait in the queue,
                 # and the chat can't be deleted or continued, until it ends.
@@ -213,10 +222,7 @@ class Verification:
                  "retry_of": capture["source_check_id"],
                  "permission_decision": {"remember": capture["remember"],
                                          "approved": [describe(rule) for rule in capture["selected"]],
-                                         "carried": [describe(rule) for rule in capture["carried"]]},
-                 # One-off grants for this exchange's later retries; never saved
-                 # and never shown outside the Ingress review.
-                 "permission_grants": capture["grants"]}
+                                         "carried": [describe(rule) for rule in capture["carried"]]}}
         try:
             try:
                 if launch_failed:
@@ -231,7 +237,9 @@ class Verification:
             with self.worker.lock:
                 if self.active(task_id, capture["turn_id"], capture["capability"]):
                     entries = list(self.worker.tasks[task_id].get("verification") or [])
-                    self.worker.update_task_evidence(task_id, verification=[*entries, entry])
+                    if self.worker.update_task_evidence(task_id, verification=[*entries, entry]) and capture["grants"]:
+                        with self.lock:
+                            self.retry_grants[(task_id, capture["turn_id"], entry["check_id"])] = capture["grants"]
         finally:
             with self.lock:
                 self.ui_captures.pop(task_id, None)

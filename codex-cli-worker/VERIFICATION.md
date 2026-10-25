@@ -65,7 +65,9 @@ nor changes the integration's latest-task sensor. While the retry runs it counts
 as worker activity: messages sent meanwhile wait in the queue. Approval choices
 and new evidence remain with the exchange. A one-off approval is never saved; it
 applies to that retry and to later retries in the same exchange, so requests
-that depend on each other can be approved one batch at a time. Select
+that depend on each other can be approved one batch at a time. Active one-off
+grants stay in worker memory and expire when the worker restarts. Chat files
+retain the approval history, but cannot grant access when restored. Select
 **Remember for this dashboard** to reuse the selected permissions in later
 captures of that view; a trailing slash in the path doesn't matter. Saved
 permissions survive worker and Home Assistant restarts and are bound to the Core
@@ -93,6 +95,8 @@ User approval is a trust decision, not certification that an unfamiliar custom
 handler has no side effects. Generic exceptions cover bounded read-like WebSocket
 operations with their exact parameters, or exact same-origin GET/HEAD resources
 and query parameters. Changing the request parameters requires another approval.
+Repeated query parameters retain their value order, so changing which value
+comes first requires another approval.
 Request IDs and object-key order do not change a WebSocket permission. Requests
 with hidden credentials, malformed query encoding, oversized details, or
 unsupported actions cannot be approved. Known device controls, writes (also when

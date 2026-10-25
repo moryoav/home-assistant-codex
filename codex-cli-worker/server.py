@@ -4909,6 +4909,8 @@ def status() -> Response:
     with lock:
         task_values = sorted(tasks.values(), key=lambda task: task.get("updated_at") or task.get("created_at", ""))
         latest = {key: copy.deepcopy(value) for key, value in task_values[-1].items() if key != "turns"} if task_values else None
+        if latest is not None and not is_ingress_request() and isinstance(latest.get("verification"), list):
+            latest["verification"] = [public_check(check) for check in latest["verification"]]
         queued = len(message_queue)
     return jsonify(
         {

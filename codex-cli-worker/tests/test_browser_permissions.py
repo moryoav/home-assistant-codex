@@ -383,6 +383,30 @@ class BrowserPermissionTests(unittest.TestCase):
         self.assertNotIn("light.kitchen", json.dumps(result), "the agent sees no request parameters")
         self.assertIn("light.kitchen", json.dumps(server.tasks["chat"]["verification"][-1]), "the Ingress review keeps them")
 
+    def test_status_only_exposes_exact_requests_to_ingress(self):
+        """The integration's status poll must sanitize every private verification field too."""
+        self.check.update(permission_grants=self.rules,
+                          permission_review={"approved": [describe(rule) for rule in self.rules]},
+                          permission_decision={"approved": [describe(self.rules[0])], "carried": [describe(self.rules[1])]})
+        with patch.object(server, "refresh_usage_status_async"), \
+             patch.object(server, "codex_login_status", return_value={}), \
+             patch.object(server, "auth_status_payload", return_value={}), \
+             patch.object(server, "usage_status_payload", return_value={}), \
+             patch.object(server, "integration_status", return_value={}):
+            private = self.client.get("/status", **self.ingress).get_json()["latest_task"]["verification"][0]
+            response = self.client.get("/status", headers={"Authorization": "Bearer paired-worker"})
+        self.assertEqual(response.status_code, 200)
+        public = response.get_json()["latest_task"]["verification"][0]
+        self.assertNotIn("permission_scope", public)
+        self.assertNotIn("permission_grants", public)
+        self.assertEqual(public["permission_candidates"][0],
+                         {"id": self.rules[0]["id"], "kind": "websocket", "label": "WebSocket bubble_card_tools/list_modules"})
+        self.assertEqual(public["permission_review"]["approved"], [{"label": describe(rule)["label"]} for rule in self.rules])
+        self.assertEqual(public["permission_decision"]["carried"], [{"label": describe(self.rules[1])["label"]}])
+        self.assertIn("request", private["permission_candidates"][0])
+        self.assertEqual(private["permission_grants"], self.rules)
+        self.assertIn("permission_scope", self.check, "a public projection must not change the stored evidence")
+
     def test_older_integration_and_hidden_credentials_are_explained(self):
         """Requests that can't be offered are never silently dropped."""
         hidden = request_rule(request={"type": "custom/get", "note": "apikey=AAAAAAAAAAAAAAAAAAAA"})
@@ -411,7 +435,10 @@ class BrowserPermissionTests(unittest.TestCase):
         with patch.object(self.engine, "browser", return_value=revealed):
             self.engine._retry_capture("chat", self.engine.ui_captures["chat"])
         first = server.tasks["chat"]["verification"][-1]
-        self.assertEqual(first["permission_grants"], self.rules[:1])
+        persisted = json.loads((server.get_task_dir("chat") / "task.json").read_text())
+        self.assertNotIn("permission_grants", persisted["verification"][-1], "active grants stay out of editable chat files")
+        # Even a forged legacy field must not replace the worker's private approvals.
+        first["permission_grants"] = self.rules[1:]
         with patch("verification.threading.Thread.start"):
             self.engine.request_retry("chat", self.payload(check_id=first["check_id"], candidate_ids=[later["id"]]))
         with patch.object(self.engine, "browser", return_value={"status": "captured"}) as browser:
@@ -420,6 +447,42 @@ class BrowserPermissionTests(unittest.TestCase):
         decision = server.tasks["chat"]["verification"][-1]["permission_decision"]
         self.assertEqual([item["label"] for item in decision["carried"]], ["WebSocket bubble_card_tools/list_modules"])
         self.assertEqual(self.engine.permissions.list(), [], "one-off approvals are never saved")
+
+    def test_restored_task_metadata_cannot_grant_unselected_requests(self):
+        """A model can edit task.json, but its restored grants have no authority after a restart."""
+        self.options["task_root"] = str(server.CONFIG_ROOT / "codex_tasks")
+        self.check["permission_grants"] = self.rules[1:]
+        server.update_task_evidence("chat", verification=[self.check])
+        server.tasks.clear()
+        server.load_task_index()
+        replacement = Verification(server)
+        with patch("verification.threading.Thread.start"):
+            replacement.request_retry("chat", self.payload(candidate_ids=[self.rules[0]["id"]]))
+        capture = replacement.ui_captures["chat"]
+        self.assertEqual(capture["carried"], [])
+        self.assertEqual(capture["grants"], self.rules[:1])
+        with patch.object(replacement, "browser", return_value={"status": "captured"}):
+            replacement._retry_capture("chat", capture)
+
+    def test_one_off_grants_expire_on_worker_restart(self):
+        """A completed retry's audit record cannot revive its one-off access in a new worker."""
+        later = request_rule(request={"type": "custom/get", "after": "list_modules"})
+        with patch("verification.threading.Thread.start"):
+            self.engine.request_retry("chat", self.payload(candidate_ids=[self.rules[0]["id"]]))
+        revealed = {"status": "issues", "path": "/lovelace/home", "permission_scope": self.scope,
+                    "permission_candidates": [{**later, **describe(later)}]}
+        with patch.object(self.engine, "browser", return_value=revealed):
+            self.engine._retry_capture("chat", self.engine.ui_captures["chat"])
+        persisted = json.loads((server.get_task_dir("chat") / "task.json").read_text())
+        server.tasks["chat"] = persisted
+        replacement = Verification(server)
+        with patch("verification.threading.Thread.start"):
+            replacement.request_retry("chat", self.payload(check_id=persisted["verification"][-1]["check_id"], candidate_ids=[later["id"]]))
+        capture = replacement.ui_captures["chat"]
+        self.assertEqual(capture["carried"], [])
+        self.assertEqual(capture["grants"], [later])
+        with patch.object(replacement, "browser", return_value={"status": "captured"}):
+            replacement._retry_capture("chat", capture)
 
     def test_revocation_stops_a_running_capture_and_revokes_its_core_session(self):
         """A capture cannot keep using the grants it loaded before a revocation."""

@@ -61,13 +61,24 @@ assert.ok(rule('http', { method: 'GET', path: '/api/x/getSettings', query: [] })
 const malformed = new BrowserPermissions();
 assert.equal(malformed.http(new URL('/api/custom/data?x=%FF', origin), origin, 'GET'), false);
 assert.deepEqual(malformed.evidence().permission_candidates, []);
-// Parameter order never changes a fingerprint, and the order itself never depends on the locale.
+// Distinct keys sort independently of locale; repeated values retain their order.
 const ordered = new BrowserPermissions();
 ordered.http(new URL('/api/custom/data?b=2&a=1&_x=0&A=3', origin), origin, 'GET');
 ordered.http(new URL('/api/custom/data?A=3&_x=0&a=1&b=2', origin), origin, 'GET');
 const [sortedQuery] = ordered.evidence().permission_candidates;
 assert.equal(ordered.evidence().permission_candidates.length, 1);
 assert.deepEqual(JSON.parse(sortedQuery.request).query.map(pair => pair[0]), ['A', '_x', 'a', 'b']);
+const repeated = new BrowserPermissions();
+const originalQuery = new URL('/api/custom/data?entity_id=light.kitchen&b=2&entity_id=lock.front', origin);
+repeated.http(originalQuery, origin, 'GET');
+const repeatedGrant = repeated.evidence().permission_candidates;
+assert.deepEqual(JSON.parse(repeatedGrant[0].request).query,
+  [['b', '2'], ['entity_id', 'light.kitchen'], ['entity_id', 'lock.front']]);
+const repeatedAllowed = new BrowserPermissions(repeatedGrant);
+assert.equal(repeatedAllowed.http(originalQuery, origin, 'GET'), true);
+assert.equal(repeatedAllowed.http(new URL('/api/custom/data?b=2&entity_id=light.kitchen&entity_id=lock.front', origin), origin, 'GET'), true);
+assert.equal(repeatedAllowed.http(new URL('/api/custom/data?entity_id=lock.front&b=2&entity_id=light.kitchen', origin), origin, 'GET'), false,
+  'changing the first value of a repeated parameter requires another approval');
 const map = new BrowserPermissions();
 assert.equal(map.message({ id: 7, type: 'map_tiles/access_token' }), false);
 assert.equal(map.http(new URL('/api/map_tiles/raster/3/4/5.png?token=private-map-token', origin), origin, 'GET'), false);

@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.78
 
 - Allowed built-in state and numeric-state condition subscriptions, including nested logical conditions, without browser approval.
 - Allowed passive Knob Swipe Navigation rotation subscriptions while keeping navigation result writes and Browser Mod connections separate.
 - Explained remaining WebSocket blocks, approval availability, and Home Assistant access restrictions in verification evidence.
+- Bounded active condition subscriptions across capture connections and released their slots after failures, confirmed unsubscriptions, or connection closure.
+
+Update the worker app and integration to **0.1.78**, then restart Home Assistant.
 
 ## 0.1.77
 

@@ -53,45 +53,63 @@ After an inspection, open its verification result and choose requests under
 requests**, inspect their details, then choose **Allow selected and retry**.
 Unselected requests stay blocked. **Keep blocked** closes the result without
 granting access. A batch is available only for the current exchange after tasks
-have finished, and can be approved once. Each exchange permits up to four retries.
-An inspection offers at most 16 complete requests, and private storage holds at
-most 128 remembered rules. Additional requests may be omitted to keep the
-evidence bounded; an approvable request is never shortened to fit.
+in every chat have finished, and can be approved once. Each exchange permits up
+to four retries. An inspection offers at most 16 complete requests, and private
+storage holds at most 128 remembered rules. Additional requests may be omitted to
+keep the evidence bounded; an approvable request is never shortened to fit.
 
 An approval starts a fresh dashboard capture with a new short-lived session.
 It does not rerun the task, save dashboard changes, reload Home Assistant, or
-change the original answer. Approval choices and new evidence remain with the
-exchange. A one-off approval lasts for that retry only. Select **Remember for
-this dashboard** to reuse the selected permissions in later captures of that
-exact view. Saved permissions survive worker restarts and are bound to the
-paired worker, Core installation identity, and Core origin. Moving to another
-installation or changing the pairing or origin requires new approvals.
-Accepted batches are recorded before a capture starts, so an interrupted retry
-cannot make an old approval reusable after a restart. Start a new inspection if
-the worker stops before it can record the retry result.
+change the original answer, and it neither moves the chat in the recent list
+nor changes the integration's latest-task sensor. While the retry runs it counts
+as worker activity: messages sent meanwhile wait in the queue. Approval choices
+and new evidence remain with the exchange. A one-off approval is never saved; it
+applies to that retry and to later retries in the same exchange, so requests
+that depend on each other can be approved one batch at a time. Select
+**Remember for this dashboard** to reuse the selected permissions in later
+captures of that view; a trailing slash in the path doesn't matter. Saved
+permissions survive worker and Home Assistant restarts and are bound to the Core
+installation identity (the integration's browser user) and Core origin. Moving
+to another installation or changing the origin requires new approvals. Accepted
+batches are recorded before a capture starts, so an interrupted retry cannot
+make an old approval reusable after a restart. Start a new inspection if the
+worker stops before it can record the retry result.
 
 Open **Settings > Browser permissions** to inspect and revoke saved exceptions.
-Revocation stops captures already using loaded exceptions. Permissions are kept
-in private app storage, outside `/config`, with bounded, atomic storage. They
-cannot be granted or revoked through the integration API token or the model's
-verification tool; management requires the human Home Assistant Ingress UI.
-Update both the worker and integration for approval support. An older integration
-can still supply screenshots but cannot identify an installation for approvals.
+Revoking a saved exception stops captures that loaded it; other changes don't.
+Permissions are kept in private app storage, outside `/config`, with bounded,
+atomic storage. An entry a later version no longer accepts is ignored and listed
+as unsupported so you can revoke it. If the file can't be read at all, captures
+run without saved permissions and say so, and Settings offers **Remove all saved
+permissions**. Permissions cannot be granted or revoked through the integration
+API token or the model's verification tool; management requires the human Home
+Assistant Ingress UI. Exact request details appear only there: the model's
+verification tool, task-result events and token-authenticated task API calls
+get each request's label. Update both the worker and integration for approval
+support. With an older integration, screenshots still work and the result asks
+you to update the integration before requests can be approved.
 
 User approval is a trust decision, not certification that an unfamiliar custom
 handler has no side effects. Generic exceptions cover bounded read-like WebSocket
 operations with their exact parameters, or exact same-origin GET/HEAD resources
 and query parameters. Changing the request parameters requires another approval.
 Request IDs and object-key order do not change a WebSocket permission. Requests
-with hidden credentials, oversized details, or unsupported actions cannot be
-approved. Known device controls, writes, sign-in changes, URL signing, camera
-WebRTC setup/signaling, redirects and arbitrary external access stay blocked.
+with hidden credentials, malformed query encoding, oversized details, or
+unsupported actions cannot be approved. Known device controls, writes (also when
+the write word is separated by `-` or `.` or written in camelCase), sign-in
+changes, URL signing, camera WebRTC setup/signaling, redirects and arbitrary
+external access stay blocked. Commands the controller restricts by name or
+parameters (Knob Swipe Navigation, Custom Icons, Browser Mod and event
+subscriptions) cannot be widened by an approval. `browser_permission_policy.json`
+holds these rules for both the controller and the worker.
 
 **Load raster map tiles** is one bounded permission for the map-only token and
 valid raster tile coordinates, rather than a permission per image URL. The real
-map token remains in the controller; page scripts receive a placeholder. Signing
-URLs and camera WebRTC setup/signaling require separate support. These permissions do not
-observe a physical WallPanel or reproduce its app transitions.
+map token remains in the controller; page scripts receive a placeholder. The
+controller opens Core's WebSocket itself, so page scripts never hold the real
+connection, access token or map token. Signing URLs and camera WebRTC
+setup/signaling require separate support. These permissions do not observe a
+physical WallPanel or reproduce its app transitions.
 
 Each turn retains `verification` and `verification_attachments` in the task API,
 `codex_cli.get_task`, and normal task-result events. The chat shows expandable
@@ -212,14 +230,17 @@ HTTP errors, and invalid dashboard templates still require separate fixes.
   screenshots while retaining API diagnostics. Chromium is packaged for amd64 and aarch64. Missing or old
   integrations cause browser/log checks to report unavailable.
 - Authenticated browser HTTP requests stay on the Core origin and known read paths. WebSocket
-  messages use an explicit read allowlist. Service calls, saves, arbitrary event
-  subscriptions, external navigation, and service workers are blocked. External
+  messages use an explicit read allowlist, plus exceptions the owner approves.
+  Request IDs must increase on each connection, as Core requires. Service calls,
+  saves, arbitrary event subscriptions, external navigation, and service workers
+  are blocked. External
   assets use the separate restricted transport described above. Unsupported
   custom-card requests are reported instead of silently expanding access.
 - The dedicated identity may see different cards, themes, or views from a household
   member. Administrator-only dashboards, unsupported external resources, and cards requiring
   writes during initialization may not be available.
-- At most 24 checks and four browser runs per turn, one at a time. Each browser run
+- At most 24 checks and four browser runs per turn, plus up to four approved
+  retries, one at a time. Each browser run
   has a 110-second deadline, a sampled process-tree memory budget, and two
   fixed-size images capped at 5 MiB each. **Browser memory limit (MiB)** in the app's
   Configuration tab (`browser_memory_limit_mib`) defaults to 1536 MiB (1.5 GiB)
@@ -277,6 +298,9 @@ set `HA_BROWSER_EXECUTABLE` when Chromium is not at `/usr/bin/chromium-browser`.
 `node tests/browser_resources.cjs` tests static-resource permissions and the
 external HTTPS transport, including header stripping, DNS pinning, private
 addresses, redirect revalidation, and response limits, without external requests.
+`node tests/browser_permissions.cjs` tests approval eligibility, exact matching,
+request-ID correlation and bounded evidence without a browser, and checks that
+the worker's Python validator agrees with the controller on the same requests.
 
 Set `HA_BROWSER_NODE=node` to include the real Home Assistant frontend test under
 `tests/ha`. CI runs broker discovery and the real frontend capture on Core

@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Added batch approval of additional dashboard browser requests, with capture-only retries and optional remembered permissions for the paired installation and exact dashboard view.
-- Added permission inspection and revocation in Settings, stale-request rejection, bounded storage, approval history, and cancellation of captures using revoked permissions.
+- Added batch approval of additional dashboard browser requests, with capture-only retries and optional remembered permissions for the Home Assistant installation and dashboard view that survive restarts.
+- Added permission inspection and revocation in Settings, stale-request rejection, bounded storage, approval history, and cancellation of captures using revoked permissions. Unsupported saved entries are ignored individually, and an unreadable permissions file can be removed from Settings.
 - Added a bounded raster map capability that keeps map tokens outside page scripts. Kept known controls, writes, URL signing and camera signaling blocked; physical WallPanel observation is separate.
+- The dashboard browser now opens Home Assistant's WebSocket itself, so page scripts can no longer reach the real connection or access token, or send commands past the read-only checks.
 
 ## 0.1.76
 

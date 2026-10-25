@@ -553,6 +553,8 @@ function controls() {
       "This chat's message is waiting in the queue and has not been sent yet. You can edit or remove it above.";
   else if (task?.permission_required)
     notice = "Review the permission request above to continue, or stop the task.";
+  else if (working && task?.browser_retry)
+    notice = "Retrying the dashboard inspection. You can continue this chat when it finishes.";
   else if (working)
     notice =
       "Codex is working. Your response will appear here when it finishes.";
@@ -760,10 +762,13 @@ async function loadList(older = false) {
   for (const chat of data.tasks) merged.set(chat.task_id, chat);
   state.chats = [...merged.values()].sort(chatOrder);
   state.next = state.chats.length < data.total ? state.chats.length : null;
+  const activeChanged = state.active !== data.active_task_id;
   state.active = data.active_task_id;
   state.queue = Array.isArray(data.queue) ? data.queue : [];
   if (hadSelected && !merged.has(state.id)) await selectChat(null);
   renderList();
+  // Approval panels in the open chat depend on whether any chat is working.
+  if (activeChanged && state.task) renderTask();
   controls();
 }
 /** Return the image attachments in a list that carry a well-formed id. */
@@ -989,11 +994,15 @@ function renderVerification(turn, taskId) {
     if (check.permission_decision) {
       const names = (check.permission_decision.approved || []).map(item => item.label).join(", ");
       row.append(textNode("p", `${check.permission_decision.remember ? "Remembered for this dashboard" : "Allowed for this retry"}: ${names}`));
+      const kept = (check.permission_decision.carried || []).map(item => item.label).join(", ");
+      if (kept) row.append(textNode("p", `Still allowed from earlier in this exchange: ${kept}`));
     }
     if (check.permissions_used?.length)
       row.append(textNode("p", `${check.permissions_used.length} user-approved browser permission(s) used.`));
+    if (check.permission_review_unavailable) row.append(textNode("p", check.permission_review_unavailable));
+    if (check.permission_store_error) row.append(textNode("p", check.permission_store_error));
     if (check.permission_candidates_omitted)
-      row.append(textNode("p", "Some additional requests were omitted because the review limit was reached."));
+      row.append(textNode("p", "Some blocked requests can't be offered for approval: they were incomplete, looked like credentials, or exceeded the review limit."));
     const review = renderBrowserPermissions(check, turn, taskId);
     if (review) row.append(review);
     section.append(row);
@@ -1009,9 +1018,14 @@ function renderBrowserPermissions(check, turn, taskId) {
   if (!candidates.length || !check.check_id) return null;
   if ((turn.verification || []).some(item => item.retry_of === check.check_id))
     return textNode("p", "This batch was reviewed in a later inspection.", "muted");
-  if (check.permission_review)
-    return textNode("p", "This batch was already approved. If no retry result is available, start a new inspection.", "muted");
+  if (check.permission_review) {
+    const retrying = state.task?.browser_retry?.source_check_id === check.check_id;
+    return textNode("p", retrying ? "Retrying with the approved requests…"
+      : "This batch was already approved. If no retry result is available, start a new inspection.", "muted");
+  }
   if (turn.turn_id !== state.task?.current_turn_id) return null;
+  if (state.task?.cancellation_requested)
+    return textNode("p", "This exchange was stopped, so its requests can't be approved. Start a new inspection to review them.", "muted");
   const panel = textNode("div", "", "browser-permission-review");
   panel.append(textNode("h4", "Review blocked browser requests"));
   panel.append(textNode("p", "Select requests you trust. Unreviewed handlers may have side effects. Known device controls, writes, sign-in changes, URL signing and camera signaling stay blocked."));
@@ -1054,7 +1068,9 @@ function renderBrowserPermissions(check, turn, taskId) {
   actions.append(allow, keep);
   const feedback = textNode("p", "", "browser-permission-feedback");
   feedback.setAttribute("role", "status");
-  const busy = Boolean(state.task?.browser_retry) || ["queued", "running", "in_queue"].includes(state.task?.status);
+  // The worker accepts a batch only while no task or inspection runs in any chat.
+  const busy = Boolean(state.task?.browser_retry) || Boolean(state.active) ||
+    ["queued", "running", "in_queue"].includes(state.task?.status);
   fields.disabled = busy;
   const update = () => {
     const selected = boxes.filter(box => box.checked).length;
@@ -1088,7 +1104,7 @@ function renderBrowserPermissions(check, turn, taskId) {
     }
   };
   panel.append(fields, actions, feedback);
-  if (busy) feedback.textContent = "Wait for the current task or inspection to finish before approving this batch.";
+  if (busy) feedback.textContent = "Wait for running tasks and inspections to finish before approving this batch.";
   return panel;
 }
 
@@ -1127,7 +1143,26 @@ async function loadBrowserPermissions() {
       row.append(info, revoke);
       area.append(row);
     }
-  } catch (error) { if (load === browserPermissionLoad) area.textContent = String(error.message || error); }
+  } catch (error) {
+    if (load !== browserPermissionLoad) return;
+    area.replaceChildren(textNode("p", String(error.message || error)));
+    // An unreadable permissions file can only be replaced, never edited here.
+    if (error.status === 503) {
+      const clear = textNode("button", "Remove all saved permissions", "subtle");
+      clear.type = "button";
+      clear.onclick = async () => {
+        clear.disabled = true;
+        try {
+          await api("browser-permissions", undefined, "DELETE");
+          await loadBrowserPermissions();
+          area.tabIndex = -1;
+          area.focus();
+          $("settings-result").textContent = "Saved browser permissions removed.";
+        } catch (failure) { clear.disabled = false; settingsError(failure); }
+      };
+      area.append(clear);
+    }
+  }
 }
 /** Keep the original Markdown of the answer's visible text, including code indentation. */
 function responseMarkdown(turn) {
@@ -1239,6 +1274,8 @@ function renderTask(force = false) {
     state.edit?.id,
     state.catalog?.backup_retention_days,
     task.browser_retry,
+    // Approval panels depend on whether any chat is working.
+    state.active,
   ]);
   if (!force && signature === state.signature) {
     // Its place in line can change without the conversation being redrawn.

@@ -1,0 +1,38 @@
+{
+  "limits": {
+    "candidates": 16,
+    "saved_rules": 128,
+    "retries": 4,
+    "request_bytes": 1200,
+    "type_length": 160,
+    "path_length": 512,
+    "query_pairs": 12,
+    "depth": 12,
+    "controller_input_bytes": 1048576
+  },
+  "type_pattern": "[a-z][a-z0-9_]*(?:/[a-z][a-z0-9_]*){0,5}",
+  "http_path_pattern": "/[a-zA-Z0-9_./-]+",
+  "dashboard_path_pattern": "/[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?/?",
+  "whitespace": "[\\t\\n\\u000b\\f\\r \\u001c-\\u001f\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]",
+  "sensitive_names": ["token", "secret", "password", "credential", "authorization", "signature", "apikey", "api_key", "authsig"],
+  "credential_value_names": ["token", "password", "secret", "authsig"],
+  "write_words": [
+    "set", "save", "create", "update", "delete", "remove", "add", "install", "download", "execute", "exec", "run",
+    "call", "fire", "start", "stop", "restart", "reload", "reboot", "register", "connect", "disconnect", "press",
+    "trigger", "toggle", "turn", "send", "offer", "candidate", "publish", "write", "reset", "clear", "purge", "wipe",
+    "flash", "upgrade", "apply", "enable", "disable", "arm", "disarm", "unlock", "rename", "import", "migrate",
+    "upload", "edit", "modify", "patch", "put", "post", "insert", "replace", "reconfigure", "activate", "deactivate",
+    "approve", "dismiss", "revoke"
+  ],
+  "read_prefixes": ["get", "list", "subscribe"],
+  "read_suffixes": ["config", "info", "capabilities"],
+  "denied_websocket_prefixes": [
+    "auth", "config", "hassio", "cloud", "stream", "backup", "person", "automation", "script",
+    "camera/webrtc", "camera/stream", "knob_swipe_navigation", "custom_icons", "browser_mod"
+  ],
+  "denied_websocket_types": ["subscribe_events"],
+  "denied_http_prefixes": [
+    "/auth", "/api/auth", "/api/services", "/api/events", "/api/config", "/api/hassio", "/api/webhook",
+    "/api/camera", "/api/codex_cli", "/api/stream", "/api/backup", "/api/map_tiles"
+  ]
+}

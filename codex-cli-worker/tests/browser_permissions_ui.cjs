@@ -84,6 +84,16 @@ async function task(page) {
     }
     await list.getByText('No browser permissions remembered.', {exact: true}).waitFor();
     assert.equal(await list.evaluate(node => node === document.activeElement), true);
+    // An unreadable permissions file can be removed from Settings instead of blocking everything.
+    await page.request.post(new URL('fixture/browser-permissions/corrupt', base).href);
+    await page.getByRole('button', {name: 'Close settings', exact: true}).click();
+    await page.getByRole('button', {name: 'Open settings', exact: true}).click();
+    const clear = list.getByRole('button', {name: 'Remove all saved permissions', exact: true});
+    await clear.waitFor();
+    assert.match(await list.textContent(), /could not be read/);
+    await clear.click();
+    await list.getByText('No browser permissions remembered.', {exact: true}).waitFor();
+    assert.equal(await page.locator('#settings-result').textContent(), 'Saved browser permissions removed.');
     await page.getByRole('button', {name: 'Close settings', exact: true}).click();
     // An unselected request stays blocked and one-off approval creates no saved rule.
     const once = await inspection(page);

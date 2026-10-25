@@ -56,7 +56,7 @@ def main():
         server.refresh_usage_status_async = lambda **kwargs: None
         from browser_permissions import describe, scope
 
-        permission_scope = scope({"installation_id": "a" * 32, "url": "http://fixture:8123"}, "preview-only")
+        permission_scope = scope({"installation_id": "a" * 32, "url": "http://fixture:8123"})
         permission_requests = [
             ("websocket", {"type": "bubble_card_tools/list_modules"}),
             ("websocket", {"type": "subscribe_condition", "condition": {"condition": "state", "entity_id": "light.kitchen", "state": "on"}}),
@@ -65,7 +65,8 @@ def main():
         ]
         permission_rules = []
         for kind, body in permission_requests:
-            snapshot = json.dumps(body, sort_keys=True, separators=(",", ":"))
+            # The controller's canonical form: sorted keys, compact, unescaped UTF-8.
+            snapshot = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             rule = {"id": hashlib.sha256(f"{kind}\n{snapshot}".encode()).hexdigest(), "kind": kind, "request": snapshot}
             permission_rules.append({**rule, **describe(rule)})
 
@@ -78,11 +79,11 @@ def main():
                     "message": "Fixture dashboard inspection.", "permission_candidates": pending,
                     "permissions_used": sorted(allowed)}
 
-        def permission_capture(task_id, payload, turn_id=None, capability=None, *, grants=None, expected_scope=None, expected_revision=None):
+        def permission_capture(task_id, payload, turn_id=None, capability=None, *, retry=None):
             """Simulate only capture, leaving the actual retry ownership and routes intact."""
             time.sleep(0.4)
             remembered = server.verification.permissions.rules(permission_scope, payload["path"])
-            return permission_check([*remembered, *(grants or [])])
+            return permission_check([*remembered, *((retry or {}).get("grants") or [])])
 
         server.verification.browser = permission_capture
         # Connected unless POST fixture/integration says otherwise, so the line about
@@ -250,9 +251,16 @@ def main():
             integration["state"] = str((server.request.get_json(silent=True) or {}).get("state") or "ok")
             return {"ok": True}
 
+        def corrupt_permissions():
+            """Make the private permissions file unreadable, as damage or a downgrade could."""
+            (server.DATA_ROOT / "browser-permissions.json").write_text('{"broken": true}', encoding="utf-8")
+            return {"ok": True}
+
         server.start_background_task = finish
         server.app.add_url_rule("/fixture/release", "fixture_release", release_held, methods=["POST"])
         server.app.add_url_rule("/fixture/integration", "fixture_integration", set_integration, methods=["POST"])
+        server.app.add_url_rule("/fixture/browser-permissions/corrupt", "fixture_corrupt_permissions",
+                                corrupt_permissions, methods=["POST"])
         examples = [
             ("A quieter evening routine", "Review my evening lighting automation. Suggest improvements before making changes.",
              "Your evening routine looks good. There are two small changes that would make it easier to maintain.",

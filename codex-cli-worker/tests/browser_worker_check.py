@@ -33,7 +33,7 @@ def capture(payload):
         # Exercise the real stdin transport with a full, legitimate saved set.
         fixture_permissions = payload.pop("fixture_permissions", [])
         if fixture_permissions:
-            engine.permissions.remember(scope(payload, server.api_token()), payload["path"], fixture_permissions)
+            engine.permissions.remember(scope(payload), payload["path"], fixture_permissions)
         with patch.object(engine, "core", return_value=payload) as core:
             result = engine.run(task_id, {"operation": "dashboard", "path": payload["path"]})
         core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": payload["session_id"]})

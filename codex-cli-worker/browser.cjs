@@ -1,7 +1,7 @@
 // A bounded, observational HA browser. No click, evaluate, or arbitrary URL tool.
 const { chromium } = require('playwright-core');
 const { ResourcePolicy, createExternalFetcher } = require('./browser_resources.cjs');
-const { BrowserPermissions, raster, trackCommand, boundedResult } = require('./browser_permissions.cjs');
+const { BrowserPermissions, CommandTracker, LIMITS, raster, boundedResult } = require('./browser_permissions.cjs');
 
 const READ_MESSAGES = new Set([
   'get_config', 'get_states', 'get_services', 'auth/current_user', 'supported_features',
@@ -86,12 +86,21 @@ async function inspect(input) {
   if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || origin.includes(','))
     throw Error('Invalid Home Assistant origin');
   if (!/^\/[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?\/?$/.test(input.path)) throw Error('Invalid dashboard path');
+  // Core's WebSocket is opened with Node's built-in client (Node.js 22 or newer).
+  if (typeof WebSocket !== 'function')
+    return { status: 'unavailable', stage: 'launch', message: 'Dashboard verification needs Node.js 22 or newer for its Home Assistant connection.' };
   const errors = [], blocked = [], screenshots = [];
   const findings = new Map();
   let omitted = 0;
   const policy = new ResourcePolicy(origin, input.resources);
   const permissions = new BrowserPermissions(input.permissions);
   let mapToken;
+  // Core connections opened for the current page; closed with it.
+  const upstreams = new Set();
+  const closeUpstreams = () => {
+    for (const socket of [...upstreams]) try { socket.close(); } catch (_) { /* Already closing. */ }
+    upstreams.clear();
+  };
   const fetchExternal = createExternalFetcher(policy);
   const blockedURLs = new Set();
   /** Name a resource by its path, preceded by the host when it is external. */
@@ -197,55 +206,99 @@ async function inspect(input) {
       const url = new URL(route.url());
       if (url.host !== new URL(origin).host || url.pathname !== '/api/websocket' ||
           url.protocol !== (origin.startsWith('https:') ? 'wss:' : 'ws:')) {
-        route.close(); return;
+        route.close().catch(() => {}); return;
       }
-      const upstream = route.connectToServer();
-      let authenticated = false;
-      const commands = new Map();
-      upstream.onMessage(raw => {
-        let outgoing = raw;
-        try {
-          const parsed = JSON.parse(String(raw));
-          const messages = Array.isArray(parsed) ? parsed : [parsed];
-          // Scrub every token response before any other response processing can
-          // fail. Unexpected frames are closed, never forwarded unsanitized.
-          for (const message of messages) {
-            if (!message || typeof message !== 'object' || Array.isArray(message)) throw Error('Invalid frame');
-            if (message.type === 'result' && message.success && commands.get(message.id) === 'map_tiles/access_token' &&
-                typeof message.result?.token === 'string') {
-              mapToken = message.result.token;
-              message.result = { token: 'verification-map-session' };
-              outgoing = JSON.stringify(parsed);
-            }
-          }
-          for (const message of messages) {
-            if (message.type === 'result' && message.success &&
-                ['lovelace/resources', 'lovelace/resources/list'].includes(commands.get(message.id)) && Array.isArray(message.result))
-              for (const resource of message.result.slice(0, 256)) policy.register(resource?.url);
-            if (message.type === 'result' && message.success === false)
-              add(errors, `Home Assistant ${commands.get(message.id) || 'request'}: ${message.error?.code || 'error'}`, 'home_assistant');
-          }
-        } catch (_) {
-          route.close({ code: 1008, reason: 'Invalid dashboard response' });
-          return;
+      // Open Core's socket here in Node. Playwright's connectToServer() opens it
+      // inside the page, where page scripts could read raw frames, capture the
+      // real access token and send commands that bypass these checks.
+      const upstream = new WebSocket(url.href);
+      upstream.binaryType = 'arraybuffer';
+      upstreams.add(upstream);
+      const commands = new CommandTracker();
+      const pending = [];
+      let authenticated = false, closed = false;
+      /** Send to Core once it is connected; nothing is sent after either side closes. */
+      const toCore = data => {
+        if (closed) return;
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(data);
+        else pending.push(data);
+      };
+      /** Close both sides, recording why the controller ended the connection. */
+      const closeBoth = (reason, kind = 'home_assistant') => {
+        if (closed) return;
+        closed = true;
+        add(errors, `Dashboard connection closed: ${reason}`, kind);
+        route.close({ code: 4008, reason: 'Blocked by dashboard verification' }).catch(() => {});
+        try { upstream.close(); } catch (_) { /* Already closing. */ }
+      };
+      /** Answer a refused request the way Core answers an error, without forwarding it. */
+      const refuse = (message, reason, code = 'unauthorized') => {
+        add(blocked, `WebSocket ${String(message.type)} (${reason})`, 'policy');
+        if (Number.isInteger(message.id)) route.send(JSON.stringify({
+          id: message.id, type: 'result', success: false, error: { code, message: 'Blocked by dashboard verification' },
+        }));
+      };
+      upstream.addEventListener('open', () => {
+        for (const data of pending.splice(0)) upstream.send(data);
+      });
+      upstream.addEventListener('error', () => {
+        if (!closed) add(errors, 'Home Assistant WebSocket connection failed', 'home_assistant');
+      });
+      upstream.addEventListener('close', () => {
+        upstreams.delete(upstream);
+        if (closed) return;
+        closed = true;
+        route.close().catch(() => {});
+      });
+      upstream.addEventListener('message', event => {
+        if (closed) return;
+        if (typeof event.data !== 'string') return closeBoth('Home Assistant sent an unsupported frame');
+        let parsed;
+        try { parsed = JSON.parse(event.data); } catch (_) { return closeBoth('Home Assistant sent an invalid frame'); }
+        const messages = Array.isArray(parsed) ? parsed : [parsed];
+        // Validate the whole frame and scrub token responses before anything
+        // else; unexpected frames close the connection and are never forwarded.
+        if (messages.some(message => !message || typeof message !== 'object' || Array.isArray(message)))
+          return closeBoth('Home Assistant sent an invalid frame');
+        let outgoing = event.data;
+        for (const message of messages) {
+          if (message.type !== 'result' || !message.success || commands.type(message.id) !== 'map_tiles/access_token') continue;
+          if (typeof message.result?.token === 'string') mapToken = message.result.token;
+          else add(errors, 'Home Assistant returned an unexpected map token response', 'home_assistant');
+          message.result = { token: 'verification-map-session' };
+          outgoing = JSON.stringify(parsed);
+        }
+        for (const message of messages) {
+          const type = commands.type(message.id);
+          if (message.type === 'result' && message.success &&
+              ['lovelace/resources', 'lovelace/resources/list'].includes(type) && Array.isArray(message.result))
+            for (const resource of message.result.slice(0, 256)) policy.register(resource?.url);
+          if (message.type === 'result' && message.success === false)
+            add(errors, `Home Assistant ${type || 'request'}: ${message.error?.code || 'error'}`, 'home_assistant');
+          commands.settle(message);
         }
         route.send(outgoing);
       });
+      route.onClose(() => {
+        if (closed) return;
+        closed = true;
+        try { upstream.close(); } catch (_) { /* Already closing. */ }
+      });
       route.onMessage(raw => {
+        if (closed) return;
         let message;
-        try { message = JSON.parse(String(raw)); } catch { route.close(); return; }
-        if (!message || typeof message !== 'object' || Array.isArray(message)) { route.close(); return; }
+        try { message = JSON.parse(String(raw)); } catch (_) { return closeBoth('the dashboard sent an invalid message', 'dashboard'); }
+        if (!message || typeof message !== 'object' || Array.isArray(message))
+          return closeBoth('the dashboard sent an invalid message', 'dashboard');
         if (message.type === 'auth' && !authenticated) {
           authenticated = true;
-          upstream.send(JSON.stringify({ type: 'auth', access_token: input.access_token }));
+          toCore(JSON.stringify({ type: 'auth', access_token: input.access_token }));
         } else if (authenticated && (allowMessage(message) || permissions.message(message, activeViewport?.name))) {
-          // Never forward a token-producing request without an unambiguous
-          // response correlation, even if page scripts reuse or exhaust IDs.
-          if (!trackCommand(commands, message)) {
-            route.close({ code: 1008, reason: 'Dashboard request limit or invalid request ID' });
-            return;
-          }
-          upstream.send(raw);
+          // Core requires increasing request IDs, so each response correlates
+          // with exactly one request, including map token responses.
+          const refused = commands.accept(message);
+          if (refused) return refuse(message, refused, refused.includes('ID') ? 'id_reuse' : 'unauthorized');
+          toCore(String(raw));
         } else {
           const service = message.type === 'call_service' && /^[a-z_]+$/.test(message.domain) && /^[a-z_]+$/.test(message.service)
             ? `${message.domain}.${message.service}` : '';
@@ -333,6 +386,7 @@ async function inspect(input) {
       await page.screenshot({ path: file, fullPage: false, timeout: 10000 });
       screenshots.push({ name, file, width, height, ...layout });
       await page.close();
+      closeUpstreams();
     }
     await context.close();
     return boundedResult({ status: errors.length || blocked.length || omitted ? 'issues' : 'captured', ...evidence(), screenshots,
@@ -348,23 +402,30 @@ async function inspect(input) {
     return boundedResult({ status: 'unavailable', stage, ...evidence(), screenshots,
       message: `Dashboard verification could not finish during ${stage}.` + policyNote() });
   } finally {
+    closeUpstreams();
     await browser?.close();
   }
 }
 
 if (require.main === module) {
   let input = '', inputBytes = 0;
-  // The private worker can send 128 saved grants plus 16 one-off requests and
-  // bounded resource metadata. This is independent of the 64 KiB output cap.
+  // The worker checks the same shared limit before it starts the controller.
+  // This is independent of the 64 KiB output cap.
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', data => {
     inputBytes += Buffer.byteLength(data);
-    if (inputBytes > 512 * 1024) process.exit(2);
+    if (inputBytes > LIMITS.controller_input_bytes) process.exit(2);
     input += data;
   });
   process.stdin.on('end', async () => {
-    try { console.log(JSON.stringify(await inspect(JSON.parse(input)))); }
-    catch (_) { console.log(JSON.stringify({ status: 'unavailable', message: 'Browser verification could not load the dashboard. Check local access, authentication, browser availability, and dashboard permissions.' })); process.exitCode = 1; }
+    let output, code = 0;
+    try { output = JSON.stringify(await inspect(JSON.parse(input))); }
+    catch (_) {
+      output = JSON.stringify({ status: 'unavailable', message: 'Browser verification could not load the dashboard. Check local access, authentication, browser availability, and dashboard permissions.' });
+      code = 1;
+    }
+    // Exit once the result is written, so a Core socket still closing cannot keep the controller alive.
+    process.stdout.write(`${output}\n`, () => process.exit(code));
   });
 }
 module.exports = { allowRequest, allowMessage, inspect };

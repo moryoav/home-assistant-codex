@@ -1,11 +1,30 @@
 // User-granted exceptions for one Core installation and dashboard. This module
 // excludes known writes, credentials, signing, and camera signaling.
+// browser_permission_policy.json holds the rules the worker also enforces.
 const { createHash } = require('node:crypto');
-const MAX_CANDIDATES = 16;
-const MAX_REQUEST = 1200;
-const TYPE = /^[a-z][a-z0-9_]*(?:\/[a-z][a-z0-9_]*){0,5}$/;
-const SENSITIVE = /token|secret|password|credential|authorization|signature|api_?key|authsig/i;
-const WRITE = /(?:^|[_/])(?:set|save|create|update|delete|remove|add|install|download|execute|exec|run|call|fire|start|stop|restart|reload|reboot|register|connect|disconnect|press|trigger|toggle|turn|send|offer|candidate|publish|write)(?:$|[_/])/i;
+const POLICY = require('./browser_permission_policy.json');
+
+const LIMITS = POLICY.limits;
+const MAX_CANDIDATES = LIMITS.candidates;
+const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const any = list => list.map(escape).join('|');
+const TYPE = new RegExp(`^(?:${POLICY.type_pattern})$`);
+const HTTP_PATH = new RegExp(`^(?:${POLICY.http_path_pattern})$`);
+const SENSITIVE = new RegExp(any(POLICY.sensitive_names), 'i');
+const CREDENTIAL = new RegExp(`bearer${POLICY.whitespace}|(?:${any(POLICY.credential_value_names)})${POLICY.whitespace}*[=:]`, 'i');
+const READ = new RegExp(`(?:^|/)(?:${any(POLICY.read_prefixes)})(?:_|$)|/(?:${any(POLICY.read_suffixes)})$`);
+const DENIED_TYPE = new RegExp(`^(?:${any(POLICY.denied_websocket_prefixes)})(?:/|$)`);
+const WRITE_WORDS = new Set(POLICY.write_words);
+
+/** Split a command or path into lowercase words at punctuation and camelCase. */
+function words(text) {
+  return text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/** Return whether any word of a command or path names a known write. */
+function writes(text) {
+  return words(text).some(word => WRITE_WORDS.has(word));
+}
 
 /** Serialize JSON with stable object-key order, preserving arrays and values. */
 function canonical(value) {
@@ -15,11 +34,14 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 
+/** Order strings by code unit, so a rule's fingerprint never depends on the locale. */
+const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 /** Refuse credentials and excessive nesting rather than hiding approval details. */
 function inspectable(value, depth = 0) {
-  if (depth > 12) return false;
+  if (depth > LIMITS.depth) return false;
   if (typeof value === 'number') return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
-  if (typeof value === 'string') return !/bearer\s|(?:token|password|secret|authsig)\s*[=:]/i.test(value);
+  if (typeof value === 'string') return !CREDENTIAL.test(value);
   if (!value || typeof value !== 'object') return true;
   return Object.entries(value).every(([key, item]) => !SENSITIVE.test(key) && inspectable(item, depth + 1));
 }
@@ -32,29 +54,33 @@ function raster(url) {
     url.searchParams.getAll('token').length <= 1;
 }
 
-/** Build a rule only for eligible reads; an unknown handler is still a trust decision. */
+/**
+ * Build a rule only for eligible reads; an unknown handler is still a trust
+ * decision. Commands the controller restricts by name or parameters (knob
+ * events, icon sets, event subscriptions, Browser Mod) are never eligible, so
+ * an approval cannot widen those restrictions.
+ */
 function rule(kind, value) {
   let request;
   if (kind === 'map_tiles') {
     request = { type: 'map_tiles/raster' };
   } else if (kind === 'websocket') {
-    if (!value || typeof value.type !== 'string' || !TYPE.test(value.type) || value.type.length > 160 || WRITE.test(value.type) ||
-        /^(auth|config|hassio|cloud|stream|backup|person|automation|script)(?:\/|$)/.test(value.type) ||
-        /^camera\/(?:webrtc|stream)(?:\/|$)/.test(value.type) ||
-        SENSITIVE.test(value.type) || !/(?:^|\/)(?:get|list|subscribe)(?:_|$)|\/(?:config|info|capabilities)$/.test(value.type)) return null;
+    if (!value || typeof value.type !== 'string' || value.type.length > LIMITS.type_length || !TYPE.test(value.type) ||
+        writes(value.type) || DENIED_TYPE.test(value.type) || POLICY.denied_websocket_types.includes(value.type) ||
+        SENSITIVE.test(value.type) || !READ.test(value.type)) return null;
     request = Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'id'));
   } else if (kind === 'http') {
     if (!value || !['GET', 'HEAD'].includes(value.method) || typeof value.path !== 'string' ||
-        !/^\/[a-zA-Z0-9_./-]+$/.test(value.path) || /(?:^|\/)\.{1,2}(?:\/|$)/.test(value.path) ||
-        value.path.includes('//') || value.path.length > 512 || WRITE.test(value.path) || SENSITIVE.test(value.path) ||
-        /^\/(?:auth|api\/(?:auth|services|events|config|hassio|webhook|camera|codex_cli|stream|backup|map_tiles))(?:\/|$)/.test(value.path) ||
-        !Array.isArray(value.query) || value.query.length > 12 ||
+        value.path.length > LIMITS.path_length || !HTTP_PATH.test(value.path) || /(?:^|\/)\.{1,2}(?:\/|$)/.test(value.path) ||
+        value.path.includes('//') || writes(value.path) || SENSITIVE.test(value.path) ||
+        POLICY.denied_http_prefixes.some(prefix => value.path === prefix || value.path.startsWith(`${prefix}/`)) ||
+        !Array.isArray(value.query) || value.query.length > LIMITS.query_pairs ||
         value.query.some(pair => !Array.isArray(pair) || pair.length !== 2 || pair.some(item => typeof item !== 'string') || SENSITIVE.test(pair[0]))) return null;
     request = { method: value.method, path: value.path, query: value.query };
   } else return null;
   if (!inspectable(request)) return null;
   const snapshot = canonical(request);
-  if (Buffer.byteLength(snapshot) > MAX_REQUEST) return null;
+  if (Buffer.byteLength(snapshot) > LIMITS.request_bytes) return null;
   const id = createHash('sha256').update(`${kind}\n${snapshot}`).digest('hex');
   return { id, kind, request: snapshot };
 }
@@ -62,19 +88,43 @@ function rule(kind, value) {
 /** Revalidate saved rules, including their fingerprint, at the enforcement boundary. */
 function validate(saved) {
   try {
-    if (!saved || typeof saved.request !== 'string' || saved.request.length > MAX_REQUEST) return null;
+    if (!saved || typeof saved.request !== 'string' || saved.request.length > LIMITS.request_bytes) return null;
     const normalized = rule(saved.kind, JSON.parse(saved.request));
     return normalized?.id === saved.id && normalized.request === saved.request ? normalized : null;
   } catch (_) { return null; }
 }
 
-/** Bound metadata while always correlating token requests and rejecting reused tracked IDs. */
-function trackCommand(commands, message) {
-  const tokenRequest = message.type === 'map_tiles/access_token';
-  if (!Number.isSafeInteger(message.id) || message.id < 0 || commands.has(message.id) ||
-      (tokenRequest && commands.size >= 500)) return false;
-  if (commands.size < 500) commands.set(message.id, message.type);
-  return true;
+/**
+ * Correlate Core responses with requests the way Core numbers them: request
+ * IDs must increase on each connection, so one response never matches two
+ * requests. Only unanswered requests are remembered.
+ */
+class CommandTracker {
+  /** Start a connection with no requests and Core's initial ID. */
+  constructor(limit = 1000) {
+    this.lastId = 0;
+    this.limit = limit;
+    this.pending = new Map();
+  }
+
+  /** Track a request, or return why it cannot be forwarded unambiguously. */
+  accept(message) {
+    if (!Number.isSafeInteger(message.id) || message.id <= this.lastId) return 'invalid or reused request ID';
+    if (this.pending.size >= this.limit) return 'too many unanswered requests';
+    this.lastId = message.id;
+    this.pending.set(message.id, message.type);
+    return null;
+  }
+
+  /** Return the type of the request a response answers. */
+  type(id) {
+    return this.pending.get(id);
+  }
+
+  /** Forget a request once Core answered it; subscription events keep only the ID. */
+  settle(message) {
+    if (message.type === 'result' || message.type === 'pong') this.pending.delete(message.id);
+  }
 }
 
 /** Keep complete capture output within the worker's limit, dropping duplicates first. */
@@ -101,14 +151,15 @@ function boundedResult(result) {
 class BrowserPermissions {
   /** Load only validated grants and start a bounded, empty evidence collection. */
   constructor(grants = []) {
-    // Private storage holds 128 rules; a one-off batch may add 16 more.
-    this.grants = new Set((Array.isArray(grants) ? grants : []).slice(0, 128 + MAX_CANDIDATES).map(validate).filter(Boolean).map(item => item.id));
+    // Saved rules plus the one-off grants an exchange's retries can carry.
+    const limit = LIMITS.saved_rules + LIMITS.candidates * LIMITS.retries;
+    this.grants = new Set((Array.isArray(grants) ? grants : []).slice(0, limit).map(validate).filter(Boolean).map(item => item.id));
     this.candidates = new Map();
     this.used = new Set();
     this.omitted = 0;
   }
 
-  /** Record one eligible blocked request, without persisting tokens or request IDs. */
+  /** Record one eligible blocked request without its request ID; credential-like fields make it ineligible. */
   check(item, viewport) {
     if (!item) return false;
     if (this.grants.has(item.id)) { this.used.add(item.id); return true; }
@@ -137,7 +188,10 @@ class BrowserPermissions {
     if (url.origin !== origin || !['GET', 'HEAD'].includes(method) || /%|\\/.test(url.pathname)) return false;
     if (raster(url)) return this.check(rule('map_tiles'), viewport);
     if (url.pathname.startsWith('/api/map_tiles/')) return false;
-    const query = [...url.searchParams.entries()].sort((a, b) => canonical(a).localeCompare(canonical(b)));
+    const query = [...url.searchParams.entries()];
+    // Malformed escapes decode to U+FFFD, so one grant would match several raw queries.
+    if (query.some(pair => pair.some(item => item.includes('�')))) return false;
+    query.sort((a, b) => byCodeUnit(canonical(a), canonical(b)));
     return this.check(rule('http', { method, path: url.pathname, query }), viewport);
   }
 
@@ -147,4 +201,4 @@ class BrowserPermissions {
   }
 }
 
-module.exports = { BrowserPermissions, canonical, rule, validate, raster, trackCommand, boundedResult };
+module.exports = { BrowserPermissions, CommandTracker, LIMITS, POLICY, canonical, rule, validate, raster, writes, boundedResult };

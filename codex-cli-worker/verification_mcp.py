@@ -10,7 +10,8 @@ TOOL = {
     "name": "verify",
     "description": (
         "Check Home Assistant configuration, fresh entity state, Core logs, or dashboard configuration. "
-        "Dashboard checks capture desktop/mobile screenshots; inspect their image_paths before visual claims. "
+        "Dashboard checks capture desktop/mobile screenshots and any matching Fully Kiosk displays; "
+        "inspect their image_paths before visual claims. "
         "Blocked requests include reasons and approval availability; a policy block does not imply a write. "
         "save_pending saves only a dashboard edited in this turn when auto-save is enabled. "
         "No service calls, reloads, arbitrary URLs, or other apps' logs."

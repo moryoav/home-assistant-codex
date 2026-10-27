@@ -37,6 +37,7 @@ from .coordinator import CodexCliCoordinator
 from .discovery import async_discover_worker
 from .notification_actions import async_listen_for_choices
 from .browser_auth import STORAGE_KEY, BrowserSessions, BrowserSessionView, DiagnosticView
+from .kiosk import KioskScreenshotsView
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -74,6 +75,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     _async_register_services(hass)
     hass.http.register_view(BrowserSessionView(hass))
     hass.http.register_view(DiagnosticView(hass))
+    hass.http.register_view(KioskScreenshotsView(hass))
     return True
 
 

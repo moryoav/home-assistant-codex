@@ -535,6 +535,39 @@ class BrowserPermissionTests(unittest.TestCase):
         self.assertEqual(result["status"], "issues")
         self.assertEqual(json.loads(result["message"]), self.rules[:1])
 
+    def test_revocation_during_kiosk_collection_discards_all_capture_images(self):
+        """Recheck loaded grants after kiosk collection and remove every unpublished screenshot."""
+        self.engine.permissions.remember(self.scope, "/lovelace/home", self.rules[:1])
+        saved_id = self.engine.permissions.list()[0]["id"]
+        self.start_agent_check()
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
+        original = subprocess.Popen
+
+        def launch(_args, **kwargs):
+            """Return actual desktop and mobile screenshot files through the controller transport."""
+            script = ("import json,sys; from pathlib import Path; p=json.load(sys.stdin); "
+                      f"[(Path(p['directory'])/(name+'.png')).write_bytes({png!r}) for name in ('desktop','mobile')]; "
+                      "print(json.dumps({'status':'captured','screenshots':[{'name':'desktop'},{'name':'mobile'}]}))")
+            return original([sys.executable, "-c", script], **kwargs)
+
+        def collect_kiosk(task_id, path, turn_id, capability):
+            """Revoke the saved grant after writing a kiosk image and before evidence is published."""
+            identifier, target, mime = server._write_attachment_file(task_id, png, turn_id)
+            record = server.attachment_record(task_id, identifier, target, mime, name="kiosk.png", origin="verification",
+                                              entity_id="image.tablet", viewport="kiosk")
+            self.engine.permissions.revoke(saved_id)
+            return [record]
+
+        with patch.object(self.engine, "core", return_value=self.session) as core, \
+             patch("verification.subprocess.Popen", side_effect=launch), \
+             patch.object(self.engine, "kiosk_images", side_effect=collect_kiosk):
+            result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/home"})
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("permissions changed", result["message"])
+        self.assertEqual(server.tasks["chat"]["verification_attachments"], [])
+        self.assertEqual(list(server.get_task_dir("chat").rglob("*.png")), [])
+        core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "private-lease"})
+
     def test_revocation_before_a_pending_capture_does_not_resurrect_saved_access(self):
         """A retry cannot reintroduce a remembered grant that Settings revoked before it ran."""
         with patch("verification.threading.Thread.start"):

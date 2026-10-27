@@ -212,28 +212,52 @@ class VerificationTests(unittest.TestCase):
             with patch.object(server, "is_ingress_request", return_value=True):
                 self.assertEqual(client.get(item["url"]).data, png)
         self.assertNotIn("secret", json.dumps(saved))
+        self.capability = self.engine.begin("chat")
+        write = server._write_attachment_file
+        writes = 0
+
+        def fail_first_kiosk(*args, **kwargs):
+            """Fail the optional write after the desktop and mobile screenshots have been stored."""
+            nonlocal writes
+            writes += 1
+            if writes == 3:
+                raise OSError("Disk write failed")
+            return write(*args, **kwargs)
+
+        with patch.object(self.engine, "core", side_effect=core), \
+             patch("verification.requests.post", return_value=response), \
+             patch("verification.subprocess.Popen", side_effect=launch), \
+             patch.object(server, "_write_attachment_file", side_effect=fail_first_kiosk):
+            result = self.engine.run("chat", {"operation": "dashboard", "path": "/dashboard-home/default_view"})
+        self.assertEqual(result["status"], "captured")
+        self.assertEqual([item["viewport"] for item in server.tasks["chat"]["verification_attachments"]],
+                         ["desktop", "mobile", "kiosk"])
+        self.assertEqual([item["entity_id"] for item in result["kiosk_screenshots"]], ["image.second_tablet"])
 
     def test_kiosk_absence_is_silent_and_failed_images_do_not_stop_other_devices(self):
         """Skip absent integrations, unmatched devices, failed captures and oversized images without losing later captures."""
         turn_id = server.tasks["chat"]["current_turn_id"]
-        with patch.object(self.engine, "core", return_value={"screenshots": []}), \
-             patch("verification.requests.post") as capture:
-            self.assertEqual(self.engine.kiosk_images("chat", "/lovelace/0", turn_id, self.capability), [])
-            capture.assert_not_called()
+        for targets in ([], None, {}, "invalid", [None, "invalid", {}]):
+            with self.subTest(targets=targets), \
+                 patch.object(self.engine, "core", return_value={"screenshots": targets}), \
+                 patch("verification.requests.post") as capture:
+                self.assertEqual(self.engine.kiosk_images("chat", "/lovelace/0", turn_id, self.capability), [])
+                capture.assert_not_called()
         with patch.object(self.engine, "core", side_effect=ValueError("Home Assistant returned HTTP 404")):
             self.assertEqual(self.engine.kiosk_images("chat", "/lovelace/0", turn_id, self.capability), [])
-        responses = [MagicMock() for _ in range(3)]
+        responses = [MagicMock() for _ in range(7)]
         for response in responses:
             response.__enter__.return_value = response
             response.status_code = 200
         responses[0].status_code = 404
         responses[1].iter_content.return_value = [b"x" * (5 * 1024 * 1024 + 1)]
-        responses[2].iter_content.return_value = [b"\x89PNG\r\n\x1a\n" + b"\0" * 16]
-        targets = [{"entity_id": f"image.tablet_{index}"} for index in range(3)]
+        for response in responses[2:]:
+            response.iter_content.return_value = [b"\x89PNG\r\n\x1a\n" + b"\0" * 16]
+        targets = [{"entity_id": f"image.tablet_{index}"} for index in range(7)]
         with patch.object(self.engine, "core", return_value={"screenshots": targets}), \
              patch("verification.requests.post", side_effect=responses):
             images = self.engine.kiosk_images("chat", "/lovelace/0", turn_id, self.capability)
-        self.assertEqual([item["entity_id"] for item in images], ["image.tablet_2"])
+        self.assertEqual([item["entity_id"] for item in images], [f"image.tablet_{index}" for index in range(2, 7)])
         self.engine.end("chat")
         with patch.object(self.engine, "core", return_value={"screenshots": targets}), \
              patch("verification.requests.post") as capture:

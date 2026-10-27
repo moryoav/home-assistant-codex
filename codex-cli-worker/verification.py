@@ -415,10 +415,14 @@ class Verification:
             targets = self.core("POST", "codex_cli/kiosk_screenshots", json={"path": path}).get("screenshots", [])
         except (ValueError, requests.RequestException):
             return []  # Optional on installations without the updated integration.
+        if not isinstance(targets, list):
+            return []
         images = []
         for shot in targets:
             if not self.active(task_id, turn_id, capability):
                 break
+            if not isinstance(shot, dict):
+                continue
             entity_id = shot.get("entity_id", "")
             if not isinstance(entity_id, str) or not re.fullmatch(r"image\.[a-z0-9_]+", entity_id):
                 continue
@@ -437,7 +441,7 @@ class Verification:
                 if not self.active(task_id, turn_id, capability):
                     break
                 stored = self.worker._write_attachment_file(task_id, bytes(content), turn_id)
-            except (ValueError, requests.RequestException):
+            except (ValueError, OSError):
                 continue
             if stored:
                 attachment_id, target, mime = stored

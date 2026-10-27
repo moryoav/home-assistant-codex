@@ -6,6 +6,7 @@
 - Matched devices through their current-page sensors, including renamed entities and kiosk URL flags. Devices displaying other views are skipped silently.
 - Kept screenshots in the existing verification results and image storage, without navigating, refreshing, or waking the devices.
 - Preserved browser screenshots when an optional kiosk image write fails.
+- Removed partial image files after write failures and discarded screenshots if browser permissions are revoked during kiosk collection.
 
 Update the worker app and integration to **0.1.79**, then restart Home Assistant, to include matching Fully Kiosk screenshots in dashboard verification.
 

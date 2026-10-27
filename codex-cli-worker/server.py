@@ -1715,6 +1715,7 @@ def _write_attachment_file(
 
     Returns the attachment id, the stored path and the MIME type, or None when
     the content is empty, too large, or not a supported image.
+    Failed writes attempt to remove partial files before re-raising the original error.
     """
     if isinstance(source, Path):
         size = source.stat().st_size
@@ -1732,10 +1733,17 @@ def _write_attachment_file(
     target_dir = run_dir / "attachments"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{attachment_id}{suffix}"
-    if isinstance(source, Path):
-        shutil.copyfile(source, target)
-    else:
-        target.write_bytes(source)
+    try:
+        if isinstance(source, Path):
+            shutil.copyfile(source, target)
+        else:
+            target.write_bytes(source)
+    except OSError:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass  # Preserve the original write failure if cleanup also fails.
+        raise
     try:
         target.chmod(0o600)
     except OSError:

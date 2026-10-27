@@ -587,12 +587,17 @@ class Verification:
                 if kiosks:
                     result["kiosk_screenshots"] = [{key: item[key] for key in ("entity_id", "name", "attachment_id")}
                                                    for item in kiosks]
-                with self.worker.lock:
+                with self.worker.lock, self.permissions.lock:
                     current = list(self.worker.tasks.get(task_id, {}).get("verification_attachments") or [])
-                    if not self.active(task_id, turn_id, capability):
+                    try:
+                        if not self.active(task_id, turn_id, capability):
+                            raise ValueError("Dashboard verification cancelled")
+                        if saved_ids and self.permissions.revision != permission_revision:
+                            self._confirm_saved(installation, path, saved_ids)
+                    except ValueError:
                         for item in images:
                             (self.worker.get_task_dir(task_id) / item["path"]).unlink(missing_ok=True)
-                        raise ValueError("Dashboard verification cancelled")
+                        raise
                     save_evidence(task_id, verification_attachments=[*current, *images])
                 # Local paths let the agent inspect screenshots with its image viewer.
                 result.update(path=path, attachments=[item["attachment_id"] for item in images],

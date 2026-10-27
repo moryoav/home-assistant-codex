@@ -448,6 +448,52 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual(len(server.tasks[task_id]["turns"]), 1)
         self.assertEqual(server.tasks[task_id]["status"], "completed")
 
+    def test_partial_attachment_writes_remove_only_the_failed_target(self):
+        """Remove partial byte writes and copies while preserving the original exception and existing images."""
+        task_id = self.create()
+        png = png_bytes()
+        _, existing, _ = server._write_attachment_file(task_id, png)
+        source = self.root / "source.png"
+        source.write_bytes(png)
+        write_bytes = Path.write_bytes
+        for value in (png, source):
+            with self.subTest(source_type=type(value).__name__):
+                failure = OSError("Partial attachment write")
+                failed = []
+
+                def partial_write(first, second):
+                    """Write a partial unique attachment before simulating its I/O failure."""
+                    target = second if isinstance(value, Path) else first
+                    failed.append(target)
+                    write_bytes(target, b"partial")
+                    raise failure
+
+                operation = patch.object(server.shutil, "copyfile", side_effect=partial_write) if isinstance(value, Path) else patch.object(Path, "write_bytes", autospec=True, side_effect=partial_write)
+                with operation, self.assertRaises(OSError) as raised:
+                    server._write_attachment_file(task_id, value)
+                self.assertIs(raised.exception, failure)
+                self.assertFalse(failed[0].exists())
+                self.assertEqual(list(existing.parent.iterdir()), [existing])
+                self.assertEqual(existing.read_bytes(), png)
+                self.assertEqual(source.read_bytes(), png)
+
+    def test_attachment_cleanup_failure_preserves_the_write_exception(self):
+        """Raise the original attachment write error even when removing its partial target also fails."""
+        task_id = self.create()
+        failure = OSError("Original write failure")
+        write_bytes = Path.write_bytes
+
+        def partial_write(target, data):
+            """Leave partial image bytes before raising the original I/O exception."""
+            write_bytes(target, data[:8])
+            raise failure
+
+        with patch.object(Path, "write_bytes", autospec=True, side_effect=partial_write), \
+             patch.object(Path, "unlink", side_effect=OSError("Cleanup failure")), \
+             self.assertRaises(OSError) as raised:
+            server._write_attachment_file(task_id, png_bytes())
+        self.assertIs(raised.exception, failure)
+
 
 if __name__ == "__main__":
     unittest.main()

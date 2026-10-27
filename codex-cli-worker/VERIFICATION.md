@@ -27,6 +27,9 @@ long-lived token is needed. These tools do not need the optional `HA_TOKEN` sett
   with the edited configuration, followed by desktop (1440 x 1000) and mobile
   (390 x 844) captures of the first views that fit the remaining turn budget.
   Request later affected views explicitly; automatic captures do not cover every view.
+- Dashboard captures also include screenshots from Fully Kiosk devices currently
+  displaying the same Home Assistant view. Kiosk query flags do not affect matching.
+  If no devices match, no additional result is shown.
 - The AI can request particular dashboard views during a task, inspect the returned
   images, and revise its work. `save_pending: true` saves only a matching storage
   dashboard edited since this turn's baseline, with API readback before capture.

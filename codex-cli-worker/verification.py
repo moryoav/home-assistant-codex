@@ -409,8 +409,46 @@ class Verification:
             raise ValueError("Browser permissions changed: a saved permission this inspection used was revoked. Run a new inspection.")
         return revision
 
+    def kiosk_images(self, task_id, path, turn_id, capability):
+        """Retain screenshots of Fully Kiosk devices displaying this view; no matches are silent."""
+        try:
+            targets = self.core("POST", "codex_cli/kiosk_screenshots", json={"path": path}).get("screenshots", [])
+        except (ValueError, requests.RequestException):
+            return []  # Optional on installations without the updated integration.
+        images = []
+        for shot in targets:
+            if not self.active(task_id, turn_id, capability):
+                break
+            entity_id = shot.get("entity_id", "")
+            if not isinstance(entity_id, str) or not re.fullmatch(r"image\.[a-z0-9_]+", entity_id):
+                continue
+            try:
+                with requests.post("http://supervisor/core/api/codex_cli/kiosk_screenshots",
+                                   json={"path": path, "entity_id": entity_id, "worker_token": self.worker.api_token()},
+                                   headers={"Authorization": f"Bearer {self.worker.ha_token()}"},
+                                   timeout=15, allow_redirects=False, stream=True) as response:
+                    if response.status_code != 200:
+                        continue
+                    content = bytearray()
+                    for chunk in response.iter_content(8192):
+                        content.extend(chunk)
+                        if len(content) > SCREENSHOT_MAX_BYTES:
+                            raise ValueError("Kiosk screenshot exceeds the image limit")
+                if not self.active(task_id, turn_id, capability):
+                    break
+                stored = self.worker._write_attachment_file(task_id, bytes(content), turn_id)
+            except (ValueError, requests.RequestException):
+                continue
+            if stored:
+                attachment_id, target, mime = stored
+                images.append(self.worker.attachment_record(task_id, attachment_id, target, mime,
+                    name=self.worker.upload_name(shot.get("name") or entity_id, target.suffix),
+                    origin="verification", viewport="kiosk", entity_id=entity_id,
+                    expires_at=time.time() + RETENTION_SECONDS))
+        return images
+
     def browser(self, task_id, payload, turn_id=None, capability=None, *, retry=None):
-        """Capture a dashboard within the configured budget and retain turn evidence.
+        """Capture a dashboard and matching Fully Kiosk screens, retaining turn evidence.
 
         `retry` is the capture an Ingress user approved: its one-off grants
         apply, and its evidence is recorded without moving the chat.
@@ -538,6 +576,13 @@ class Verification:
                             name=f"dashboard-{name}.png", origin="verification", viewport=name,
                             expires_at=time.time() + RETENTION_SECONDS)
                         images.append(record)
+                if result.get("status") == "captured" and len(images) != 2:
+                    result.update(status="unavailable", message="Both viewport screenshots could not be retained")
+                kiosks = self.kiosk_images(task_id, path, turn_id, capability)
+                images.extend(kiosks)
+                if kiosks:
+                    result["kiosk_screenshots"] = [{key: item[key] for key in ("entity_id", "name", "attachment_id")}
+                                                   for item in kiosks]
                 with self.worker.lock:
                     current = list(self.worker.tasks.get(task_id, {}).get("verification_attachments") or [])
                     if not self.active(task_id, turn_id, capability):
@@ -548,8 +593,6 @@ class Verification:
                 # Local paths let the agent inspect screenshots with its image viewer.
                 result.update(path=path, attachments=[item["attachment_id"] for item in images],
                               image_paths=[str(self.worker.get_task_dir(task_id) / item["path"]) for item in images])
-                if result.get("status") == "captured" and len(images) != 2:
-                    result.update(status="unavailable", message="Both viewport screenshots could not be retained")
                 return result
         finally:
             try:

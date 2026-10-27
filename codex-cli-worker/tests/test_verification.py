@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from test_server import server
 from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, MAX_BROWSERS, Verification
@@ -162,6 +162,84 @@ class VerificationTests(unittest.TestCase):
         core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "lease"})
         self.assertNotIn("private", json.dumps(result))
 
+    def test_kiosk_captures_join_browser_evidence_and_survive_reload(self):
+        """Attach every matching display to the same turn and retain its image after reloading task metadata."""
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
+        original_popen = subprocess.Popen
+
+        def launch(_args, **kwargs):
+            """Exercise browser stdin and screenshot storage without launching Chromium."""
+            script = ("import json,sys; from pathlib import Path; p=json.load(sys.stdin); "
+                      f"[(Path(p['directory'])/(name+'.png')).write_bytes({png!r}) for name in ('desktop','mobile')]; "
+                      "print(json.dumps({'status':'captured','screenshots':[{'name':'desktop'},{'name':'mobile'}]}))")
+            return original_popen([sys.executable, "-c", script], **kwargs)
+
+        targets = [{"entity_id": "image.renamed_tablet", "name": "Hall tablet"},
+                   {"entity_id": "image.second_tablet", "name": "Kitchen tablet"}]
+
+        def core(method, path, **kwargs):
+            """Return only the kiosk targets selected by the authenticated Home Assistant endpoint."""
+            if path == "codex_cli/kiosk_screenshots":
+                self.assertEqual(kwargs["json"], {"path": "/dashboard-home/default_view"})
+                return {"screenshots": targets}
+            return {"session_id": "lease", "url": "http://homeassistant:8123"}
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status_code = 200
+        response.iter_content.side_effect = lambda _size: iter([png])
+        with patch.object(self.engine, "core", side_effect=core), \
+             patch("verification.requests.post", return_value=response) as capture, \
+             patch.object(server, "ha_token", return_value="supervisor-secret"), \
+             patch.object(server, "api_token", return_value="paired-secret"), \
+             patch("verification.subprocess.Popen", side_effect=launch):
+            result = self.engine.run("chat", {"operation": "dashboard", "path": "/dashboard-home/default_view"})
+        self.assertEqual(result["status"], "captured")
+        self.assertEqual([item["entity_id"] for item in result["kiosk_screenshots"]],
+                         [item["entity_id"] for item in targets])
+        self.assertEqual(len(result["image_paths"]), 4)
+        for call, target in zip(capture.call_args_list, targets):
+            self.assertEqual(call.args, ("http://supervisor/core/api/codex_cli/kiosk_screenshots",))
+            self.assertEqual(call.kwargs["json"], {"path": "/dashboard-home/default_view",
+                             "entity_id": target["entity_id"], "worker_token": "paired-secret"})
+            self.assertEqual(call.kwargs["headers"], {"Authorization": "Bearer supervisor-secret"})
+            self.assertFalse(call.kwargs["allow_redirects"])
+        saved = json.loads((server.get_task_dir("chat") / "task.json").read_text())
+        self.assertEqual(len(saved["verification_attachments"]), 4)
+        server.tasks["chat"] = saved
+        client = server.app.test_client()
+        for item in saved["verification_attachments"]:
+            with patch.object(server, "is_ingress_request", return_value=True):
+                self.assertEqual(client.get(item["url"]).data, png)
+        self.assertNotIn("secret", json.dumps(saved))
+
+    def test_kiosk_absence_is_silent_and_failed_images_do_not_stop_other_devices(self):
+        """Skip absent integrations, unmatched devices, failed captures and oversized images without losing later captures."""
+        turn_id = server.tasks["chat"]["current_turn_id"]
+        with patch.object(self.engine, "core", return_value={"screenshots": []}), \
+             patch("verification.requests.post") as capture:
+            self.assertEqual(self.engine.kiosk_images("chat", "/lovelace/0", turn_id, self.capability), [])
+            capture.assert_not_called()
+        with patch.object(self.engine, "core", side_effect=ValueError("Home Assistant returned HTTP 404")):
+            self.assertEqual(self.engine.kiosk_images("chat", "/lovelace/0", turn_id, self.capability), [])
+        responses = [MagicMock() for _ in range(3)]
+        for response in responses:
+            response.__enter__.return_value = response
+            response.status_code = 200
+        responses[0].status_code = 404
+        responses[1].iter_content.return_value = [b"x" * (5 * 1024 * 1024 + 1)]
+        responses[2].iter_content.return_value = [b"\x89PNG\r\n\x1a\n" + b"\0" * 16]
+        targets = [{"entity_id": f"image.tablet_{index}"} for index in range(3)]
+        with patch.object(self.engine, "core", return_value={"screenshots": targets}), \
+             patch("verification.requests.post", side_effect=responses):
+            images = self.engine.kiosk_images("chat", "/lovelace/0", turn_id, self.capability)
+        self.assertEqual([item["entity_id"] for item in images], ["image.tablet_2"])
+        self.engine.end("chat")
+        with patch.object(self.engine, "core", return_value={"screenshots": targets}), \
+             patch("verification.requests.post") as capture:
+            self.assertEqual(self.engine.kiosk_images("chat", "/lovelace/0", turn_id, self.capability), [])
+            capture.assert_not_called()
+
     def test_snapshot_excludes_credentials_but_manifest_detects_changes(self):
         """Credential files stay out of the archive but in change detection."""
         for name in ("secrets.yaml", ".storage/auth", ".storage/auth_provider.homeassistant", ".storage/core.config_entries", ".storage/lovelace"):
@@ -256,6 +334,7 @@ class VerificationTests(unittest.TestCase):
                 else:
                     self.assertEqual(result["memory_limit_mib"], limit)
                     self.assertEqual(result["memory_peak_mib"], measured)
+                    self.assertNotIn("kiosk_screenshots", result)
                 core.assert_called_with("DELETE", "codex_cli/browser_session", json={"session_id": "lease"})
 
     @unittest.skipIf(os.name == "nt", "Linux container process accounting")

@@ -71,6 +71,24 @@ Core versions before 2026.10 also require administrator access for
 through, but those versions of Home Assistant can still refuse them. The result
 explains the account restriction; an extra browser approval cannot resolve it.
 
+## Fully Kiosk screenshots
+
+With the worker app and Codex integration at **0.1.79** or newer, dashboard
+inspections also request fresh images from Home Assistant's
+[Fully Kiosk Browser integration](https://www.home-assistant.io/integrations/fully_kiosk/).
+Enable the device's **Current page** sensor and **Screenshot** image entity.
+The reported URL must belong to this Home Assistant installation and match the
+requested dashboard and view path. Query flags such as `?kiosk` and a trailing
+slash do not affect matching. Renamed entities are supported.
+
+The worker fetches images through the paired Codex integration, separately from
+the temporary browser account. It does not navigate, refresh, or wake devices.
+Matching uses the current-page sensor's reported URL, and the image is whatever
+the screenshot entity supplies. Devices on other views are skipped silently;
+unavailable or oversized images are omitted. Each image is limited to **5 MiB**
+and uses the same authenticated storage and seven-day retention as browser
+screenshots. Matching devices can add images beyond the two browser viewports.
+
 ## Approving additional browser requests
 
 After an inspection, open its verification result and choose requests under
@@ -204,10 +222,11 @@ for that operation; it does not allow other installed apps' logs.
 
 ## Dashboard resources
 
-Update both the worker and integration to **0.1.62**, followed by a Home
-Assistant restart, to discover custom integrations' static routes, including
-individual files on Core 2026.9.4. Older brokers
-still support the original built-in paths but cannot supply the new route list.
+Update the worker and integration together, then restart Home Assistant, to use
+the current resource and permission support. Static-route discovery, including
+individual files on Core 2026.9.4, requires integration **0.1.62** or newer.
+Older integration versions support the original built-in paths but cannot
+supply the registered route list.
 
 Core supplies registered static file and directory URLs, never filesystem paths.
 This allows assets such as Browser Mod, custom icons, navigation modules, and
@@ -217,10 +236,10 @@ The read-only `recorder/statistic_during_period` and `camera/capabilities`
 commands are supported.
 Custom Icons' active-set, list, cache, and single-icon reads are supported with
 bounded set/icon names; icon selection and download operations remain blocked.
-Knob Swipe Navigation's configuration read is supported. Its live knob-event
-subscriptions and navigation-result writes remain blocked, as do Browser Mod
-connection/registration requests. Features depending on them may still report
-blocked requests.
+Knob Swipe Navigation's configuration read and passive rotation subscriptions
+are supported. Its navigation-result writes remain blocked, as do Browser Mod
+connection/registration requests. Features depending on those blocked operations
+may still report restricted requests.
 
 Same-origin scripts and stylesheets explicitly registered as Core frontend modules
 or Lovelace resources can also load through custom HTTP views. Only the exact
@@ -278,8 +297,10 @@ HTTP errors, and invalid dashboard templates still require separate fixes.
   writes during initialization may not be available.
 - At most 24 checks and four browser runs per turn, plus up to four approved
   retries, one at a time. Each browser run
-  has a 110-second deadline, a sampled process-tree memory budget, and two
-  fixed-size images capped at 5 MiB each. **Browser memory limit (MiB)** in the app's
+  has a 110-second browser deadline, a sampled process-tree memory budget, and two
+  fixed-size browser screenshots capped at 5 MiB each. Matching Fully Kiosk
+  devices can add separate screenshots after the browser run.
+  **Browser memory limit (MiB)** in the app's
   Configuration tab (`browser_memory_limit_mib`) defaults to 1536 MiB (1.5 GiB)
   and accepts 512 to 8192 MiB. Raise it for larger dashboards when the host has
   enough available memory; lower it for smaller systems. It applies to each new
@@ -322,30 +343,34 @@ Live browser verification has been confirmed working by the maintainer on their
 Home Assistant installation. Custom-card compatibility remains subject to the
 resource and permission limits above.
 
-Run `pytest`. Tests under `tests/ha` use real Home Assistant authentication.
-`python tests/codex_verification_smoke.py` uses the pinned CLI and a local mock model
+Run commands from the repository root. The full `pytest` suite needs Linux
+(or WSL on Windows), Python 3.14, and the Home Assistant test dependencies; see
+[Testing](../CONTRIBUTING.md#testing). Tests under `codex-cli-worker/tests/ha`
+use real Home Assistant authentication.
+`python codex-cli-worker/tests/codex_verification_smoke.py` uses the pinned CLI and a local mock model
 endpoint to check MCP discovery and real entity-tool calls in both sandbox modes,
 while confirming that shell socket connections remain denied. Set `HA_TEST_CODEX`
 to the pinned CLI binary when it is not at `/usr/local/bin/codex`. No model account
 or paid request is involved.
-`node tests/browser_verification.cjs` uses real Chromium and a protocol fixture to
+`node codex-cli-worker/tests/browser_verification.cjs` uses real Chromium and a protocol fixture to
 check viewports, external auth, registered local resources, blocked writes, broken resources/cards, rejected
 authentication, and cleanup. Provide `playwright-core` and `ws` on `NODE_PATH` and
 set `HA_BROWSER_EXECUTABLE` when Chromium is not at `/usr/bin/chromium-browser`.
-`node tests/browser_resources.cjs` tests static-resource permissions and the
+`node codex-cli-worker/tests/browser_resources.cjs` tests static-resource permissions and the
 external HTTPS transport, including header stripping, DNS pinning, private
 addresses, redirect revalidation, and response limits, without external requests.
-`node tests/browser_permissions.cjs` tests approval eligibility, exact matching,
+`node codex-cli-worker/tests/browser_permissions.cjs` tests approval eligibility, exact matching,
 request-ID correlation and bounded evidence without a browser, and checks that
 the worker's Python validator agrees with the controller on the same requests.
 
 Set `HA_BROWSER_NODE=node` to include the real Home Assistant frontend test under
-`tests/ha`. CI runs broker discovery and the real frontend capture on Core
-2026.6.1 and 2026.9.4, covering both HTTP static-file implementations. The browser
+`codex-cli-worker/tests/ha`. CI runs broker discovery and the real frontend capture on Core
+2026.6.1, 2026.9.4, and 2026.10.3, covering both HTTP static-file implementations
+and compatibility with Core 2026.10. The browser
 uses the broker's discovered resources rather than a hand-written resource list.
 CI also builds both container architectures. Fixture tests are not a
 deployment test of a user's HAOS kernel, AppArmor policy, or installed custom cards.
 
-References: [app authentication](https://developers.home-assistant.io/docs/apps/communication/),
-[external authentication](https://developers.home-assistant.io/docs/frontend/external-authentication/),
+References: [app authentication](https://contributors.home-assistant.io/apps/guides/communication/),
+[external authentication](https://contributors.home-assistant.io/frontend/reference/external-auth/),
 and [WebSocket routing](https://playwright.dev/docs/api/class-websocketroute).

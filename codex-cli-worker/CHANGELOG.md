@@ -25,7 +25,7 @@ Update the worker app and integration to **0.1.78**, then restart Home Assistant
 - Added batch approval of additional dashboard browser requests, with capture-only retries and optional remembered permissions for the Home Assistant installation and dashboard view that survive restarts.
 - Added permission inspection and revocation in Settings, stale-request rejection, bounded storage, approval history, and cancellation of captures using revoked permissions. Unsupported saved entries are ignored individually, and an unreadable permissions file can be removed from Settings.
 - Added a bounded raster map capability that keeps map tokens outside page scripts. Kept known controls, writes, URL signing and camera signaling blocked; physical WallPanel observation is separate.
-- The dashboard browser now opens Home Assistant's WebSocket itself, so page scripts can no longer reach the real connection or access token, or send commands past the read-only checks.
+- Moved Home Assistant's WebSocket connection into the dashboard browser controller, keeping the real connection and access token outside page scripts and enforcing the read-only checks.
 
 Update the worker app and integration to **0.1.77**, then restart Home Assistant.
 
@@ -64,8 +64,8 @@ Update the **Codex CLI Worker** app to **0.1.73** for the history and statistics
 - Added a **Codex needs permission** notification when a request starts waiting, through `notify_service` or as a persistent notification, so a task started by the integration or from a notification does not wait unnoticed. It points to the chat and has no buttons.
 - Kept approvals limited to one pending action, with authenticated decisions, redacted history, stale-request rejection, and expiration on cancellation, timeout, connection loss, or restart.
 - Blocked approval of hidden action details, displayed file rename destinations, and retained change checks and recovery information when a started exchange fails.
-- Input for a command that is already running outside the sandbox is shown and can only be denied, with a note that says so.
-- The activity list no longer reports a file change as made while it waits for permission or after it was denied.
+- Blocked approval of input to a command already running outside the sandbox, while showing the input and allowing it to be denied, with a note explaining the limit.
+- Kept pending and denied file changes from appearing as completed edits in the activity list.
 - Documented `danger-full-access` as the recommended mode, the existing backups, checks, and verification, and the limits of those safeguards. Kept `workspace-write` as the default.
 
 ## 0.1.71
@@ -73,7 +73,7 @@ Update the **Codex CLI Worker** app to **0.1.73** for the history and statistics
 - **The chat says when the Codex integration is missing.** The app's web UI works without the **Codex** integration, but some features need it, and it was easy to install the app alone without noticing. The web UI now shows a line at the top of the chat when the integration is not installed, when it is installed but not connected to the app, or when it is older than this app needs. The line stays in view above the messages, on desktop and on a phone, and goes away by itself once the integration is installed, up to date, and connected.
 - The app finds the integration by its files in the configuration folder and reads its version there. It knows the oldest integration version it fully works with, and the line names that version when the installed one is older. An integration counts as connected while it keeps calling the app, as it does every 30 seconds. See [how it works](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#integration-check).
 - `GET /status` reports this under `integration`: the `state` (`ok`, `starting`, `not_installed`, `outdated`, or `not_connected`), the installed `version`, and the `minimum_version`.
-- Keep the integration's status polling active when all its entities are disabled, so a working integration does not appear disconnected in the chat. Polling stops on unload and still respects the integration's system option to disable polling.
+- Kept the integration's status polling active when all its entities are disabled, so a working integration does not appear disconnected in the chat. Polling stops on unload and still respects the integration's system option to disable polling.
 
 Update the **Codex CLI Worker** app and the **Codex** integration to **0.1.71**, then restart Home Assistant, for the line and the status polling change.
 
@@ -388,7 +388,7 @@ Update both the **Codex CLI Worker** app and the **Codex** HACS integration to *
 ## 0.1.35
 
 - Added optional add-on configuration for writing `/config/AGENTS.md` before Codex runs.
-- Added a masked optional `HA_TOKEN` add-on option and pass it to Codex subprocesses as an environment variable.
+- Added a masked optional `HA_TOKEN` add-on option and passed it to Codex subprocesses as an environment variable.
 
 ## 0.1.34
 
@@ -406,7 +406,7 @@ Update both the **Codex CLI Worker** app and the **Codex** HACS integration to *
 ## 0.1.32
 
 - Added separate timestamp sensors for Codex 5-hour and weekly reset times.
-- Fire a `codex_cli_task_result` Home Assistant event whenever a Codex task completes, fails, or needs input. The event data includes the final Codex response and task metadata.
+- Fired a `codex_cli_task_result` Home Assistant event whenever a Codex task completed, failed, or needed input. The event data included the final Codex response and task metadata.
 
 ## 0.1.31
 
@@ -454,7 +454,7 @@ Update both the **Codex CLI Worker** app and the **Codex** HACS integration to *
 - Added best-effort interactive usage probing through a pseudo-terminal to collect Codex `/status` usage lines.
 - Exposed parsed 5-hour and weekly usage lines in worker `/status` responses.
 - Added integration sensors for 5-hour and weekly usage status lines.
-- Refresh usage status on startup (when logged in), after tasks finish, after login completes, and via periodic status polling.
+- Refreshed usage status on startup (when logged in), after tasks finished, after login completed, and via periodic status polling.
 - Hardened the usage probe so it uses a stable terminal size, defers while tasks are running, and preserves captured output if the TUI exits quickly.
 
 ## 0.1.22
@@ -473,7 +473,7 @@ Update both the **Codex CLI Worker** app and the **Codex** HACS integration to *
 ## 0.1.20
 
 - Added the `model_reasoning_effort` app option with a dropdown for `minimal`, `low`, `medium`, `high`, and `xhigh`.
-- Pass the selected reasoning effort to every `codex exec` run using the per-run Codex CLI config override.
+- Passed the selected reasoning effort to every `codex exec` run using the per-run Codex CLI config override.
 - Documented the reasoning effort choices and their speed/quota tradeoffs.
 
 ## 0.1.19

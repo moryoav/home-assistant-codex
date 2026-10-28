@@ -22,11 +22,15 @@ In `/health`, `sandbox_readiness.namespace_probe.codex_probe` reports the actual
 
 ## Automated tests
 
-Run from the repository root:
+Run the standalone worker tests from the repository root:
 
 ```sh
 python -m unittest discover -s codex-cli-worker/tests -v
 ```
+
+For the full suite, including the Home Assistant integration tests, run `pytest`
+in a Linux or WSL environment with the dependencies described in
+[Testing](../CONTRIBUTING.md#testing).
 
 The fake-Bubblewrap tests cover both true-command paths, recognized error reasons and line endings, unchanged unrelated errors, successful probes, capability dropping, preserved descriptors and signal termination, direct-exec PID identity, help/version calls, and task arguments that must not be mistaken for the internal probe. Readiness tests cover both sandbox modes, real-probe failures despite raw namespace success, timeouts, missing CLI, and unrestricted-mode bypass.
 
@@ -34,7 +38,7 @@ These tests do not prove HAOS/AppArmor compatibility or filesystem isolation on 
 
 ## HAOS verification before release
 
-Build/install this branch as a test worker image; keep the existing protection and AppArmor settings. On the affected HAOS installation, verify both `read-only` and `workspace-write`, not just `danger-full-access`.
+For changes to the wrapper or pinned CLI, build and install a candidate worker image in a test environment, keeping the existing protection and AppArmor settings. On the affected HAOS installation, verify both `read-only` and `workspace-write`; a successful `danger-full-access` run does not test the sandbox.
 
 From a shell **inside the worker container**, the basic execution checks are:
 
@@ -53,4 +57,4 @@ Repeat the basic checks on a host where fresh `/proc` mounting succeeds. A succe
 
 ## Removing the workaround
 
-Once the pinned upstream CLI recognizes both proc error formats, remove the special-probe branch/helper and its Docker copy. Retain the real Codex readiness check and fail-closed tests. Verify the affected HAOS setup before removing compatibility code or declaring issue #9 resolved.
+Once the pinned upstream CLI recognizes both proc error formats, remove the wrapper's special-probe path, the helper, and its Docker copy. Retain the real Codex readiness check and fail-closed tests. Verify the affected HAOS setup before removing compatibility code or declaring issue #9 resolved.

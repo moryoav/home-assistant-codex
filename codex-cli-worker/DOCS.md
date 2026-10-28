@@ -34,12 +34,17 @@ Assistant password or manually created token. Tasks can also fetch fresh entity
 states, read Core logs, and check configuration. See [verification tools,
 authentication, screenshots, and limits](VERIFICATION.md).
 
-From 0.1.61, dashboard captures also load integrations' registered static assets
-and supported public HTTPS scripts, styles, and fonts. Update **both** the app and
-integration to **0.1.62** and restart Home Assistant for static-route discovery,
-including individual static files on Core 2026.9.4.
-Repeated findings are grouped by cause and viewport. Service calls and writes
-remain blocked. See [resource compatibility and privacy](VERIFICATION.md#dashboard-resources).
+Dashboard captures load integrations' registered static assets and supported
+public HTTPS scripts, styles, fonts, and images. Update **both** the app and
+integration together, then restart Home Assistant, to use the current resource
+and permission support. Repeated findings are grouped by cause and viewport.
+The browser blocks service calls and writes. See
+[resource compatibility and privacy](VERIFICATION.md#dashboard-resources).
+
+With the app and integration at **0.1.79** or newer, inspections also collect
+fresh screenshots from matching Fully Kiosk devices. See
+[Fully Kiosk screenshots](VERIFICATION.md#fully-kiosk-screenshots) for requirements
+and matching rules.
 
 **Enable built-in browser** in the app's **Configuration** tab controls dashboard
 inspection and screenshots. The browser uses RAM while it runs. Turn this off
@@ -83,7 +88,7 @@ means = [point["mean"] for point in series["points"] if point.get("mean") is not
 print({"buckets_with_mean": len(means), "lowest_mean": min(means) if means else None})
 ```
 
-Limits: up to 16 distinct IDs; seven days for raw history and 366 days for statistics; 64 queries per exchange, with one in progress at a time. `max_points` defaults to 1,000 and accepts up to 5,000, shared fairly across requested IDs, with unused shares and integer remainders redistributed. Each series in the file reports `available_points`, `returned_points`, and `truncated`. A truncated series contains only its first points and cannot represent the whole window. Query a smaller window, fewer IDs, or coarser statistics before analyzing a complete period. Responses from Home Assistant are limited to 1 MiB, each saved file to 4 MiB, and temporary files to 32 MiB per exchange. Receipts are limited to 8 KiB. Large requests fail with guidance to narrow the query; a full storage budget requires a new exchange. Statistics queries are also rejected before reaching Core when their expected bucket count exceeds 10,000. Files avoid the model's output limit; bounded queries still protect Home Assistant, memory and disk use. Longer analyses can use several smaller time windows, calculating compact summaries from each file.
+Limits: up to 16 distinct IDs; seven days for raw history and 366 days for statistics; 64 queries per exchange, with one in progress at a time. `max_points` defaults to 1,000, must be at least the number of requested IDs, and accepts up to 5,000. Points are shared fairly across requested IDs, with unused shares and integer remainders redistributed. Each series in the file reports `available_points`, `returned_points`, and `truncated`. A truncated series contains only its first points and cannot represent the whole window. Query a smaller window, fewer IDs, or coarser statistics before analyzing a complete period. Responses from Home Assistant are limited to 1 MiB, each saved file to 4 MiB, and temporary files to 32 MiB per exchange. Receipts are limited to 8 KiB. Large requests fail with guidance to narrow the query; a full storage budget requires a new exchange. Statistics queries are also rejected before reaching Core when their expected bucket count exceeds 10,000. Files avoid the model's output limit; bounded queries still protect Home Assistant, memory and disk use. Longer analyses can use several smaller time windows, calculating compact summaries from each file.
 
 `no_statistics` means the ID has no recorder statistics metadata; `no_data` means no points were returned for the period. Empty history can mean an entity is unrecorded, unavailable to the API, or its history has been purged. It does not establish a constant state. Home Assistant's recorder settings determine retention and which sensors provide statistics; these tools cannot recover purged measurements or add statistics to an unsupported entity.
 
@@ -94,9 +99,9 @@ API references: [Home Assistant REST history](https://developers.home-assistant.
 ## Local Home Assistant documentation
 
 From **0.1.70**, the worker keeps a copy of the official Home Assistant
-documentation in private app storage. Codex searches those files directly
-instead of running a web search for each documentation question, which is
-faster and always uses the official pages. Web search remains available for
+documentation in private app storage. The task prompt instructs Codex to search
+those files before using web search for Home Assistant documentation.
+Web search remains available for
 custom integrations, custom cards, and anything the documentation does not cover.
 
 The copy is the Markdown source of www.home-assistant.io, from the `current`
@@ -104,8 +109,9 @@ branch of [home-assistant/home-assistant.io](https://github.com/home-assistant/h
 It contains the integration pages, the action, trigger, condition, and template
 function references, the dashboard card pages, and the automation, script,
 blueprint, and configuration guides. Images, blog posts, and changelogs are not
-downloaded. The copy has about 3,600 files and uses about 25 MB in
-`/data/ha-docs`. It is left out of app backups because it can be downloaded again.
+downloaded. The files are stored under `/data/ha-docs`; their size depends on
+the upstream documentation. The copy is left out of app backups because it can
+be downloaded again.
 
 When the copy is downloaded:
 
@@ -162,7 +168,7 @@ Programmatic API calls still require the internal worker API token unless they a
 
 The app does not request host networking, Docker API access, full access, host PID/UTS access, privileged kernel capabilities, or elevated Supervisor roles. It keeps AppArmor enabled and ships a custom `apparmor.txt` profile. The `/config` mount is intentionally read-write because editing Home Assistant configuration is the core purpose of the app.
 
-For sandboxed modes, Codex uses Bubblewrap user, mount, PID, and network namespaces. Only the dedicated Bubblewrap setup binary enters a nested AppArmor profile that permits namespace setup. A wrapper forces Bubblewrap to drop all Linux capabilities before the generated command starts. On restrictive hosts that deny mounting a fresh `/proc`, Codex 0.146 and later automatically use their no-proc fallback while retaining the other namespace restrictions. That fallback can expose numeric process and file-descriptor counts from the app container, but it does not grant host PID access; sensitive process paths remain subject to kernel and AppArmor mediation.
+For sandboxed modes, Codex uses Bubblewrap user, mount, PID, and network namespaces. Only the dedicated Bubblewrap setup binary enters a nested AppArmor profile that permits namespace setup. A wrapper forces Bubblewrap to drop all Linux capabilities before the generated command starts. On hosts that deny mounting a fresh `/proc`, the bundled wrapper normalizes a narrowly recognized probe error so Codex can select its own no-proc fallback. The worker then checks that a real sandboxed command succeeds before allowing tasks to start. The fallback retains the other sandbox restrictions but can expose process metadata from the app container; it does not grant host PID access. See [the workaround and host verification steps](SANDBOX_TESTING.md).
 
 ## API Token
 
@@ -175,7 +181,7 @@ The token is not your OpenAI or ChatGPT credential. Codex authentication is stil
 The app's web UI works without the **Codex** integration, but some features need it. From **0.1.71**, the web UI shows a line at the top of the chat, above the messages, in three cases:
 
 - **Not installed:** there is no `/config/custom_components/codex_cli/manifest.json`. See [Installation](https://github.com/moryoav/home-assistant-codex#installation).
-- **Out of date:** the version in that file is lower than the oldest version this app fully works with. The line names the version to update to. Restart Home Assistant after updating.
+- **Out of date:** the version in that file is below the app's general minimum integration version. The line names the version to update to. Restart Home Assistant after updating.
 - **Installed but not connected:** the files are there, but the integration has not called the app for two minutes. It normally calls every 30 seconds. Restart Home Assistant if you have not done so since installing the integration, then add **Codex** under **Settings** > **Devices & services**.
 
 With integration **0.1.71** or newer, status polling keeps running even if all its entities are disabled. If you turn off polling in the integration's system options, the app can show "not connected" while the integration is still loaded. Turn polling back on for this check.
@@ -184,29 +190,33 @@ The line cannot be dismissed. It goes away by itself, within a minute, once the 
 
 The version is read from the installed files. After an update of the integration, Home Assistant keeps running the previous version until it restarts, and the app cannot see that.
 
+This is a general connection check, not a feature-by-feature compatibility check. Its minimum is currently **0.1.69**; newer features, including browser permissions and Fully Kiosk screenshots, need newer integration versions. Update the app and integration together even if no warning is shown.
+
 API: `GET /status` has `integration` with `state` (`ok`, `starting`, `not_installed`, `outdated`, or `not_connected`), `version` (the installed version, empty when the integration is not installed or its version cannot be read), and `minimum_version`.
 
 ## Model
 
-`codex_model` is a fixed selection to avoid typo-prone free text. The default value, `default`, lets the installed Codex CLI choose its recommended model. Explicit choices are `gpt-6-astra` for the most demanding tasks, `gpt-6.1-sol` as the latest workhorse for coding and everyday work, close to Astra at a lower cost, `gpt-6-sol` as the previous workhorse, `gpt-6-luna` for fast and affordable work on easier tasks, and the older `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Model availability depends on your account. The app bundles Codex CLI 0.160.0, which includes GPT-6.1 Sol support. Older models are no longer offered in the selector. Existing installations with the legacy `gpt-5.3-codex` value remain upgrade-compatible and treat it as `default`. `gpt-5.5` is retired: OpenAI removes it from Codex with ChatGPT sign-in on October 14, 2026. It stays in the list only so that an app with it saved keeps starting, and it runs `gpt-5.6-sol`, the next model up.
+`codex_model` is a dropdown. The default value, `default`, lets the bundled Codex CLI choose a model for your account. Explicit choices are `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Availability depends on your account. The app bundles Codex CLI **0.160.0**.
+
+The worker treats the legacy `gpt-5.3-codex` value as `default`. The retired `gpt-5.5` choice stays in the app's option list for existing installations and runs `gpt-5.6-sol`; it is not offered in the chat's model picker.
 
 `model_reasoning_effort` controls how much reasoning Codex asks supported models to use for each task. The app passes it for each exchange, through the app-server turn in sandboxed modes or a `codex exec` configuration override in full access. Available values are:
 
-- `minimal`: fastest and lowest reasoning.
+- `minimal`: legacy value, normalized to `medium`.
 - `low`: lighter reasoning.
 - `medium`: balanced default.
 - `high`: more reasoning, usually slower and more quota-intensive.
 - `xhigh`: extra reasoning where the selected model supports it.
 
-For GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna, select `low`, `medium`, `high`, or `xhigh`; `minimal` is not supported. None of the current models supports `minimal`, so the app runs `medium` when it is selected, also with the `default` model. See the [OpenAI model documentation](https://developers.openai.com/api/docs/models/gpt-6-astra) for supported reasoning levels and the [Codex models guide](https://learn.chatgpt.com/docs/models) for availability.
+The app configuration offers `low`, `medium`, `high`, and `xhigh` for all listed models. The chat also offers Max and Ultra where supported; see [Per-conversation model and reasoning](#per-conversation-model-and-reasoning). The worker maps `minimal` to `medium`, including when the model is `default`. See the [Codex models guide](https://learn.chatgpt.com/docs/models) for current availability.
 
-`reasoning_summary` controls whether Codex reports its reasoning while it works, which the chat shows in the activity list under your latest message. It is passed with each app-server turn in sandboxed modes, or as `--config model_reasoning_summary="<value>"` in full access. Codex reports no reasoning at all unless summaries are requested, so the default is on.
+`reasoning_summary` controls the reasoning summaries shown in the activity list under your latest message. It is passed with each app-server turn in sandboxed modes, or as `--config model_reasoning_summary="<value>"` in full access. Summaries must be requested for them to appear, so the default is `concise`. This setting changes the reported summaries, not the selected reasoning effort.
 
 - `concise`: short headlines such as "Checking the automation". This is the default.
 - `detailed`: asks for fuller summaries; current models still mostly return headlines.
 - `none`: no reasoning in the activity list. Commands, file edits, searches, progress notes, and tool calls are still shown.
 
-There is no web UI control for this setting; change it in the add-on configuration.
+There is no chat UI control for this setting; change it in the app configuration.
 
 ## Validation
 
@@ -234,11 +244,13 @@ From **0.1.63**, the worker no longer archives the whole configuration folder be
 
 Codex needs to be able to write to the backup folder. In `workspace-write` mode that requires `task_root` to be inside `/config`, which is the default. In `read-only` mode Codex is given no backup folder; any explicitly approved writes still need a separate recovery plan. A per-file copy depends on Codex following the instruction; if a file was changed without one, restore it from a Home Assistant backup.
 
-**Full snapshot (optional).** Turn on **Full snapshot before every message** (`full_snapshot`) to archive every tracked file to `snapshot-before.tar.gz` in the exchange's folder before Codex starts, as earlier versions did. The worker then takes the previous version of any reviewed file that Codex did not copy out of the archive, so every reviewed file has a saved copy. The archive adds a wait before every message that grows with the size of `/config`.
+**Full snapshot (optional).** Turn on **Full snapshot before every message** (`full_snapshot`) to archive tracked files, excluding known credential files, to `snapshot-before.tar.gz` in the exchange's folder before Codex starts. The worker can then recover missing per-file copies from that archive when a matching file is available. The exclusions below still apply, so this is not a complete Home Assistant backup. Creating the archive adds a wait before every message that grows with the amount of tracked data.
 
-**Cleanup.** Backups are deleted **Keep backups for (days)** (`backup_retention_days`, default 7, range 1 to 365) after their exchange ended. This covers per-file copies, full snapshots, and recovery copies made by earlier versions. The cleanup runs when the app starts, after every exchange, and once an hour while the app is idle; it skips the exchange that is running and never touches messages, logs, or attachments. Archives left by earlier versions are removed the same way once they are older than the setting. The chat notes when the saved copies of an exchange have been removed.
+**Cleanup.** **Keep backups for (days)** (`backup_retention_days`, default 7, range 1 to 365) sets how long backups are kept after an exchange ends. This covers per-file copies, full snapshots, and recovery copies made by earlier versions. Cleanup runs when the app starts, after every exchange, and once an hour; it skips the exchange that is running and leaves messages, logs, and attachments in place. Archives left by earlier versions are removed the same way once they are older than the setting. The chat notes when the saved copies of an exchange have been removed.
 
-**Change detection.** The list of files the worker records before a run holds each file's size, modification time, and SHA-256 hash. A file whose size and timestamps are unchanged since the previous scan is not read again, so only the first scan after the app starts reads every file. The list is deleted when the exchange ends; the files that changed stay recorded in `changes.json`. The worker's own task folder is left out of the list.
+**Change detection.** The list of tracked files recorded before a run holds each file's size, modification time, and SHA-256 hash. Hashes can be reused when the size and timestamps are unchanged and the file was already at rest before the previous scan. Recently changed files are read again. The exchange's baseline file is deleted when the exchange ends; detected changes stay recorded in `changes.json`.
+
+**Coverage and exclusions.** Change detection and snapshots skip symbolic links, files larger than **8 MiB**, the worker's task folder, recorder databases, and excluded folders such as `www`, `media`, `downloads`, `deps`, and caches. Selected file types, including logs, common images, audio/video files, fonts, pickle files, and `.old` files, are also excluded. See `EXCLUDED_PARTS`, `EXCLUDED_SUFFIXES`, and `should_include_file` in `server.py` for the exact list. These skipped files do not receive the worker's automatic change validation. Known credential files that are otherwise tracked remain in change detection but are excluded from backups and snapshots. Keep Home Assistant backups for recovery beyond this coverage.
 
 ## Sandbox
 
@@ -266,25 +278,27 @@ Authenticated API clients can answer a live request using `POST /tasks/<task_id>
 
 ## Codex Sign-In
 
-Use the add-on web UI or the Home Assistant service `codex_cli.start_login` to start `codex login --device-auth`.
+Choose **Settings > Sign in** in the app web UI or call the Home Assistant action `codex_cli.start_login` to start `codex login --device-auth`.
 
 Before starting sign-in, enable **Enable device code authorization for Codex** in ChatGPT: open the ChatGPT website, click your profile, open **Settings** -> **Security**, and turn on the toggle near the bottom of the page. This setting is not in the Codex website.
 
-The add-on posts a Home Assistant persistent notification containing a QR code, link, and one-time device code. The QR code opens the OpenAI device page; type the code from the same notification into that page. The add-on refreshes the notification when the code appears and detects completion automatically. You do not need to run `docker exec`.
+For a managed workspace, an administrator may need to enable device-code login in the workspace permissions. See [Codex authentication](https://learn.chatgpt.com/docs/auth#preferred-device-code-authentication-beta).
+
+The app posts a Home Assistant persistent notification containing a QR code, link, and one-time device code. The QR code opens the OpenAI device page; type the code from the same notification into that page. The app refreshes the notification when the code appears and detects completion automatically. You do not need to run `docker exec`.
 
 When opened through Home Assistant Ingress, the app web UI can start the login flow without entering the worker API token because Home Assistant already authenticated the session. Direct HTTP/API calls still require the worker API token.
 
-Use **Settings → Sign out** in the app web UI or the Home Assistant service `codex_cli.logout` to run `codex logout` and remove saved Codex CLI credentials from the worker. Logout is blocked while a Codex task is actively running.
+Use **Settings > Sign out** in the app web UI or the Home Assistant action `codex_cli.logout` to run `codex logout` and remove saved Codex CLI credentials from the worker. Logout is blocked while a Codex task is actively running.
 
 The app uses the built-in Supervisor token for Home Assistant notifications and dashboard saves through the Home Assistant Core API proxy. No Home Assistant long-lived access token is required.
 
-Codex CLI sign-in uses your ChatGPT/OpenAI account. It may work with a free ChatGPT account, but ChatGPT Plus or higher is recommended for more reasonable usage limits. This project does not use OpenAI API keys for Codex tasks.
+Sign-in uses your ChatGPT account and its Codex allowance. Availability and usage limits depend on your plan and workspace permissions. The worker does not provide an OpenAI API-key option for Codex tasks.
 
 ## AGENTS.md and HA_TOKEN
 
 The app web UI includes an editor for `/config/AGENTS.md` under **Settings**. This file remains the source of truth for shared Codex project instructions.
 
-The optional `HA_TOKEN` add-on option is passed to Codex subprocesses as the `HA_TOKEN` environment variable. Use a scoped Home Assistant token and only configure it if you want Codex tasks to call Home Assistant APIs directly.
+The optional `HA_TOKEN` app option is passed to Codex subprocesses as the `HA_TOKEN` environment variable. Configure it only if you want Codex tasks to call Home Assistant APIs directly. A Home Assistant long-lived access token inherits its user's permissions; use a dedicated user with permissions appropriate for the intended work.
 
 From **0.1.68**, a task that has `HA_TOKEN` also gets `HA_URL`, the address those calls go to, and the worker's instructions tell Codex to use the two together. The address is the **Home Assistant API URL** option (`ha_url`), which now defaults to `http://homeassistant:8123`, Home Assistant's own address inside the app network. Change it only if your Home Assistant uses HTTPS or another port. Before, Codex was given the token without an address and tended to use `http://supervisor/core`, the Supervisor's Core proxy, which rejects a Home Assistant token with HTTP 401; a reload or restart it was asked for then failed. An installation that still has `http://supervisor/core` saved in the option gets the new default, so nothing has to be changed after the update. The app's own calls to Home Assistant keep using the Supervisor proxy with the app's own token and do not use this option.
 
@@ -296,7 +310,7 @@ The worker performs a best-effort interactive probe of Codex CLI usage by starti
 
 The worker disables Codex update checks at startup. Codex CLI is installed and verified as part of the app image, so it must be updated by installing a newer app image rather than from an interactive Codex update prompt.
 
-Because Codex does not currently provide a stable non-interactive usage command, a missing window has an `unknown` sensor state and a `reported: false` attribute. The existing 5-hour entities and worker fields remain in place so upgrades do not break automations on accounts that still report or reference them. Diagnostic excerpts remove account, email, and session identifiers before being exposed.
+The worker uses this `/status` probe rather than a dedicated usage API. A missing window has an `unknown` sensor state and a `reported: false` attribute. The existing 5-hour entities and worker fields remain in place so upgrades do not break automations on accounts that still report or reference them. Diagnostic excerpts remove account, email, and session identifiers before being exposed.
 
 ## Notifications
 
@@ -308,7 +322,7 @@ Home Assistant app configuration schemas do not currently provide a Home Assista
 
 ## Human Input
 
-Runs are non-interactive. If Codex needs a decision, it returns `needs_input` with a question. The task is marked as waiting, and your answer continues it as the next message.
+Tasks run without an interactive terminal. If Codex needs a decision, it returns `needs_input` with a question. The task is marked `waiting_for_input`, and your answer continues it as the next message. Sandbox permission requests use the separate [approval flow](#permission-requests) during the running exchange.
 
 From **0.1.69**, Codex can offer up to three short answers with its question, for example **Go ahead** and **Don't change anything**. When it asks whether to go ahead with a change, it is told to say in the summary exactly what it would change.
 
@@ -367,7 +381,7 @@ From **0.1.69**, you can send the next request without waiting for a working cha
 
 Queued messages are listed under **In queue** at the top of the sidebar, in the order they will start, with their place in line. Opening one shows the message with a dashed outline and an **In queue · not sent yet** label. Until it starts, choose **Edit** to change its text (Enter saves, Escape cancels) or **Remove** to take it out of the queue. Removing the message of a chat that has not started removes that chat. Attached images wait with the message and are removed with it.
 
-Up to 50 messages can wait at once. Each chat can have one waiting message, and the chat that is working cannot queue a follow-up to itself. The model and reasoning pickers are locked for a chat while its message waits, because the message keeps the settings it was sent with.
+Up to 50 messages can wait at once. Each chat can have one waiting message, and the chat that is working cannot queue a follow-up to itself. The model and reasoning pickers are locked for a chat while its message waits. The queue keeps the chat's selected overrides; inherited app defaults are resolved when the message starts.
 
 When the running task ends, whether it completed, failed, was stopped, or needs your reply, the oldest queued message starts on its own. This also happens when the web UI is closed. The queue is stored in `/data/message_queue.json` and continues after a worker restart. A message leaves the stored queue only after its chat or exchange is saved, so if the worker stops at that moment the message is either still waiting or recorded as an interrupted exchange, never lost. If a queued follow-up can no longer start, for example because its saved session was removed, it is recorded as a failed exchange in its chat and the next message starts. Deleting a chat removes its waiting message.
 
@@ -377,7 +391,7 @@ API: `POST /tasks`, `POST /tasks/<task_id>/continue`, and `POST /tasks/<task_id>
 
 From **0.1.48**, the pill below the message box opens a model menu and a reasoning slider. Selecting a value in a saved chat saves it immediately; selections for a new chat are saved with its first message. Both persist across worker restarts. Changes apply to the next message and preserve the saved session. Controls are disabled while that conversation is running.
 
-A chat without a model of its own follows the add-on model setting. From **0.1.67**, the pill names that model instead of showing **Default**: the model set in the add-on options or, when that option is `default`, the model Codex picks for the signed-in account. The worker reads the latter from Codex's own status report when it checks the quota, and shows the model the bundled CLI recommends, GPT-6.1 Sol, until the first report. The menu marks that model, and choosing it makes the chat follow the add-on setting again. The reasoning reset button inherits the add-on reasoning setting. These can be reset independently. New and older chats without saved overrides inherit both defaults. Each new turn records its resolved `execution_settings`, so changing the defaults after a turn is queued does not alter that run or its recorded settings.
+A chat without a model of its own follows the app's model setting. From **0.1.67**, the pill names that model instead of showing **Default**: the model set in the app options or, when that option is `default`, the model Codex picks for the signed-in account. The worker reads the latter from Codex's own status report when it checks the quota, and shows GPT-6.1 Sol, the bundled CLI's default, until the first report. The menu marks that model, and choosing it makes the chat follow the app setting again. The reasoning reset button inherits the app's reasoning setting. These can be reset independently. New and older chats without saved overrides inherit both defaults. When an exchange starts, it records its resolved `execution_settings`; changing defaults later does not change that running exchange. Queued messages resolve inherited defaults when they start.
 
 The model choices match the add-on model selector, without the retired `gpt-5.5`. Supported reasoning levels follow the bundled CLI 0.160.0 catalog: Low, Medium, High, Extra High, Max and Ultra for GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, GPT-5.6 Sol and GPT-5.6 Terra; through Max for GPT-6 Luna and GPT-5.6 Luna. Ultra enables automatic task delegation. With the add-on model on `default`, the levels are those of the model Codex picks; a model the worker has no entry for gets the common Low through Extra High choices. If switching models makes a saved reasoning choice incompatible, the UI resets reasoning to the add-on default. An inherited reasoning level that the model does not support falls back to Medium. So does a level saved in a chat that follows the add-on model, when that model changes to one without the level; the saved level applies again once the model has it. A chat that had GPT-5.5 selected continues on GPT-5.6 Sol, the next model up, and keeps its reasoning level. Model availability still depends on the account; unavailable-model errors are reported by the CLI.
 
@@ -389,7 +403,7 @@ From **0.1.53**, the chat shows what Codex is doing while it works on your lates
 
 From **0.1.63**, the list starts as soon as a message is accepted. The worker reports its own steps alongside those of Codex: recording the state of the configuration files, saving a full snapshot when that option is on, starting Codex, waiting for its first response, and checking the changes afterwards. The heading shows how long the exchange has been running, and its dot pulses for as long as the run lasts.
 
-Command output is not shown by default because it can contain configuration secrets. Each command offers **Show output**, which reveals the first 2 KB after the same redaction as the task log and marks output that was cut. File edits list paths only. Long reasoning or messages are cut at 4 KB, and at most 500 steps are kept per exchange; the full record remains in the task's `codex.log`.
+Command output is not shown by default because it can contain configuration secrets. Each command offers **Show output**, which reveals up to 2,048 characters after the same redaction as the task log and marks output that was cut. File edits list paths only. Reasoning summaries and other activity text are limited to 4,000 characters per field, and at most 500 steps are kept per exchange. The task's `codex.log` retains the underlying redacted event stream.
 
 The worker keeps the steps of the running exchange in memory and writes them to `<task_root>/<task_id>/turns/<turn_id>/activity.json` once when the run ends, so the latest exchange's steps survive a page reload and a worker restart. The authenticated worker API exposes `GET /tasks/<task_id>/activity?after=<seq>`, which returns `turn_id`, `running`, `seq`, `total`, the `steps` whose sequence number is above `after`, and `elapsed_ms` while the exchange runs. A step that changes, such as a command that finishes, is returned again with a new sequence number and the same `index`. The web UI polls this endpoint once a second while a chat is working and pauses when the tab is hidden. The Home Assistant integration does not use it.
 
@@ -397,13 +411,13 @@ The worker keeps the steps of the running exchange in memory and writes them to 
 
 From **0.1.49**, images that Codex generates during a conversation appear in the chat under the response that produced them. Click an image to open it at full size, or use **Download** to save it. Images stay with their exchange across reloads, worker restarts, and continued conversations.
 
-Image generation uses the Codex CLI built-in `image_gen` tool and the signed-in ChatGPT account's Codex allowance. No OpenAI API key is required. Availability depends on the account, and the request counts toward the same quota as the rest of the task. This was verified with the bundled CLI 0.154.0 in non-interactive `codex exec` mode.
+Image generation uses Codex's built-in `image_gen` tool with the signed-in ChatGPT account. It needs no separate OpenAI API key. Tool availability and usage limits depend on the account. The app currently bundles Codex CLI 0.160.0.
 
-How the worker captures images: `codex exec --json` does not report image generation on standard output, so after each run the worker reads the session's rollout file under `/data/codex-home/sessions` and looks for completed `image_gen.generation` items recorded since the run started. Codex saves each result under `/data/codex-home/generated_images/<session_id>/`. The worker copies the file into `<task_root>/<task_id>/turns/<turn_id>/attachments/` and records metadata on that exchange. If the saved file is missing, the worker decodes the inline result from the rollout instead. The original stays where Codex saved it so follow-up edits in the same conversation keep working.
+After each run, the worker reads the session's rollout file under `/data/codex-home/sessions` and looks for completed `image_gen.generation` items that were not already present before the exchange. This works for sandboxed app-server turns and full-access `codex exec` runs, including images absent from the live event stream. Codex saves each result under `/data/codex-home/generated_images/<session_id>/`. The worker copies the file into `<task_root>/<task_id>/turns/<turn_id>/attachments/` and records metadata on that exchange. If the saved file is missing, the worker decodes the inline result from the rollout instead. The original stays where Codex saved it so follow-up edits in the same conversation keep working.
 
 The task prompt tells Codex that generated images are attached automatically and that it should leave them at the default save location unless the user asks for a file at a specific path, for example under `/config/www` for use on a dashboard.
 
-Limits and retention: only PNG, JPEG, GIF, and WebP content is accepted, checked by inspecting the file rather than trusting its name. Files larger than 25 MB and images beyond the first 12 per exchange are skipped and noted in the task log. Attachments are retained with the task history and are removed when the task directory is deleted; there is no automatic expiry. Generated images are private to the worker and are not written to `/config/www`.
+Limits and retention: only PNG, JPEG, GIF, and WebP content is accepted, checked by inspecting the file rather than trusting its name. Files larger than 25 MiB and images beyond the first 12 per exchange are skipped and noted in the task log. Attachments are retained with the task history and are removed when the task directory is deleted; there is no automatic expiry for generated images. The worker serves them through its authenticated attachment API and does not publish them under `/config/www`; Codex can copy an image there if you request it.
 
 API: `GET /tasks/<task_id>/attachments/<attachment_id>` returns the image with its recorded content type and `X-Content-Type-Options: nosniff`. Add `?download=1` for a download disposition. The endpoint requires the worker API token or an authenticated Home Assistant Ingress session. Before sending, it re-checks the stored file's size, SHA-256, and image signature against the recorded metadata, and returns HTTP 404 for unknown, missing, oversized, or altered files. `GET /tasks/<task_id>` and `codex_cli.get_task` include an `attachments` list on each turn and on the task-level result for the latest exchange. Each entry has `attachment_id`, `kind` (`image`), `name`, `mime_type`, `size`, `sha256`, `created_at`, `revised_prompt`, `generation_id`, `path` (relative to the task directory), and `url` (relative to the worker). The `codex_cli_task_result` event includes the same `attachments` list; it is empty for cancelled and failed launches.
 
@@ -413,13 +427,13 @@ If an image does not appear, open the task log and look for `Skipped image gener
 
 From **0.1.51**, you can attach images to a message: a screenshot of a dashboard problem, a photo of a device, or a design mockup. Use the paperclip button next to the model pill, paste an image from the clipboard into the message box, or drop image files onto the composer. Pending images appear above the message box with a remove button and go out with the next message, in a new chat or when continuing a saved one. They then appear with your message in the conversation and stay with it across reloads and worker restarts.
 
-Codex receives each image with the message through the CLI `--image` option (`codex exec --image` for a new chat, `codex exec resume --image` for a continued one; both verified with the bundled CLI 0.154.0), and the task prompt names the attached files. The images become part of the Codex session, so later turns in the same chat can still refer to them. They also count toward the context of every later turn in that chat, which is why the UI shrinks images whose longest edge exceeds 2048 pixels before uploading.
+Codex receives each image with the message as a `localImage` input in sandboxed app-server turns. In `danger-full-access`, the worker uses `codex exec --image` for a new chat or `codex exec resume --image` for a continued one. The task prompt also names the attached files. Images become part of the saved session and can contribute to the context of later turns, so the UI resizes images whose longest edge exceeds 2048 pixels before uploading.
 
 In the Home Assistant Android app, the paperclip picks one image at a time; use it again to add more. The app's file chooser returns nothing when a multi-select picker is used, so the web UI asks Android WebViews for a single selection. Paste and drag-and-drop still accept several images at once.
 
-Limits: PNG, JPEG, GIF, and WebP only, checked by inspecting the bytes rather than the file name; at most 6 images per message and 10 MB per image after resizing. Attached images are stored under `<task_root>/<task_id>/turns/<turn_id>/attachments/`, are served only through the authenticated worker, are never written to `/config/www`, and are removed with the chat.
+Limits: PNG, JPEG, GIF, and WebP only, checked by inspecting the bytes rather than the file name; at most 6 images per message and 10 MiB per image after resizing. The worker stores attached images under `<task_root>/<task_id>/turns/<turn_id>/attachments/`, serves them through its authenticated API, and removes them with the chat. It does not publish uploads under `/config/www`.
 
-API: `POST /tasks`, `POST /tasks/<task_id>/continue`, and `POST /tasks/<task_id>/reply` accept an optional `attachments` list of `{"name": "shot.png", "data": "<base64>"}` objects; a `data:` URL prefix is tolerated. Invalid entries return HTTP 400 and no task or turn is created, and requests over roughly 81 MB return HTTP 413. Each turn in `GET /tasks/<task_id>` and `codex_cli.get_task` lists its uploads under `prompt_attachments` with the same fields as generated images plus `origin: "user"`; generated images now carry `origin: "codex"`. `GET /tasks/<task_id>/attachments/<attachment_id>` serves both kinds with the same checks. The `attachments` list on the task result and in the `codex_cli_task_result` event still contains only images generated by Codex.
+API: `POST /tasks`, `POST /tasks/<task_id>/continue`, and `POST /tasks/<task_id>/reply` accept an optional `attachments` list of `{"name": "shot.png", "data": "<base64>"}` objects; a `data:` URL prefix is tolerated. Invalid entries return HTTP 400 and no task or turn is created, and requests over roughly 81 MiB return HTTP 413. Each turn in `GET /tasks/<task_id>` and `codex_cli.get_task` lists its uploads under `prompt_attachments` with the same fields as generated images plus `origin: "user"`; generated images carry `origin: "codex"`. `GET /tasks/<task_id>/attachments/<attachment_id>` serves both kinds with the same checks. The `attachments` list on the task result and in the `codex_cli_task_result` event contains only images generated by Codex.
 
 ### Managing chats
 
@@ -427,7 +441,7 @@ From **0.1.50**, each chat in the sidebar has an actions menu. On desktop, hover
 
 **Pin chat** keeps the conversation at the top of the list under a **Pinned** heading, ahead of the recently active chats; **Unpin chat** returns it to the recent list. **Rename** opens a dialog for a new title, which appears in the sidebar and the conversation header. Neither action changes the chat's `updated_at` time or its saved messages. **Delete** asks for confirmation, then removes the conversation and its saved history. The delete action is unavailable while that chat is running; stop the task first.
 
-Deleting a chat removes `<task_root>/<task_id>/`, including prompts, output, backups, and attachments, and the entry from the task index. The worker also removes the Codex session rollout file under `/data/codex-home/sessions` and any generated images under `/data/codex-home/generated_images/<session_id>/` so the conversation cannot be resumed or recovered from the add-on data. This cannot be undone.
+Deleting a chat removes `<task_root>/<task_id>/`, including prompts, output, backups, and attachments, and the entry from the task index. The worker also attempts to remove the Codex session rollout file under `/data/codex-home/sessions` and generated images under `/data/codex-home/generated_images/<session_id>/`. Failures to remove those session files are logged. Deletion cannot be undone in the chat UI and does not erase copies in separate Home Assistant backups.
 
 API: `POST /tasks/<task_id>/pin` with `{"pinned": true}` or `{"pinned": false}` returns the saved state. `POST /tasks/<task_id>/title` with `{"title": "Porch lights"}` trims and collapses whitespace, rejects empty titles and titles longer than 200 characters with HTTP 400, and returns the stored title. Both work on running chats and return HTTP 404 for unknown tasks and HTTP 500 if the metadata could not be written, in which case the previous values are kept. `DELETE /tasks/<task_id>` returns HTTP 409 for queued or running tasks, HTTP 404 for unknown tasks, and HTTP 500 if the task files could not be removed, in which case the chat stays listed. Summary entries from `GET /tasks?summary=true` include a `pinned` flag, and `order=pinned_first` lists pinned chats before the others while keeping the most recently updated first within each group. The `codex_cli.list_tasks` action keeps its existing `created_asc` and `updated_desc` orders.
 

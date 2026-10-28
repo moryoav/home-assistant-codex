@@ -1,8 +1,8 @@
 # Code of Conduct
 
-## Our Pledge
+## My Pledge
 
-We want Codex for Home Assistant to be a welcoming project for people with different backgrounds, skill levels, and Home Assistant setups.
+I want Codex for Home Assistant to be a welcoming project for people with different backgrounds, skill levels, and Home Assistant setups.
 
 Contributors, maintainers, and users are expected to participate respectfully and constructively in issues, pull requests, discussions, and any other project spaces.
 
@@ -32,7 +32,7 @@ Examples of behavior that is not acceptable:
 
 Maintainers may remove comments, close issues or pull requests, limit participation, or take other reasonable action when behavior harms the project or its community.
 
-If you see behavior that violates this Code of Conduct, please report it to the project maintainer. If the issue involves a security vulnerability, follow `SECURITY.md` instead of posting exploit details publicly.
+If you see behavior that violates this Code of Conduct, please report it to me as the project maintainer. If the issue involves a security vulnerability, follow [SECURITY.md](SECURITY.md) instead of posting exploit details publicly.
 
 ## Scope
 

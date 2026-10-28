@@ -1,6 +1,6 @@
 # Contributing to Codex for Home Assistant
 
-Thanks for your interest in improving Codex for Home Assistant.
+Thank you for your interest in improving Codex for Home Assistant. I welcome bug reports, documentation updates, and code contributions.
 
 This project has two main parts:
 
@@ -19,7 +19,7 @@ Small fixes, documentation updates, and clearly scoped bug fixes can usually go 
 
 When reporting a bug, please include:
 
-- The version of Codex for Home Assistant you are using.
+- Both the worker app and Codex integration versions.
 - Your Home Assistant version.
 - Whether you installed through HACS, manually, or from the development branch.
 - Your architecture, such as `amd64` or `aarch64`.
@@ -56,7 +56,7 @@ The repository layout is:
 codex-cli-worker/              Home Assistant app/add-on worker
 custom_components/codex_cli/   Home Assistant custom integration
 examples/                      Example Home Assistant scripts
-.github/workflows/             GitHub Actions build workflow
+.github/workflows/             GitHub Actions validation, test, build, and release workflows
 ```
 
 For local Home Assistant testing, install or copy the integration into:
@@ -65,7 +65,7 @@ For local Home Assistant testing, install or copy the integration into:
 /config/custom_components/codex_cli
 ```
 
-For worker app testing, add this repository as a Home Assistant app/add-on repository and use a development branch when needed.
+For worker app testing, add this repository as a Home Assistant app repository. To use a development branch, append `#branch-name` to the repository URL. That branch selection applies only to the worker app; install integration changes from the branch manually.
 
 ## Pull Request Guidelines
 
@@ -83,6 +83,22 @@ If you change the worker app version, update the relevant version fields consist
 ## Testing
 
 Before opening a pull request, test the parts you changed as much as practical.
+
+Run the full Python suite from the repository root:
+
+```sh
+pytest
+```
+
+The Home Assistant tests need Linux and Python 3.14. Use WSL on Windows because Home Assistant imports Unix-only modules such as `fcntl`. The [verification workflow](.github/workflows/verification.yaml) pins compatible Home Assistant Core and `pytest-homeassistant-custom-component` versions and lists the remaining Python and browser dependencies. Use a matching pair from that matrix when preparing a test environment. The script `codex-cli-worker/tests/install_frontend_test_deps.py` installs the extra dependencies used by the frontend tests.
+
+For the worker's standalone Python tests, without the Home Assistant pytest fixtures, run:
+
+```sh
+python -m unittest discover -s codex-cli-worker/tests -v
+```
+
+For a local chat UI check, start `python codex-cli-worker/tests/web_fixture.py`, redirecting its output to a file, then run `node codex-cli-worker/tests/browser_smoke.cjs` in another terminal with Playwright on `NODE_PATH`. Set `CODEX_CHAT_BROWSER=msedge` to use installed Edge when Playwright's Chromium is unavailable. The fixture uses temporary data and never contacts Home Assistant or starts Codex. Stop it after testing and before starting another instance on port 9137. See [verification checks](codex-cli-worker/VERIFICATION.md#validation) and [sandbox checks](codex-cli-worker/SANDBOX_TESTING.md) for those features.
 
 For integration changes, verify that Home Assistant can:
 
@@ -102,7 +118,7 @@ For worker app changes, verify that the app can:
 
 For documentation-only changes, please check that links, paths, and examples are accurate.
 
-This repository may not have a full automated test suite for every path yet, so clear manual test notes in the pull request are helpful.
+Automated tests do not cover every installed dashboard, device, or HAOS kernel. Include clear manual test notes for behavior the suite does not exercise.
 
 ## Security Notes
 
@@ -119,7 +135,7 @@ Please be especially careful with changes involving:
 
 Do not include real credentials, API tokens, device codes, private logs, or personal Home Assistant configuration in issues or pull requests.
 
-If you believe you found a security vulnerability, please do not open a public issue with exploit details. Use the project's security reporting process if available, or contact the maintainer privately.
+If you believe you found a security vulnerability, please do not open a public issue with exploit details. Follow the reporting process in [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
@@ -143,11 +159,13 @@ Stable users should use the default repository URL:
 https://github.com/moryoav/home-assistant-codex
 ```
 
-Development and canary testing may happen on the `dev` branch:
+For optional worker development and canary testing, use the `dev` branch:
 
 ```text
 https://github.com/moryoav/home-assistant-codex#dev
 ```
+
+To prepare a release, follow [Publishing Images](README.md#publishing-images). The release workflow checks version alignment, attaches the HACS ZIP, and publishes worker images. Ordinary pushes to `main` run validation and tests without creating a release or publishing images. Documentation-only changes do not need a version bump.
 
 ## Code of Conduct
 

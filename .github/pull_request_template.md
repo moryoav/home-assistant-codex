@@ -31,7 +31,7 @@ Describe the testing you performed.
 - [ ] The `codex_cli` integration can be set up or reloaded when affected.
 - [ ] The worker app starts when affected.
 - [ ] Relevant actions, entities, or UI flows were tested.
-- [ ] Documentation-only change; no runtime testing needed.
+- [ ] Documentation-only change; links, paths, examples, and factual claims were checked against the current source.
 
 ## Security and Privacy
 

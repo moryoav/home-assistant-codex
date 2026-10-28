@@ -18,7 +18,7 @@ If this project is useful to you, you can support my work:
 
 ---
 
-Run Codex CLI against your Home Assistant configuration folder from Home Assistant.
+Use Codex CLI to inspect and edit your configuration through a chat in Home Assistant.
 
 ## Example Flow
 
@@ -85,7 +85,7 @@ This repository contains two pieces:
 - Queues messages sent while another chat is working and starts them in order, with the option to edit or remove them first.
 - Offers answers to its own questions as buttons, in the chat and on mobile app notifications, so a decision takes one tap.
 - Asks Home Assistant to check the configuration after YAML edits and fails the task on errors.
-- Has Codex save the previous version of each file before changing it, reports changed files that have no saved copy, and removes the copies after a number of days you choose.
+- Instructs Codex to save a copy of each existing file before changing it, reports reviewed files without a valid copy, and removes old backups after a configurable retention period. Known credential files are excluded; see [backup coverage and limits](codex-cli-worker/DOCS.md#backups).
 - Mounts the Home Assistant config folder as `/config` inside the worker app.
 - Runs tasks non-interactively and stores task logs/results under `/config/codex_tasks`.
 - Supports Codex device-code sign-in through Home Assistant persistent notifications.
@@ -103,7 +103,7 @@ Read-only MCP tools let Codex fetch Home Assistant state history and recorder st
 
 By toggling the option **Enable built-in browser** to ON, Codex can open your Home Assistant dashboards in a real browser, capture desktop and mobile screenshots, and inspect them while working on a change. It can use those images to review the layout and revise its work. Screenshots and check results appear with the conversation, including missing cards, failed resources, and browser errors.
 
-The bundled browser signs in automatically with a temporary, local, read-only identity. No Home Assistant password or manually created token is needed. 
+The bundled browser signs in automatically with a temporary, local, read-only identity. No Home Assistant password or manually created token is needed. Matching Fully Kiosk devices can also supply screenshots of the view they are displaying. See [verification behavior and limits](codex-cli-worker/VERIFICATION.md).
 
 ## Security Notes
 
@@ -135,6 +135,9 @@ You are solely responsible for reviewing changes, keeping backups, testing safel
 This project is provided "as is", without warranty of any kind, express or implied. See the repository license for the full warranty and liability disclaimer.
 
 ## Supported Architectures
+
+The packaged setup requires Home Assistant Supervisor and app support. HACS
+requires Home Assistant **2026.5.0** or newer for this integration.
 
 Prebuilt app images are published for:
 
@@ -179,7 +182,14 @@ The app's web UI is available through Home Assistant Ingress. Do not try to open
 
 I recommend **`danger-full-access`** for working freely in Home Assistant, even though the name sounds scary. The app still offers backups, checks, and verification. `workspace-write` remains the default; in sandboxed modes, the chat shows **Allow once** and **Deny** buttons when a command or file change needs extra access. See [sandbox modes and permission requests](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#sandbox) for the scope of approvals and the limits of these safeguards.
 
-The app options include dropdowns for the Codex model and model reasoning effort. The default model selection lets the installed Codex CLI choose its current recommended model; the chat shows that model by name. You can also select GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, or GPT-6 Luna, or the older GPT-5.6 Sol, Terra, or Luna explicitly. The retired GPT-5.5 choice stays in the list so that existing setups keep starting, and runs GPT-5.6 Sol. Model availability depends on your account. `medium` reasoning is the default balance; `high` and `xhigh` can spend more time/quota. For GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna, select `low`, `medium`, `high`, or `xhigh`. `minimal` is not supported by the current models and runs `medium`. The `reasoning_summary` option controls whether Codex reports its reasoning in the chat's activity list: `concise` headlines by default, `detailed`, or `none`. The `config_check` option, on by default, has Home Assistant check its configuration after a task changes YAML files; a failing check fails the task and points to the saved previous version of the affected files. Codex saves a copy of each file before changing it; the `backup_retention_days` option, 7 by default, sets how long these copies are kept, and the `full_snapshot` option, off by default, also archives the whole configuration folder before every message and supplies the previous version of any file Codex did not copy. The `local_docs` option, on by default, keeps a local copy of the official Home Assistant documentation for Codex to search; turn it off to stop the downloads.
+The app options include dropdowns for the Codex model and reasoning effort:
+
+- **Model:** `default` lets the bundled Codex CLI choose a model for your account, which the chat shows by name. Explicit choices include GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, GPT-6 Luna, and the older GPT-5.6 Sol, Terra, and Luna. The legacy GPT-5.5 choice runs GPT-5.6 Sol. Availability depends on your account.
+- **Reasoning:** `medium` is the default. The app options offer `low`, `medium`, `high`, and `xhigh`; the legacy `minimal` value runs `medium`. The chat also offers Max and Ultra where the selected model supports them.
+- **Reasoning summaries:** `reasoning_summary` controls the activity list's reasoning summaries: `concise` headlines by default, `detailed`, or `none`.
+- **Configuration checks:** `config_check`, on by default, asks Home Assistant to check its configuration after YAML changes. An invalid result fails the task; an unavailable check is reported as unverified. Recovery information points to saved copies where available.
+- **Backups:** `backup_retention_days` defaults to 7. Codex is instructed to save per-file copies before editing; `full_snapshot`, off by default, also archives tracked configuration files before each message. Known credentials, large files, and excluded folders are not included in snapshots. See [Backups](codex-cli-worker/DOCS.md#backups).
+- **Local documentation:** `local_docs`, on by default, keeps a copy of the official Home Assistant documentation for Codex to search. Turn it off to stop downloads.
 
 The app web UI can view and save `/config/AGENTS.md`. You can also set the masked `HA_TOKEN` option when Codex tasks need a Home Assistant token in their environment. Codex then also gets `HA_URL`, the address to use with it, from the **Home Assistant API URL** option (`http://homeassistant:8123` by default).
 
@@ -194,7 +204,9 @@ Before starting sign-in, enable **Enable device code authorization for Codex** i
 
 This setting is in ChatGPT, not the Codex website.
 
-Open the app web UI and click **Start login**, or call the `codex_cli.start_login` action after the integration is installed.
+For a managed workspace, an administrator may need to enable device-code login in the workspace permissions. See [Codex authentication](https://learn.chatgpt.com/docs/auth#preferred-device-code-authentication-beta).
+
+Open the app web UI and choose **Settings > Sign in**, or call the `codex_cli.start_login` action after the integration is installed.
 
 The app sends a Home Assistant persistent notification with:
 
@@ -204,7 +216,7 @@ The app sends a Home Assistant persistent notification with:
 
 Scan the QR code or open the link, then enter the device code shown in the notification.
 
-Codex CLI sign-in uses your ChatGPT/OpenAI account. It may work with a free ChatGPT account, but **ChatGPT Plus or higher is recommended** for more reasonable usage limits. This project does not use OpenAI API keys for Codex tasks.
+Sign-in uses your ChatGPT account and its Codex allowance. Availability and usage limits depend on your plan and workspace permissions. The worker does not provide an OpenAI API-key option for Codex tasks.
 
 ### 4. Install the Integration
 
@@ -263,7 +275,7 @@ The integration exposes these Home Assistant actions:
 - `codex_cli.reply_task`
 - `codex_cli.continue_task`
 
-The integration also provides diagnostic sensors for auth status, active tasks, last task, and the usage windows reported by Codex `/status`. Depending on the account and plan, Codex may report both 5-hour and weekly limits or only a weekly limit. The existing 5-hour entities remain available for automation compatibility; when that window is omitted their state is `unknown` and their `reported` attribute is `false`. Reported usage sensors expose numeric percent states plus ISO datetime reset attributes when reset times are present.
+The integration also provides diagnostic sensors for auth status, active tasks, last task, and the usage windows reported by Codex `/status`, plus a task-running binary sensor. Usage sensors show the percentage remaining, with separate timestamp sensors for reset times. Depending on the account and plan, Codex may report both 5-hour and weekly limits or only a weekly limit. When a window is omitted, its entities remain `unknown` with `reported: false`. Reset attributes use ISO datetime strings when a reset time can be parsed, with the original text available in `reset_text`.
 
 When a Codex task completes, fails, or needs input, the worker fires a Home Assistant event named `codex_cli_task_result` in addition to the notification. Automations can listen for that event and read fields such as `task_id`, `turn_id`, `status`, `summary`, `question`, `choices`, `details`, `attachments`, and the nested `response` object from `trigger.event.data`.
 
@@ -275,6 +287,7 @@ data:
   prompt: Check my Home dashboard for broken cards and suggest fixes.
 response_variable: codex_result
 ```
+
 ### Home Assistant actions
 
 List the 10 most recently active tasks:
@@ -300,7 +313,7 @@ data:
 response_variable: continued_chat
 ```
 
-Completed, failed, cancelled, and waiting tasks can continue if their saved Codex session is available. The task ID stays the same. Each message adds a new exchange, and the task-level status and result describe the latest exchange. Only one task can run at a time. A missing session produces an error instead of silently starting a new conversation.
+Completed, failed, cancelled, and waiting tasks can continue if their saved Codex session is available. The task ID stays the same. Each message adds a new exchange, and the task-level status and result describe the latest exchange. Only one task can run at a time. The chat UI can queue messages; these Home Assistant actions return an error while another task is active or messages are already queued. A missing session produces an error instead of silently starting a new conversation.
 
 The existing `codex_cli.reply_task` action still answers tasks waiting for input. New tasks do not automatically inherit context from other chats.
 
@@ -338,7 +351,7 @@ Community-created dashboard cards are maintained in their own repositories:
 
 - [Home Assistant Codex Card](https://github.com/Rschmidt79/home-assistant-codex-card) by [Rschmidt79](https://github.com/Rschmidt79), a Lovelace chat card for starting and following Codex tasks from a Home Assistant dashboard.
 
-## Stable And Dev Branches
+## Stable and Dev Branches
 
 Use the default repository URL for stable releases:
 

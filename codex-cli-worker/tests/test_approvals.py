@@ -481,14 +481,14 @@ class ApprovalApiTests(unittest.TestCase):
 
     def test_app_server_preserves_model_images_and_hides_known_credentials(self):
         """Resume carries execution settings and image paths, with credentials hidden in its audit."""
-        server.tasks["task"]["turns"][-1]["execution_settings"] = {"model": "gpt-6-sol", "reasoning_effort": "high"}
+        server.tasks["task"]["turns"][-1]["execution_settings"] = {"model": "gpt-6.1-terra", "reasoning_effort": "ultra"}
         image = Path(self.temp.name) / "photo.png"
         with patch.object(server, "prompt_attachment_paths", return_value=[image]):
             session = server.create_approval_session("task", self.proc, "Inspect this", Path(self.temp.name) / "final", "thread", {},
                 {**server.DEFAULT_OPTIONS, "codex_sandbox": "read-only", "HA_TOKEN": "configured-private-token"})
         self.assertEqual(session.thread_params["threadId"], "thread")
-        self.assertEqual(session.thread_params["model"], "gpt-6-sol")
-        self.assertEqual(session.turn_params["effort"], "high")
+        self.assertEqual(session.thread_params["model"], "gpt-6.1-terra")
+        self.assertEqual(session.turn_params["effort"], "ultra")
         self.assertEqual(session.turn_params["input"][-1], {"type": "localImage", "path": str(image)})
         self.assertEqual(session.turn_params["sandboxPolicy"], {"type": "readOnly", "networkAccess": False})
         session.thread_id, session.turn_id = "thread", "turn"

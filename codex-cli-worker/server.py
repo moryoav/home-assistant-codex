@@ -121,11 +121,12 @@ BACKUP_RETENTION_DAYS_RANGE = (1, 365)
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 # Codex only emits reasoning items when summaries are requested; "auto" produced none.
 REASONING_SUMMARIES = {"concise", "detailed", "none"}
-# Supported choices in the bundled CLI 0.160.0 model catalog. Availability still
+# Supported choices in the bundled CLI 0.165.0 model catalog. Availability still
 # depends on the signed-in account; the CLI reports unavailable models normally.
 CHAT_MODELS = (
     ("gpt-6-astra", "GPT-6 Astra", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6.1-sol", "GPT-6.1 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-6.1-terra", "GPT-6.1 Terra", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6-sol", "GPT-6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6-luna", "GPT-6 Luna", ("low", "medium", "high", "xhigh", "max")),
     ("gpt-5.6-sol", "GPT-5.6 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
@@ -540,7 +541,7 @@ def _codex_sandbox_probe(mode: str) -> dict[str, Any]:
     if not codex:
         return {"ok": False, "error": "Codex CLI executable is unavailable."}
     try:
-        # The pinned CLI (0.160.0) takes the command directly: `codex sandbox
+        # The pinned CLI (0.165.0) takes the command directly: `codex sandbox
         # [options] -- <command>`. It has no platform subcommand, so any word
         # before `--` that is not an option is executed as the program.
         result = subprocess.run(

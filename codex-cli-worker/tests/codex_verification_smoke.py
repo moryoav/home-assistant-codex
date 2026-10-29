@@ -85,7 +85,7 @@ def assert_data_results(request):
 def main():
     """Run both CLI transports: private MCP reads work while shell networking stays sandboxed."""
     binary = os.environ.get("HA_TEST_CODEX", "/usr/local/bin/codex")
-    assert "0.160.0" in subprocess.check_output([binary, "--version"], text=True)
+    assert "0.165.0" in subprocess.check_output([binary, "--version"], text=True)
     # Private files must be outside both the workspace and writable /tmp, just
     # like /data/ha-data is outside /config in the app container.
     cache = Path.home() / ".cache"

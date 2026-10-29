@@ -642,7 +642,7 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertEqual(server.DEFAULT_OPTIONS["codex_model"], "default")
         self.assertEqual(
             config["schema"]["codex_model"],
-            "list(default|gpt-6-astra|gpt-6.1-sol|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
+            "list(default|gpt-6-astra|gpt-6.1-sol|gpt-6.1-terra|gpt-6-sol|gpt-6-luna|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5)",
         )
 
     def test_home_assistant_api_url_defaults_to_core(self) -> None:
@@ -695,7 +695,7 @@ class ModelSelectionTests(unittest.TestCase):
 
     def test_explicit_model_is_passed_to_codex(self) -> None:
         """A model named in the options is passed to Codex with --model, on a new session and on a resumed one."""
-        for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra"):
+        for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra"):
             for session_id in (None, "019fc242-910a-7c92-a17d-54c014e19fc4"):
                 with self.subTest(model=model, session_id=session_id):
                     args = self.build_args_for_model(model, session_id)

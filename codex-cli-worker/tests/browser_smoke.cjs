@@ -650,6 +650,23 @@ function pngBuffer(width = 8, height = 6) {
         document.querySelector("#effort-label").textContent === "Ultra" &&
         !document.querySelector("#effort-button").disabled,
     );
+    await page.locator("#model-button").click();
+    await page
+      .getByRole("button", { name: "GPT-6.1 Terra", exact: true })
+      .click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#model-button").textContent === "GPT-6.1 Terra" &&
+        !document.querySelector("#model-button").disabled,
+    );
+    assert.equal(await page.locator("#effort-label").textContent(), "Ultra");
+    assert.deepEqual(
+      await page.evaluate(
+        async () =>
+          (await (await fetch("tasks/preview-00")).json()).task.chat_settings,
+      ),
+      { model: "gpt-6.1-terra", reasoning_effort: "ultra" },
+    );
     // Choosing the model the add-on runs anyway clears the chat's own selection.
     await page.locator("#model-button").click();
     await page
@@ -755,7 +772,7 @@ function pngBuffer(width = 8, height = 6) {
         ),
       ["GPT-6.1 Sol✓"],
     );
-    assert.equal(await page.locator("#model-options .model-option").count(), 7);
+    assert.equal(await page.locator("#model-options .model-option").count(), 8);
     await page
       .getByRole("button", { name: "GPT-5.6 Luna", exact: true })
       .click();

@@ -87,12 +87,12 @@ class ConversationTests(unittest.TestCase):
 
     def test_model_settings_persist_and_apply_to_new_and_resumed_runs(self):
         """A chat's model and reasoning level are saved, survive a restart, and reach Codex on new and resumed runs."""
-        settings = {"model": "gpt-6-astra", "reasoning_effort": "ultra"}
+        settings = {"model": "gpt-6.1-terra", "reasoning_effort": "ultra"}
         response = self.post("/tasks", {"prompt": "Review", "chat_settings": settings})
         self.assertEqual(response.status_code, 200)
         task_id = response.json["task_id"]
         args = server.build_codex_args(task_id, self.root / "prompt", self.root / "final", None)
-        self.assertEqual(args[args.index("--model") + 1], "gpt-6-astra")
+        self.assertEqual(args[args.index("--model") + 1], "gpt-6.1-terra")
         self.assertIn('model_reasoning_effort="ultra"', args)
         self.finish(task_id)
         first = copy.deepcopy(server.tasks[task_id]["turns"][0])
@@ -216,9 +216,10 @@ class ConversationTests(unittest.TestCase):
         task_id = self.create()
         self.assertEqual(self.post(f"/tasks/{task_id}/settings", {"chat_settings": {}}).status_code, 409)
         catalog = self.client.get("/chat-options", headers=self.headers).json
-        self.assertEqual(len(catalog["models"]), 7)
+        self.assertEqual(len(catalog["models"]), 8)
         efforts = {model["id"]: model["efforts"] for model in catalog["models"]}
         self.assertEqual(efforts["gpt-6.1-sol"], ["low", "medium", "high", "xhigh", "max", "ultra"])
+        self.assertEqual(efforts["gpt-6.1-terra"], ["low", "medium", "high", "xhigh", "max", "ultra"])
         self.assertEqual(efforts["gpt-6-sol"], ["low", "medium", "high", "xhigh", "max", "ultra"])
         self.assertEqual(efforts["gpt-6-luna"], ["low", "medium", "high", "xhigh", "max"])
         self.assertNotIn("HA_TOKEN", json.dumps(catalog))

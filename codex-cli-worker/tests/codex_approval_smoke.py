@@ -18,7 +18,7 @@ from server import FINAL_RESPONSE_SCHEMA
 def main():
     """Prove allow/deny and session resume preserve the next command's sandbox."""
     binary = os.environ.get("HA_TEST_CODEX", "/usr/local/bin/codex")
-    assert "0.160.0" in subprocess.check_output([binary, "--version"], text=True)
+    assert "0.165.0" in subprocess.check_output([binary, "--version"], text=True)
     cache = Path.home() / ".cache"
     cache.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="ha-approval-smoke-", dir=cache) as temporary:

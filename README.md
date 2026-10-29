@@ -184,7 +184,7 @@ I recommend **`danger-full-access`** for working freely in Home Assistant, even 
 
 The app options include dropdowns for the Codex model and reasoning effort:
 
-- **Model:** `default` lets the bundled Codex CLI choose a model for your account, which the chat shows by name. Explicit choices include GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, GPT-6 Luna, and the older GPT-5.6 Sol, Terra, and Luna. The legacy GPT-5.5 choice runs GPT-5.6 Sol. Availability depends on your account.
+- **Model:** `default` lets the bundled Codex CLI choose a model for your account, which the chat shows by name. Explicit choices include GPT-6 Astra, GPT-6.1 Sol, GPT-6.1 Terra, GPT-6 Sol, GPT-6 Luna, and the older GPT-5.6 Sol, Terra, and Luna. The legacy GPT-5.5 choice runs GPT-5.6 Sol. Availability depends on your account.
 - **Reasoning:** `medium` is the default. The app options offer `low`, `medium`, `high`, and `xhigh`; the legacy `minimal` value runs `medium`. The chat also offers Max and Ultra where the selected model supports them.
 - **Reasoning summaries:** `reasoning_summary` controls the activity list's reasoning summaries: `concise` headlines by default, `detailed`, or `none`.
 - **Configuration checks:** `config_check`, on by default, asks Home Assistant to check its configuration after YAML changes. An invalid result fails the task; an unavailable check is reported as unverified. Recovery information points to saved copies where available.

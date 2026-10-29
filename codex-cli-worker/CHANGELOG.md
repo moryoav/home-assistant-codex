@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.80
+
+- Updated the bundled Codex CLI from 0.160.0 to 0.165.0, including fixes for session resume, compaction, retries, and cancellation.
+- Added GPT-6.1 Terra to the app options and chat model menu, with reasoning levels from Low through Ultra. Availability depends on the signed-in account.
+- Preserved the existing model defaults, saved model choices, and HAOS sandbox compatibility workaround.
+
+Update the **Codex CLI Worker** app to **0.1.80** to use GPT-6.1 Terra and the updated CLI. The **Codex** integration is also released as **0.1.80** so that both carry the same version; its code is unchanged.
+
 ## 0.1.79
 
 - Added fresh screenshots from Fully Kiosk devices displaying the dashboard view being verified, alongside the existing desktop and mobile screenshots.

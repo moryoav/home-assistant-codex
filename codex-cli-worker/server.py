@@ -2892,7 +2892,8 @@ def notify_permission(task_id: str, approval: dict[str, Any], withdrawn: threadi
     waits; a notification not delivered by then is dropped, so it cannot replace
     the one about the task's result.
     """
-    subject = "a file change" if approval.get("kind") == "file_change" else "a command"
+    subject = {"file_change": "a file change", "mcp": "an MCP request",
+               "user_input": "a requested answer"}.get(approval.get("kind"), "a command")
     reason = " ".join(str(approval.get("reason") or "").split())
     if len(reason) > PERMISSION_REASON_MAX:
         reason = reason[:PERMISSION_REASON_MAX].rstrip() + "…"
@@ -5354,7 +5355,7 @@ def decide_approval(task_id: str, approval_id: str) -> Response:
         if not session or payload.get("turn_id") != task.get("current_turn_id"):
             return jsonify({"ok": False, "error": APPROVAL_GONE}), 409
         try:
-            session.decide(approval_id, payload["decision"])
+            session.decide(approval_id, payload["decision"], payload.get("content"))
         except LookupError:
             return jsonify({"ok": False, "error": APPROVAL_GONE}), 409
         except ValueError as exc:

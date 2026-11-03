@@ -19,6 +19,9 @@ DISPLAY_LIMIT = 32000
 REQUEST_LIMIT = 50
 COMMAND_APPROVAL = "item/commandExecution/requestApproval"
 FILE_APPROVAL = "item/fileChange/requestApproval"
+MCP_ELICITATION = "mcpServer/elicitation/request"
+USER_INPUT = {"tool/requestUserInput", "item/tool/requestUserInput"}
+MCP_TIMEOUT_SECONDS = 300
 
 
 class AppServerSession:
@@ -57,6 +60,8 @@ class AppServerSession:
         self._requests: dict[str, str] = {}
         self._pending: dict[str, Any] = {}
         self._pending_files: dict[str, str] = {}
+        self._pending_mcp: dict[str, dict[str, Any]] = {}
+        self._mcp_timers: dict[str, threading.Timer] = {}
         self._records: list[dict[str, Any]] = []
         self._file_changes: dict[str, list[dict[str, Any]]] = {}
         self._final_text = ""
@@ -111,6 +116,14 @@ class AppServerSession:
             if self._closed:
                 return
             self._closed = True
+            for approval_id, pending in list(self._pending_mcp.items()):
+                timer = self._mcp_timers.pop(approval_id, None)
+                if timer: timer.cancel()
+                try:
+                    self._write({"id": self._pending[approval_id], "result": pending["fallback"]})
+                except (OSError, ValueError):
+                    pass
+            self._pending_mcp.clear()
             if self.thread_id and self.turn_id and not self._turn_ended:
                 try:
                     self._write({"id": "worker-stop", "method": "turn/interrupt", "params": {
@@ -138,6 +151,120 @@ class AppServerSession:
         raw = str(value or "")
         text = self.redact(raw)
         return text[:DISPLAY_LIMIT], text != raw or len(text) > DISPLAY_LIMIT
+
+    def _publish_mcp(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
+        """Expose bounded confirmation forms; never accept hidden or secret input."""
+        is_form = method == MCP_ELICITATION
+        fallback = {"action": "decline", "content": None} if is_form else {"answers": {}}
+        if (params.get("threadId") != self.thread_id or
+                params.get("turnId") not in (None, self.turn_id) or
+                (not is_form and params.get("turnId") != self.turn_id)):
+            self._write({"id": request_id, "result": fallback})
+            return
+        if request_id in self._pending.values():
+            raise ValueError("duplicate live permission request")
+        if len(self._records) >= REQUEST_LIMIT:
+            self._write({"id": request_id, "result": fallback})
+            return
+        fields = []
+        supported = True
+        if is_form:
+            reason = params.get("message", "")
+            schema = params.get("requestedSchema") or {}
+            supported = (isinstance(params.get("mode"), str) and params["mode"] in {"form", "openai/form", "openaiForm"} and
+                         isinstance(schema, dict) and schema.get("type") == "object" and
+                         set(schema) <= {"type", "properties", "required", "$schema"})
+            properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+            supported &= isinstance(properties, dict) and len(properties) <= 10
+            required = (schema.get("required", []) or []) if isinstance(schema, dict) else []
+            supported &= isinstance(required, list) and all(isinstance(k, str) and k in properties for k in required)
+            if supported:
+                for key, spec in properties.items():
+                    if not isinstance(spec, dict):
+                        supported = False
+                        break
+                    allowed = {"type", "title", "description", "default", "enum", "enumNames", "oneOf"}
+                    choices = None
+                    if spec.get("type") == "boolean" and set(spec) <= {"type", "title", "description", "default"}:
+                        choices = [{"value": True, "label": "Yes"}, {"value": False, "label": "No"}]
+                    elif (spec.get("type") == "string" and set(spec) <= allowed and
+                          not ("enum" in spec and "oneOf" in spec) and
+                          ("enumNames" not in spec or "enum" in spec)):
+                        if isinstance(spec.get("enum"), list):
+                            choices = [{"value": v, "label": v} for v in spec["enum"] if isinstance(v, str)]
+                            if len(choices) != len(spec["enum"]): choices = None
+                            names = spec.get("enumNames")
+                            if names is not None:
+                                if choices is None or not isinstance(names, list) or len(names) != len(choices) or not all(isinstance(n, str) for n in names):
+                                    choices = None
+                                else:
+                                    for choice, label in zip(choices, names): choice["label"] = label
+                        elif isinstance(spec.get("oneOf"), list):
+                            options = spec["oneOf"]
+                            if all(isinstance(o, dict) and set(o) == {"const", "title"} and isinstance(o["const"], str) and isinstance(o["title"], str) for o in options):
+                                choices = [{"value": o["const"], "label": o["title"]} for o in options]
+                    if not isinstance(key, str) or not choices or len(choices) > 20:
+                        supported = False
+                        break
+                    fields.append({"id": key, "label": str(spec.get("title") or key),
+                                   "description": str(spec.get("description") or ""), "choices": choices})
+        else:
+            questions = params.get("questions")
+            supported = isinstance(questions, list) and 1 <= len(questions) <= 3
+            reason = "Review the requested answers before approving."
+            if supported:
+                for q in questions:
+                    if (not isinstance(q, dict) or q.get("isSecret") or q.get("isOther") or
+                            not isinstance(q.get("id"), str) or not q["id"] or
+                            not isinstance(q.get("options"), list) or not 1 <= len(q["options"]) <= 20 or
+                            not all(isinstance(o, dict) and isinstance(o.get("label"), str) and o["label"] for o in q["options"])):
+                        supported = False
+                        break
+                    fields.append({"id": q["id"], "label": str(q.get("question") or q.get("header") or q["id"]),
+                                   "description": "", "choices": [{"value": o["label"], "label": o["label"],
+                                   "description": str(o.get("description") or "")} for o in q["options"]]})
+                supported &= len({f["id"] for f in fields}) == len(fields)
+                fallback = {"answers": {f["id"]: {"answers": [next((c["value"] for c in f["choices"]
+                    if c["value"].strip().lower() in {"decline", "reject", "cancel"}), "")]} for f in fields}}
+                for answer in fallback["answers"].values():
+                    if answer["answers"] == [""]: answer["answers"] = []
+        display = {"reason": reason, "server": params.get("serverName", "Codex"), "fields": fields}
+        raw = json.dumps(display, ensure_ascii=False)
+        safe = self.redact(raw)
+        supported &= safe == raw and len(raw) <= DISPLAY_LIMIT and bool(reason)
+        approval_id = uuid.uuid4().hex
+        record = {"approval_id": approval_id, "status": "pending", "kind": "mcp" if is_form else "user_input",
+                  "reason": self._display(reason)[0], "server": self._display(display["server"])[0],
+                  "fields": fields if supported else [], "can_allow": supported,
+                  "scope": "Approve only this request and the selected answers. No future permissions are granted.",
+                  "note": "Choose every answer, then Approve, or Reject. Expires after five minutes." if supported else
+                          "Unsupported, secret, oversized or redacted request; rejected without executing."}
+        self._records.append(record)
+        if not supported:
+            record["status"] = "denied"
+            self.on_approvals(copy.deepcopy(self._records))
+            self._write({"id": request_id, "result": fallback})
+            return
+        self._pending[approval_id] = request_id
+        self._pending_mcp[approval_id] = {"form": is_form, "fields": fields, "fallback": fallback}
+        self.on_approvals(copy.deepcopy(self._records))
+        timeout = MCP_TIMEOUT_SECONDS
+        delay = params.get("autoResolutionMs")
+        if isinstance(delay, (int, float)) and not isinstance(delay, bool) and delay >= 0:
+            timeout = min(timeout, delay / 1000)
+        timer = threading.Timer(timeout, self._expire_mcp, args=(approval_id,))
+        timer.daemon = True
+        self._mcp_timers[approval_id] = timer
+        timer.start()
+
+    def _expire_mcp(self, approval_id: str) -> None:
+        with self.lock:
+            if self._closed or approval_id not in self._pending_mcp:
+                return
+            try:
+                self.decide(approval_id, "deny")
+            except (OSError, ValueError, LookupError):
+                self.fail("Could not reject an expired MCP approval request.")
 
     def _publish_approval(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
         """Expose only a request for the active thread and turn, with an opaque UI ID."""
@@ -196,7 +323,7 @@ class AppServerSession:
         # Persist the reviewable request before it can receive a decision.
         self.on_approvals(copy.deepcopy(self._records))
 
-    def decide(self, approval_id: str, decision: str) -> None:
+    def decide(self, approval_id: str, decision: str, content: Any = None) -> None:
         """Apply exactly one allow/deny response to a still-live request.
 
         Persistence precedes the write to Codex. If either fails, the connection
@@ -211,12 +338,29 @@ class AppServerSession:
             if decision == "allow" and not record["can_allow"]:
                 # The note already says why this request can only be denied.
                 raise ValueError(record["note"])
+            result = {"decision": "accept" if decision == "allow" else "decline"}
+            pending = self._pending_mcp.get(approval_id)
+            if pending:
+                result = pending["fallback"]
+                if decision == "allow":
+                    fields = pending["fields"]
+                    if (not isinstance(content, dict) or set(content) != {f["id"] for f in fields} or
+                            any(not any(type(content[f["id"]]) is type(c["value"]) and content[f["id"]] == c["value"]
+                                        for c in f["choices"]) for f in fields)):
+                        raise ValueError("Choose a listed answer for every field; arbitrary values are not accepted.")
+                    result = ({"action": "accept", "content": content} if pending["form"] else
+                              {"answers": {key: {"answers": [value]} for key, value in content.items()}})
+            elif content is not None:
+                raise ValueError("This approval does not accept form content.")
             request_id = self._pending.pop(approval_id)
             self._pending_files.pop(approval_id, None)
+            self._pending_mcp.pop(approval_id, None)
+            timer = self._mcp_timers.pop(approval_id, None)
+            if timer: timer.cancel()
             record["status"] = "allowed" if decision == "allow" else "denied"
             try:
                 self.on_approvals(copy.deepcopy(self._records))
-                self._write({"id": request_id, "result": {"decision": "accept" if decision == "allow" else "decline"}})
+                self._write({"id": request_id, "result": result})
             except (OSError, ValueError):
                 record["status"] = "expired"
                 self.fail("Could not deliver the permission decision. The exchange was stopped.")
@@ -240,8 +384,8 @@ class AppServerSession:
                     # Broad turn/session grants are deliberately unsupported.
                     self._write({"id": message["id"], "result": {"permissions": {}, "scope": "turn"}})
                     self.on_event({"type": "error", "message": "Broad permission grant denied. Request a single command or file change instead."})
-                elif method == "mcpServer/elicitation/request":
-                    self._write({"id": message["id"], "result": {"action": "decline"}})
+                elif method == MCP_ELICITATION or method in USER_INPUT:
+                    self._publish_mcp(message["id"], method, params)
                 else:
                     self._write({"id": message["id"], "error": {"code": -32601, "message": "Unsupported worker request"}})
                 return
@@ -254,6 +398,9 @@ class AppServerSession:
                     if request_id == params.get("requestId") and params.get("threadId") == self.thread_id:
                         self._pending.pop(approval_id)
                         self._pending_files.pop(approval_id, None)
+                        self._pending_mcp.pop(approval_id, None)
+                        timer = self._mcp_timers.pop(approval_id, None)
+                        if timer: timer.cancel()
                         next(item for item in self._records if item["approval_id"] == approval_id)["status"] = "expired"
                         changed = True
                 if changed:

@@ -1390,6 +1390,8 @@ function renderTask(force = false) {
 /** Show a native permission request as text, with its precise action and scope. */
 function renderApproval(approval, taskId, turnId, active) {
   const pending = active && approval.status === "pending";
+  const isMcp = approval.kind === "mcp" || approval.kind === "user_input";
+  const inputs = [];
   const card = textNode("section", "", "permission-card");
   card.setAttribute("aria-label", "Permission request");
   const statuses = { allowed: "Allowed once", denied: "Denied", expired: "Expired" };
@@ -1405,16 +1407,48 @@ function renderApproval(approval, taskId, turnId, active) {
     card.append(textNode("pre", change.diff || "No diff available", "permission-diff"));
   }
   if (approval.note) card.append(textNode("p", approval.note, "permission-note"));
+  if (isMcp && approval.server) card.append(textNode("p", `Server: ${approval.server}`));
+  for (const field of approval.fields || []) {
+    const label = textNode("label", field.label);
+    if (field.description) label.append(textNode("p", field.description));
+    const select = document.createElement("select");
+    select.disabled = !pending;
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Choose an answer";
+    select.append(placeholder);
+    field.choices.forEach((choice, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = choice.description ? `${choice.label} — ${choice.description}` : choice.label;
+      select.append(option);
+    });
+    label.append(select);
+    card.append(label);
+    inputs.push({ field, select });
+  }
   if (pending) {
     const actions = textNode("div", "", "choices");
     actions.setAttribute("role", "group");
     actions.setAttribute("aria-label", "Permission decision");
-    for (const [decision, label] of [["allow", "Allow once"], ["deny", "Deny"]]) {
+    for (const [decision, label] of [["allow", isMcp ? "Approve" : "Allow once"], ["deny", isMcp ? "Reject" : "Deny"]]) {
       const button = textNode("button", label, "subtle permission-action");
       button.type = "button";
       button.dataset.canAllow = String(decision !== "allow" || approval.can_allow);
       button.disabled = state.busy || button.dataset.canAllow === "false";
-      button.onclick = () => sendApproval(taskId, turnId, approval.approval_id, decision);
+      const updateDisabled = () => {
+        button.dataset.canAllow = String(decision !== "allow" || (approval.can_allow &&
+          inputs.every(({ select }) => select.value !== "")));
+        button.disabled = state.busy || button.dataset.canAllow === "false";
+      };
+      for (const { select } of inputs) select.addEventListener("change", updateDisabled);
+      updateDisabled();
+      button.onclick = () => {
+        const content = isMcp && decision === "allow" ? Object.fromEntries(
+          inputs.map(({ field, select }) => [field.id, field.choices[Number(select.value)].value])
+        ) : undefined;
+        return sendApproval(taskId, turnId, approval.approval_id, decision, content);
+      };
       actions.append(button);
     }
     card.append(actions);
@@ -1422,14 +1456,14 @@ function renderApproval(approval, taskId, turnId, active) {
   return card;
 }
 /** Reply to the live request, preserving the draft and refreshing stale decisions. */
-async function sendApproval(taskId, turnId, approvalId, decision) {
+async function sendApproval(taskId, turnId, approvalId, decision, content) {
   if (state.busy || state.id !== taskId) return;
   state.busy = true;
   controls();
   showError(null);
   try {
     await api(`tasks/${encodeURIComponent(taskId)}/approvals/${encodeURIComponent(approvalId)}`, {
-      turn_id: turnId, decision,
+      turn_id: turnId, decision, ...(content === undefined ? {} : { content }),
     });
   } catch (error) {
     showError(error);

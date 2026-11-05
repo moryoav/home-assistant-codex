@@ -50,6 +50,7 @@ jobs:
         run: python codex-cli-worker/tests/codex_approval_smoke.py
       - name: Exercise browser protocol and restrictions
         run: |
+          node codex-cli-worker/tests/test_mcp_approval_ui.cjs
           node codex-cli-worker/tests/browser_resources.cjs
           node codex-cli-worker/tests/browser_permissions.cjs
           node codex-cli-worker/tests/browser_verification.cjs

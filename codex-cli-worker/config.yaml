@@ -24,7 +24,6 @@ backup_exclude:
   - "*/ha-docs*"
   - "*/ha-data*"
   - "*/.ssh"
-  - "*/.ssh/*"
 discovery:
   - codex_cli
 options:

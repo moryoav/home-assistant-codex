@@ -316,7 +316,7 @@ Ask Codex, for example:
 
 Replace the example host, port, and username with those of the remote SSH server. For a Home Assistant SSH app, enable its SSH network port and use the Home Assistant host's address and that port. The web terminal's Ingress address is not an SSH endpoint.
 
-Codex creates the directory with mode `700`, private keys and configuration with mode `600`, and a connection-specific key without overwriting an existing key. Setup writes outside `/config` and network checks require approval in sandboxed modes. Public-key authentication is intended for these non-interactive tasks; this setup does not save passwords or provide an interactive passphrase agent. A dedicated unattended key can be generated without a passphrase. Anyone able to read that private key can use the remote permissions granted to it.
+Ask Codex to create the directory with mode `700`, private keys and configuration with mode `600`, and a connection-specific key without overwriting an existing key. Check the permissions after setup; the app does not enforce these file modes. Setup writes outside `/config` and network checks require approval in sandboxed modes. Public-key authentication is intended for these non-interactive tasks; this setup does not save passwords or provide an interactive passphrase agent. A dedicated unattended key can be generated without a passphrase. Anyone able to read that private key can use the remote permissions granted to it.
 
 Add the generated **public** key to the remote server's authorized keys. In Advanced SSH & Web Terminal, use its `ssh.authorized_keys` option. Keep the remote server's existing credentials and other authorized keys intact. Do not copy the server's Git key into the worker.
 
@@ -335,6 +335,8 @@ Host ha-terminal
     UserKnownHostsFile /data/.ssh/known_hosts
     StrictHostKeyChecking yes
     BatchMode yes
+    ConnectTimeout 10
+    ConnectionAttempts 1
     ControlMaster no
     ControlPath none
     ControlPersist no

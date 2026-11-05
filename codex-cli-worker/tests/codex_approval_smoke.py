@@ -1,7 +1,7 @@
 """Exercise real pinned-CLI approvals against a local model fixture, without an account."""
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
@@ -11,10 +11,65 @@ import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from approvals import AppServerSession
+import server
 from server import FINAL_RESPONSE_SCHEMA
+
+
+@contextmanager
+def worker_approval_session(proc, workspace, root, mode, resume_id, approve, finals, events):
+    """Exercise production session creation, translating only container fixture paths."""
+    task_id = "ssh-fixture"
+    task = {"status": "running", "current_turn_id": "ssh-turn", "turns": [{
+        "execution_settings": {"model": "gpt-5.1-codex", "reasoning_effort": "low"},
+    }]}
+
+    def update_task(_task_id, **fields):
+        """Persist approvals in the fixture task as the worker's callback expects."""
+        task.update(fields)
+        return True
+
+    with (
+        patch.object(server, "tasks", {task_id: task}),
+        patch.object(server, "running_processes", {task_id: proc}),
+        patch.object(server, "api_token", return_value="fixture-worker-token"),
+        patch.object(server, "update_task", side_effect=update_task),
+        patch.object(server, "write_task_log"),
+        patch.object(server, "record_activity_event", side_effect=lambda _task_id, event: events.append(event)),
+        patch.object(server, "notify_permission_async"),
+    ):
+        session = server.create_approval_session(
+            task_id, proc, "Exercise SSH sandbox approvals", root / "ssh-final.json",
+            resume_id, {}, {"codex_sandbox": mode},
+        )
+        # Production owns the security policy, including on resumed threads.
+        policy = session.turn_params["sandboxPolicy"]
+        assert policy["networkAccess"] is False, policy
+        assert policy["type"] == ("readOnly" if mode == "read-only" else "workspaceWrite"), policy
+        assert session.thread_params["cwd"] == "/config", session.thread_params
+        session.thread_params["cwd"] = str(workspace)
+        if mode == "workspace-write":
+            assert policy["writableRoots"] == ["/config"], policy
+            policy["writableRoots"] = [str(workspace)]
+        save_approvals = session.on_approvals
+        save_final = session.on_final
+
+        def approve_and_persist(published):
+            """Keep production approval persistence before the simulated UI decision."""
+            save_approvals(published)
+            approve(published)
+
+        def finish(text):
+            """Keep production final-file persistence and collect the test answer."""
+            save_final(text)
+            finals.append(text)
+
+        session.on_approvals = approve_and_persist
+        session.on_final = finish
+        yield session
 
 
 def main():
@@ -124,7 +179,8 @@ def main():
         try:
             # Start in the old transport to prove existing saved chats can resume.
             final_only = True
-            legacy = subprocess.run([binary, "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--json",
+            legacy_mode = "danger-full-access" if args.ssh else "workspace-write"
+            legacy = subprocess.run([binary, "exec", "--sandbox", legacy_mode, "--skip-git-repo-check", "--json",
                                      "--model", "gpt-5.1-codex", *config_args, "Say fixture finished"],
                                     cwd=workspace, env=environment, capture_output=True, text=True, timeout=30)
             assert legacy.returncode == 0, (legacy.stdout, legacy.stderr)
@@ -143,7 +199,7 @@ def main():
                 records = []
                 finals = []
                 events = []
-                with (root / "stderr.log").open("w+") as errors:
+                with (root / "stderr.log").open("w+") as errors, ExitStack() as session_context:
                     proc = subprocess.Popen([binary, "app-server", *config_args], cwd=workspace, env=environment,
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, bufsize=1)
                     params = {"cwd": str(workspace), "model": "gpt-5.1-codex", "sandbox": mode,
@@ -159,16 +215,15 @@ def main():
                                 answer = ("allow" if len(published) == 1 else "deny") if file_case else decision
                                 session.decide(record["approval_id"], answer)
 
-                    turn_params = {"input": [{"type": "text", "text": "Exercise sandbox and approval"}], "outputSchema": FINAL_RESPONSE_SCHEMA}
                     if args.ssh:
-                        policy = {"type": "readOnly" if mode == "read-only" else "workspaceWrite", "networkAccess": False}
-                        if mode == "workspace-write":
-                            policy["writableRoots"] = [str(workspace)]
-                        turn_params["sandboxPolicy"] = policy
-                    session = AppServerSession(proc.stdin, lock=threading.RLock(), thread_params=params,
-                                               turn_params=turn_params,
-                                               on_event=events.append, on_approvals=approve, on_final=finals.append,
-                                               is_active=lambda: proc.poll() is None, redact=lambda text: text)
+                        session = session_context.enter_context(worker_approval_session(
+                            proc, workspace, root, mode, resume_id, approve, finals, events,
+                        ))
+                    else:
+                        session = AppServerSession(proc.stdin, lock=threading.RLock(), thread_params=params,
+                                                   turn_params={"input": [{"type": "text", "text": "Exercise sandbox and approval"}], "outputSchema": FINAL_RESPONSE_SCHEMA},
+                                                   on_event=events.append, on_approvals=approve, on_final=finals.append,
+                                                   is_active=lambda: proc.poll() is None, redact=lambda text: text)
                     reader = threading.Thread(target=session.read, args=(proc.stdout,), daemon=True)
                     reader.start()
                     try:

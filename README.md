@@ -193,6 +193,8 @@ The app options include dropdowns for the Codex model and reasoning effort:
 
 The app web UI can view and save `/config/AGENTS.md`. You can also set the masked `HA_TOKEN` option when Codex tasks need a Home Assistant token in their environment. Codex then also gets `HA_URL`, the address to use with it, from the **Home Assistant API URL** option (`http://homeassistant:8123` by default).
 
+The worker also includes an SSH client for optional connections to existing SSH apps, NAS devices, and Linux servers. Configure keys and connections through chat in private `/data/.ssh` storage, without adding credentials to `/config`. The SSH server controls remote permissions; sandboxed modes use the existing chat approvals for shell networking. See [SSH setup and limits](codex-cli-worker/DOCS.md#ssh-connections).
+
 ### 3. Sign In to Codex
 
 Before starting sign-in, enable **Enable device code authorization for Codex** in ChatGPT:

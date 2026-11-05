@@ -88,6 +88,11 @@ jobs:
       - name: Smoke test packaged historical data tools
         run: |
           docker run --rm --workdir / --entrypoint python3 verification-test -c 'import server, ha_data, ha_data_mcp; assert {tool["name"] for tool in ha_data_mcp.TOOLS} == {"history", "statistics"}; assert server.ha_data is not server.verification'
+      - name: Test packaged SSH with single-command approvals in both sandbox modes
+        # Paramiko is a test-only SSH target in the disposable container.
+        # The runtime image installs only the OpenSSH client, not an SSH server.
+        run: |
+          docker run --rm --privileged --entrypoint sh -v "$PWD/codex-cli-worker/tests:/tests:ro" verification-test -c 'pip3 install --no-cache-dir --break-system-packages paramiko && python3 /tests/codex_approval_smoke.py --ssh'
       - name: Analyze large data files through the packaged CLI in both sandbox modes
         # The host runner blocks loopback setup in unprivileged user namespaces.
         # Use the app's real sandbox wrapper, as in the documentation check below.

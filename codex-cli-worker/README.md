@@ -26,6 +26,12 @@ Codex can analyze Home Assistant state history and recorder statistics through s
 
 The app keeps a local copy of the official Home Assistant documentation, refreshed after each Home Assistant update, so Codex can look things up without a web search. Web search stays available for custom integrations and cards. See [local documentation](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md#local-home-assistant-documentation).
 
+## SSH connections
+
+The image includes the OpenSSH client for optional connections to existing SSH servers. Ask Codex to create a dedicated key and connection configuration under `/data/.ssh`, then install the public key on the remote server. Use `ssh -F /data/.ssh/config <connection> <command>` so the client selects the persistent configuration explicitly. No Home Assistant token is needed.
+
+Use `workspace-write` or `read-only` when commands need the existing **Allow once / Deny** approval flow. `danger-full-access` runs SSH without sandbox approval prompts. Remote permissions are controlled by the SSH server and account. The `.ssh` directory is excluded from app backups and must be set up again after a restore. See [setup, restricted keys, and limits](DOCS.md#ssh-connections).
+
 ## Conversations
 
 Open an existing chat to continue with its saved Codex context, or choose **New chat** for a separate conversation. Account controls and workspace instructions are under **Settings**.

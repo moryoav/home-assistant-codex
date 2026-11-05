@@ -21,6 +21,7 @@ RUN apk add --no-cache \
     jq \
     nodejs \
     npm \
+    openssh-client-default \
     python3 \
     py3-pip \
     rsync \

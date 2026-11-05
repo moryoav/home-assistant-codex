@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added the OpenSSH client for optional connections to existing SSH servers, including Home Assistant's SSH apps, NAS devices, and Linux machines.
+- Excluded the worker's `.ssh` directory from Home Assistant app backups. Connections must be set up again after restoring a backup.
+- Documented setup through chat, verified server identities, remote key restrictions, and use of the existing sandbox command approvals.
+
 ## 0.1.80
 
 - Updated the bundled Codex CLI from 0.160.0 to 0.165.0, including fixes for session resume, compaction, retries, and cancellation.

@@ -10,7 +10,7 @@ import time
 import unittest
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 from test_server import server
@@ -19,6 +19,35 @@ from test_server import server
 def sha(path: Path) -> str:
     """The hash the worker records for a file."""
     return server.file_hash(path)
+
+
+class SSHBackupExclusionTests(unittest.TestCase):
+    """Keep persistent connection credentials out of Supervisor app archives."""
+
+    def test_ssh_directory_is_pruned_from_app_backup(self):
+        """Apply Supervisor's path-match filter to an archive with nested SSH keys."""
+        config = server.yaml.safe_load(Path(server.__file__).with_name("config.yaml").read_text(encoding="utf-8"))
+        exclusions = config["backup_exclude"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / "app-data"
+            for relative in (".ssh/config", ".ssh/key", ".ssh/nested/key", ".ssh-notes", "tasks/kept.txt"):
+                file = data / relative
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text("fixture", encoding="utf-8")
+
+            def exclude(info):
+                """Prune matching directories using Supervisor's full-path semantics."""
+                full_path = PurePosixPath(data.as_posix()) / PurePosixPath(info.name).relative_to("data")
+                return None if any(full_path.match(pattern) for pattern in exclusions) else info
+
+            with tarfile.open(root / "app.tar", "w") as archive:
+                archive.add(data, arcname="data", filter=exclude)
+            with tarfile.open(root / "app.tar") as archive:
+                names = archive.getnames()
+            self.assertIn("data/.ssh-notes", names)
+            self.assertIn("data/tasks/kept.txt", names)
+            self.assertFalse(any(name == "data/.ssh" or name.startswith("data/.ssh/") for name in names), names)
 
 
 class SavedCopyTests(unittest.TestCase):

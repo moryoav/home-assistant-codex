@@ -1,5 +1,7 @@
 """Exercise real pinned-CLI approvals against a local model fixture, without an account."""
 
+import argparse
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -17,16 +19,24 @@ from server import FINAL_RESPONSE_SCHEMA
 
 def main():
     """Prove allow/deny and session resume preserve the next command's sandbox."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ssh", action="store_true", help="Exercise the packaged SSH client against a local fixed-command server")
+    args = parser.parse_args()
     binary = os.environ.get("HA_TEST_CODEX", "/usr/local/bin/codex")
     assert "0.165.0" in subprocess.check_output([binary, "--version"], text=True)
     cache = Path.home() / ".cache"
     cache.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="ha-approval-smoke-", dir=cache) as temporary:
+    with tempfile.TemporaryDirectory(prefix="ha-approval-smoke-", dir=cache) as temporary, ExitStack() as resources:
         root = Path(temporary)
         workspace = root / "workspace"
         workspace.mkdir()
         requests = []
         probes = []
+        ssh_command = None
+        if args.ssh:
+            from ssh_approval_fixture import ssh_probe
+
+            ssh_command = resources.enter_context(ssh_probe(root, probes))
         stage = 0
         final_only = False
         file_case = False
@@ -75,11 +85,11 @@ def main():
                     selected = next(((namespace, tool) for namespace, tool in functions if tool.get("name") == "exec_command"), None)
                     assert selected, [(namespace, tool.get("name")) for namespace, tool in functions]
                     namespace, tool = selected
-                    command = shlex.quote(sys.executable) + " -c " + shlex.quote(
+                    command = ssh_command or shlex.quote(sys.executable) + " -c " + shlex.quote(
                         f"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{provider.server_port}/probe', timeout=3).read().decode())")
                     arguments = {"cmd": command, "max_output_tokens": 1000}
                     if stage == 1:
-                        arguments.update(sandbox_permissions="require_escalated", justification="Read the local test endpoint once")
+                        arguments.update(sandbox_permissions="require_escalated", justification="Run the local test operation once")
                     item = {"type": "function_call", "call_id": f"call_{stage}", "name": tool["name"], "arguments": json.dumps(arguments)}
                     if namespace:
                         item["namespace"] = namespace
@@ -120,7 +130,11 @@ def main():
             assert legacy.returncode == 0, (legacy.stdout, legacy.stderr)
             thread_id = next(json.loads(line)["thread_id"] for line in legacy.stdout.splitlines() if json.loads(line).get("type") == "thread.started")
             final_only = False
-            for mode, decision, resume_id in [("workspace-write", "allow", thread_id), ("read-only", "deny", None), ("read-only", "file", None)]:
+            cases = [("workspace-write", "allow", thread_id), ("read-only", "deny", None), ("read-only", "file", None)]
+            if args.ssh:
+                cases = [(mode, decision, thread_id if (mode, decision) == ("workspace-write", "allow") else None)
+                         for mode in ("workspace-write", "read-only") for decision in ("allow", "deny")]
+            for mode, decision, resume_id in cases:
                 file_case = decision == "file"
                 outside_file.write_text("value: 0\n")
                 stage = 0
@@ -145,8 +159,14 @@ def main():
                                 answer = ("allow" if len(published) == 1 else "deny") if file_case else decision
                                 session.decide(record["approval_id"], answer)
 
+                    turn_params = {"input": [{"type": "text", "text": "Exercise sandbox and approval"}], "outputSchema": FINAL_RESPONSE_SCHEMA}
+                    if args.ssh:
+                        policy = {"type": "readOnly" if mode == "read-only" else "workspaceWrite", "networkAccess": False}
+                        if mode == "workspace-write":
+                            policy["writableRoots"] = [str(workspace)]
+                        turn_params["sandboxPolicy"] = policy
                     session = AppServerSession(proc.stdin, lock=threading.RLock(), thread_params=params,
-                                               turn_params={"input": [{"type": "text", "text": "Exercise sandbox and approval"}], "outputSchema": FINAL_RESPONSE_SCHEMA},
+                                               turn_params=turn_params,
                                                on_event=events.append, on_approvals=approve, on_final=finals.append,
                                                is_active=lambda: proc.poll() is None, redact=lambda text: text)
                     reader = threading.Thread(target=session.read, args=(proc.stdout,), daemon=True)
@@ -183,7 +203,10 @@ def main():
                                if item.get("type") == "function_call_output" and item.get("call_id") == call_id]
                     assert outputs, (call_id, requests[-1]["input"])
                     assert "network-action-executed" not in json.dumps(outputs), outputs
-            print("Pinned CLI approvals passed: legacy sessions resume, command and file allow/deny works, subsequent actions stay sandboxed.")
+            if args.ssh:
+                print("Pinned CLI SSH approvals passed: allow executes once, deny prevents execution, and subsequent SSH commands stay sandboxed in both modes.")
+            else:
+                print("Pinned CLI approvals passed: legacy sessions resume, command and file allow/deny works, subsequent actions stay sandboxed.")
         finally:
             provider.shutdown()
             provider.server_close()

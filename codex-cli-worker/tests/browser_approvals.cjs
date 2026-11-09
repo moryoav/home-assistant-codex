@@ -130,6 +130,7 @@ async function testConnectorTimeline(page) {
   ]);
   assert.deepEqual(decision.postDataJSON().content, {destination: "Office"});
   await exchange.getByText("Answered", {exact: true}).waitFor();
+  await question.getByText("Which room? Office", {exact: true}).waitFor();
   await exchange.getByText(`Preview response: ${prompt}`, {exact: true}).waitFor();
   assert.equal(await answer.count(), 0);
   await exchange.getByRole("button", {name: /^Show activity/}).click();
@@ -142,6 +143,7 @@ async function testConnectorTimeline(page) {
   await exchange.getByRole("button", {name: /^Show activity/}).click();
   await exchange.getByText(after, {exact: true}).waitFor();
   await checkOrder(true);
+  await question.getByText("Which room? Office", {exact: true}).waitFor();
   assert.equal(await question.locator(".permission-action").count(), 0);
 }
 

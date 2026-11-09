@@ -1415,10 +1415,19 @@ function renderApproval(approval, taskId, turnId, active) {
   if (approval.note) card.append(textNode("p", approval.note, "permission-note"));
   if (isMcp && approval.server) card.append(textNode("p", `Server: ${approval.server}`));
   for (const field of approval.fields || []) {
+    if (!pending) {
+      const index = approval.selected_choices?.[field.id];
+      const choice = Number.isInteger(index) ? field.choices[index] : null;
+      if (approval.status === "allowed" && choice) {
+        const answer = textNode("p", "");
+        answer.append(textNode("strong", field.label), textNode("span", ` ${choice.label}`));
+        card.append(answer);
+      }
+      continue;
+    }
     const label = textNode("label", field.label);
     if (field.description) label.append(textNode("p", field.description));
     const select = document.createElement("select");
-    select.disabled = !pending;
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.textContent = field.required === false ? "Skip (optional)" : "Choose an answer";
@@ -1429,7 +1438,7 @@ function renderApproval(approval, taskId, turnId, active) {
       option.textContent = choice.description ? `${choice.label} — ${choice.description}` : choice.label;
       select.append(option);
     });
-    if (pending && selected.has(field.id)) select.value = selected.get(field.id);
+    if (selected.has(field.id)) select.value = selected.get(field.id);
     select.addEventListener("change", () => selected.set(field.id, select.value));
     label.append(select);
     card.append(label);

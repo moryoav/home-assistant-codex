@@ -191,6 +191,13 @@ class ApprovalTests(unittest.TestCase):
             self.assertEqual(self.response(), {'id': 'input-72', 'result': {
                 'answers': {'choice': {'answers': ['Accept']}}}})
 
+    def test_answer_history_records_the_validated_choice(self):
+        self.s.receive(self.input())
+        self.s.decide(self.record()['approval_id'], 'allow', {'choice': 'Decline'})
+        self.assertEqual(self.record()['status'], 'allowed')
+        self.assertEqual(self.record()['selected_choices'], {'choice': 1})
+        self.assertEqual(self.response()['result'], {'answers': {'choice': {'answers': ['Decline']}}})
+
     def test_dismissal_does_not_select_an_operation(self):
         request = self.input()
         request['params']['questions'][0]['options'][1] = {

@@ -372,10 +372,15 @@ class AppServerSession:
                     required = {key for key, field in fields.items() if field.get("required", True)}
                     if not isinstance(content, dict) or not required <= content.keys() <= fields.keys():
                         raise ValueError("Choose an answer for every required field and use only listed fields.")
+                    selected = {}
                     for key, value in content.items():
-                        if not any(type(value) is type(choice["value"]) and value == choice["value"]
-                                   for choice in fields[key]["choices"]):
+                        index = next((i for i, choice in enumerate(fields[key]["choices"])
+                                      if type(value) is type(choice["value"]) and value == choice["value"]), None)
+                        if index is None:
                             raise ValueError("Choose a listed answer. Arbitrary values are not accepted.")
+                        selected[key] = index
+                    if fields:
+                        record["selected_choices"] = selected
                     if pending["acceptance"] is not None:
                         result = pending["acceptance"]
                     elif pending["form"]:
@@ -405,6 +410,7 @@ class AppServerSession:
             self._write({"id": request_id, "result": result})
         except (OSError, ValueError):
             record["status"] = "expired"
+            record.pop("selected_choices", None)
             self.fail("Could not deliver the permission decision. The exchange was stopped.")
             raise OSError(self.error) from None
 

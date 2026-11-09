@@ -196,17 +196,27 @@ def main():
                     session.thread_id, session.turn_id = session_id, "preview-native"
                     file_permission = (reply or prompt).startswith("Request permission to rename")
                     hidden_permission = (reply or prompt).startswith("Request permission with hidden")
+                    connector_question = (reply or prompt).startswith("Request permission for a connector question")
                     if file_permission:
                         session.receive({"method": "item/started", "params": {
                             "threadId": session_id, "turnId": "preview-native", "item": {
                                 "id": "preview-command", "type": "fileChange", "changes": [{
                                     "path": "/other/original.yaml", "diff": "-name: Before\n+name: After",
                                     "kind": {"type": "update", "move_path": "/other/renamed.yaml"}}]}}})
-                    session.receive({"id": 0, "method": "item/fileChange/requestApproval" if file_permission else "item/commandExecution/requestApproval", "params": {
-                        "threadId": session_id, "turnId": "preview-native", "itemId": "preview-command",
-                        "command": "tool --password 'private password'" if hidden_permission else "curl '$HA_URL/api/history/period' -H 'Authorization: Bearer $HA_TOKEN'\n# <img src=x onerror=alert(1)>",
-                        "cwd": "/config", "reason": "Read historical sensor states from Home Assistant", "startedAtMs": 1,
-                    }})
+                    if connector_question:
+                        server.start_phase(task_id, "before-prompt", "Prepared the connector request")
+                        server.finish_phase(task_id, "before-prompt")
+                        session.receive({"id": 0, "method": "item/tool/requestUserInput", "params": {
+                            "threadId": session_id, "turnId": "preview-native", "itemId": "preview-question",
+                            "questions": [{"id": "destination", "question": "Which room?", "isOther": True,
+                                           "options": [{"label": "Kitchen"}, {"label": "Office"}]}],
+                        }})
+                    else:
+                        session.receive({"id": 0, "method": "item/fileChange/requestApproval" if file_permission else "item/commandExecution/requestApproval", "params": {
+                            "threadId": session_id, "turnId": "preview-native", "itemId": "preview-command",
+                            "command": "tool --password 'private password'" if hidden_permission else "curl '$HA_URL/api/history/period' -H 'Authorization: Bearer $HA_TOKEN'\n# <img src=x onerror=alert(1)>",
+                            "cwd": "/config", "reason": "Read historical sensor states from Home Assistant", "startedAtMs": 1,
+                        }})
                     answered.wait(120)
                     session.close()
                     with server.lock:
@@ -246,6 +256,13 @@ def main():
             release.set()
             return {"ok": True}
 
+        def add_approval_activity():
+            """Add a step while the fixture is waiting for a connector answer."""
+            task_id = server.request.get_json()["task_id"]
+            server.start_phase(task_id, "after-prompt", "Received another activity event")
+            server.finish_phase(task_id, "after-prompt")
+            return {"ok": True}
+
         def set_integration():
             """Set the state of the Codex integration that the status reports, from the "state" of the JSON body."""
             integration["state"] = str((server.request.get_json(silent=True) or {}).get("state") or "ok")
@@ -258,6 +275,7 @@ def main():
 
         server.start_background_task = finish
         server.app.add_url_rule("/fixture/release", "fixture_release", release_held, methods=["POST"])
+        server.app.add_url_rule("/fixture/approval-step", "fixture_approval_step", add_approval_activity, methods=["POST"])
         server.app.add_url_rule("/fixture/integration", "fixture_integration", set_integration, methods=["POST"])
         server.app.add_url_rule("/fixture/browser-permissions/corrupt", "fixture_corrupt_permissions",
                                 corrupt_permissions, methods=["POST"])

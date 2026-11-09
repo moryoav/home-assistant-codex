@@ -59,7 +59,6 @@ ha_data = HomeAssistantData(_ToolWorker(), DATA_ROOT / "ha-data")
 CODEX_HOME = DATA_ROOT / "codex-home"
 OPTIONS_PATH = DATA_ROOT / "options.json"
 WORKER_TOKEN_PATH = DATA_ROOT / "worker_api_token"
-SCHEMA_PATH = DATA_ROOT / "codex-output-schema.json"
 CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
 CODEX_BINARY = "/usr/local/bin/codex"
 AGENTS_PATH = CONFIG_ROOT / "AGENTS.md"
@@ -725,19 +724,18 @@ FINAL_RESPONSE_SCHEMA = {
 
 
 def ensure_runtime_files() -> None:
-    """Create the worker's folders, make an API token if there is none, and write Codex's output schema and config."""
+    """Create the worker's folders, initialize its API token, and write the Codex config."""
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     task_root().mkdir(parents=True, exist_ok=True)
     AUTH_QR_DIR.mkdir(parents=True, exist_ok=True)
     if not api_token():
         set_api_token(secrets.token_urlsafe(32))
-    SCHEMA_PATH.write_text(json.dumps(FINAL_RESPONSE_SCHEMA, indent=2), encoding="utf-8")
     CODEX_CONFIG_PATH.write_text(
         "\n".join(
             [
                 "check_for_update_on_startup = false",
-                'approval_policy = "never"',
+                'approval_policy = "on-request"',
                 'sandbox_mode = "workspace-write"',
                 'web_search = "cached"',
                 "",
@@ -1492,6 +1490,16 @@ def activity_file(task_id: str, turn_id: str) -> Path:
     return (root / "turns" / turn_id / ACTIVITY_FILE) if turn_id else (root / ACTIVITY_FILE)
 
 
+def save_activity(task_id: str, turn_id: str, payload: dict[str, Any]) -> None:
+    """Persist the activity prefix at an approval, or all steps at completion."""
+    try:
+        path = activity_file(task_id, turn_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, payload)
+    except OSError as exc:
+        print(f"Could not save task activity for {task_id}: {redact(str(exc))}", flush=True)
+
+
 def finish_activity(task_id: str) -> None:
     """Close the running exchange's steps, note how it ended, and save them once."""
     with lock:
@@ -1524,12 +1532,7 @@ def finish_activity(task_id: str) -> None:
         record["running"] = False
         payload = activity_payload_locked(record)
         turn_id = record["turn_id"]
-    try:
-        path = activity_file(task_id, turn_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(path, payload)
-    except OSError as exc:
-        print(f"Could not save task activity for {task_id}: {redact(str(exc))}", flush=True)
+    save_activity(task_id, turn_id, payload)
     with lock:
         if task_activity.get(task_id) is record:
             task_activity.pop(task_id, None)
@@ -1594,6 +1597,10 @@ def task_turns(task: dict[str, Any]) -> list[dict[str, Any]]:
             "turn_id": f"legacy-{index + 1}", "message": reply.get("reply", ""),
             "created_at": reply.get("at", ""), "legacy": True,
         })
+    # The slim index still knows the latest turn ID, even if task.json was lost.
+    current_turn = task.get("current_turn_id")
+    if isinstance(current_turn, str) and TURN_ID_RE.fullmatch(current_turn):
+        turns[-1]["turn_id"] = current_turn
     turns[-1].update({key: copy.deepcopy(task[key]) for key in TURN_RESULT_FIELDS if key in task})
     return turns
 
@@ -1920,9 +1927,9 @@ def task_payload(task: dict[str, Any], *, summary: bool = False, private: bool =
                 if isinstance(record.get("verification"), list):
                     record["verification"] = [public_check(check) for check in record["verification"]]
     result["can_continue"] = bool(task.get("session_id")) and task.get("status") in CONTINUABLE_STATUSES
-    result["permission_required"] = task.get("status") == "running" and any(
-        item.get("status") == "pending" for item in task.get("approvals") or []
-    )
+    pending = [item for item in task.get("approvals") or [] if item.get("status") == "pending"]
+    result["permission_required"] = task.get("status") == "running" and bool(pending)
+    result["answer_required"] = result["permission_required"] and all(item.get("kind") == "user_input" for item in pending)
     return result
 
 
@@ -2892,16 +2899,19 @@ def notify_permission(task_id: str, approval: dict[str, Any], withdrawn: threadi
     waits; a notification not delivered by then is dropped, so it cannot replace
     the one about the task's result.
     """
-    subject = "a file change" if approval.get("kind") == "file_change" else "a command"
+    kind = approval.get("kind")
+    subject = {"file_change": "a file change", "mcp": "an MCP request"}.get(kind, "a command")
     reason = " ".join(str(approval.get("reason") or "").split())
     if len(reason) > PERMISSION_REASON_MAX:
         reason = reason[:PERMISSION_REASON_MAX].rstrip() + "…"
     if reason and reason[-1] not in ".!?…":
         reason += "."
     detail = f" Reason: {reason}" if reason else ""
+    question = kind == "user_input"
+    waiting = "Codex is waiting for your answer." if question else f"Codex is waiting for your decision on {subject}."
     notify(
-        "Codex needs permission",
-        f"Codex is waiting for your decision on {subject}.{detail} Open the Codex chat to review it. Task: {task_id}",
+        "Codex needs an answer" if question else "Codex needs permission",
+        f"{waiting}{detail} Open the Codex chat to review it. Task: {task_id}",
         still_wanted=lambda: not withdrawn.is_set(),
     )
 
@@ -3625,88 +3635,16 @@ def data_mcp_args() -> list[str]:
             for argument in ("--config", f"mcp_servers.home_assistant_data.{name}={json.dumps(value)}")]
 
 
-def build_codex_args(task_id: str, prompt_file: Path, final_file: Path, session_id: str | None) -> list[str]:
-    """Return the `codex exec` command line for the task's latest turn, resuming the session when one is given.
-
-    It carries the turn's model and reasoning level, the sandbox, the output
-    files, the verification tool, and the attached images; the prompt itself
-    is read from stdin.
-    """
-    options = read_options()
-    with lock:
-        task = tasks.get(task_id, {})
-        turns = task.get("turns") or []
-        execution = copy.deepcopy(turns[-1].get("execution_settings")) if turns else None
-        latest_turn = copy.deepcopy(turns[-1]) if turns else {}
-    if execution is None:
-        execution = resolve_chat_settings(task.get("chat_settings", DEFAULT_CHAT_SETTINGS), options)
-    images = prompt_attachment_paths(task_id, latest_turn)
-    args = [CODEX_BINARY, "exec"]
-    # `exec --image` is repeatable; keeping each one before another flag stops
-    # the variadic option from swallowing the "-" that selects stdin.
-    if not session_id:
-        for path in images:
-            args.extend(["--image", str(path)])
-    args += [
-        "--cd",
-        "/config",
-        "--skip-git-repo-check",
-        "--sandbox",
-        str(options.get("codex_sandbox") or "workspace-write"),
-        "--json",
-        "--output-schema",
-        str(SCHEMA_PATH),
-        "--output-last-message",
-        str(final_file),
-    ]
-    model = execution["model"]
-    if model in {"default", "gpt-5.3-codex"}:
-        model = ""
-    if model:
-        args.extend(["--model", model])
-    args.extend(["--config", f'model_reasoning_effort="{execution["reasoning_effort"]}"'])
-    args.extend(["--config", f'model_reasoning_summary="{reasoning_summary(options)}"'])
-    args.extend(verification_mcp_args())
-    args.extend(data_mcp_args())
-    if session_id:
-        # `resume` has its own single-value --image option, so the flags go after the subcommand.
-        args.extend(["resume", session_id])
-        for path in images:
-            args.extend(["--image", str(path)])
-        args.append("-")
-    else:
-        args.append("-")
-    return args
-
-
-def reader_thread(task_id: str, stream_name: str, handle, session_holder: dict[str, str]) -> None:
-    """Copy one Codex output stream to the task log; from stdout also record the steps and the session id."""
+def read_codex_stderr(task_id: str, handle) -> None:
+    """Copy Codex diagnostics to the task log."""
     for line in iter(handle.readline, ""):
-        if not line:
-            break
-        write_task_log(task_id, stream_name, line)
-        if stream_name == "stdout":
-            try:
-                event = json.loads(line)
-                record_activity_event(task_id, event)
-                found = extract_session_id(event)
-                existing = session_holder.get("session_id")
-                if found and not existing:
-                    session_holder["session_id"] = found
-                    update_task(task_id, session_id=found)
-            except (json.JSONDecodeError, TypeError):
-                pass
+        write_task_log(task_id, "stderr", line)
 
 
 def build_app_server_args() -> list[str]:
-    """Start the bidirectional CLI transport with approvals routed to the user."""
+    """Start the bidirectional Codex transport for one worker exchange."""
     return [CODEX_BINARY, "app-server", "--config", 'approval_policy="on-request"',
             "--config", 'approvals_reviewer="user"', *verification_mcp_args(), *data_mcp_args()]
-
-
-def uses_user_approvals(options: dict[str, Any]) -> bool:
-    """Use live permission requests for sandboxed modes; full access needs no escape."""
-    return (options.get("codex_sandbox") or "workspace-write") != "danger-full-access"
 
 
 def create_approval_session(
@@ -3763,12 +3701,22 @@ def create_approval_session(
         if str(task.get("current_turn_id") or "") != turn_id:
             return
         previous = {item["approval_id"]: item for item in task.get("approvals") or []}
+        activity = task_activity.get(task_id)
+        checkpoint = False
         for item in records:
             older = previous.get(item["approval_id"], {})
             item["turn_id"] = turn_id
             item["requested_at"] = older.get("requested_at") or utc_now()
+            if "activity_index" in older:
+                item["activity_index"] = older["activity_index"]
+            elif activity is not None and activity["turn_id"] == turn_id:
+                item["activity_index"] = len(activity["steps"])
+                checkpoint = True
             if item["status"] != "pending":
                 item["resolved_at"] = older.get("resolved_at") or utc_now()
+        if checkpoint:
+            # A restart can expire the card and still show the steps before it.
+            save_activity(task_id, turn_id, activity_payload_locked(activity))
         if not update_task(task_id, approvals=records, **({"status": "cancelled"} if task.get("cancellation_requested") else {})):
             return
         # The task now waits for the user, who may not have the chat open.
@@ -3796,15 +3744,17 @@ def create_approval_session(
     model = execution["model"]
     if model not in {"default", "gpt-5.3-codex"}:
         thread_params["model"] = model
-    policy: dict[str, Any] = {"type": "readOnly" if mode == "read-only" else "workspaceWrite", "networkAccess": False}
-    if mode == "workspace-write":
-        policy["writableRoots"] = ["/config"]
+    policies = {
+        "read-only": {"type": "readOnly", "networkAccess": False},
+        "workspace-write": {"type": "workspaceWrite", "networkAccess": False, "writableRoots": ["/config"]},
+        "danger-full-access": {"type": "dangerFullAccess"},
+    }
     return AppServerSession(
         proc.stdin, lock=lock, thread_params=thread_params,
         turn_params={"input": [{"type": "text", "text": prompt},
                                *({"type": "localImage", "path": str(path)} for path in prompt_attachment_paths(task_id, latest_turn))],
                      "effort": execution["reasoning_effort"], "summary": reasoning_summary(options),
-                     "outputSchema": FINAL_RESPONSE_SCHEMA, "sandboxPolicy": policy,
+                     "outputSchema": FINAL_RESPONSE_SCHEMA, "sandboxPolicy": policies[mode],
                      "approvalPolicy": "on-request", "approvalsReviewer": "user"},
         on_event=event, on_approvals=save_approvals,
         on_final=lambda text: final_file.write_text(text, encoding="utf-8"),
@@ -4193,8 +4143,7 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
         return
     if task_cancellation_requested(task_id):
         return
-    interactive_approvals = uses_user_approvals(options)
-    args = build_app_server_args() if interactive_approvals else build_codex_args(task_id, prompt_file, final_file, session_id)
+    args = build_app_server_args()
     write_task_log(task_id, "worker", "Starting Codex: " + " ".join(args))
 
     start_phase(task_id, "launch", "Starting Codex")
@@ -4243,20 +4192,18 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
     assert proc.stdin is not None
     assert proc.stdout is not None
     assert proc.stderr is not None
-    approval_session = None
-    if interactive_approvals:
-        approval_session = create_approval_session(
-            task_id, proc, prompt_file.read_text(encoding="utf-8"), final_file, session_id, session_holder, options)
-        with lock:
-            approval_sessions[task_id] = approval_session
+    approval_session = create_approval_session(
+        task_id, proc, prompt_file.read_text(encoding="utf-8"), final_file, session_id, session_holder, options)
+    with lock:
+        approval_sessions[task_id] = approval_session
     stdout_thread = threading.Thread(
-        target=approval_session.read if approval_session else reader_thread,
-        args=(proc.stdout,) if approval_session else (task_id, "stdout", proc.stdout, session_holder),
+        target=approval_session.read,
+        args=(proc.stdout,),
         daemon=True,
     )
     stderr_thread = threading.Thread(
-        target=reader_thread,
-        args=(task_id, "stderr", proc.stderr, session_holder),
+        target=read_codex_stderr,
+        args=(task_id, proc.stderr),
         daemon=True,
     )
     stdout_thread.start()
@@ -4264,69 +4211,40 @@ def run_task(task_id: str, prompt: str, session_id: str | None = None, reply: st
 
     timed_out = False
     lifecycle_error: Exception | None = None
-    stdin_closed = False
     returncode = -1
     process_exit_confirmed = False
     try:
         try:
-            if approval_session:
-                approval_session.start()
-            else:
-                proc.stdin.write(prompt_file.read_text(encoding="utf-8"))
-                proc.stdin.close()
-                stdin_closed = True
+            approval_session.start()
+            timed_out = not approval_session.finished.wait(timeout=timeout)
+            approval_session.close()
+            returncode = approval_session.returncode
+            if approval_session.error:
+                lifecycle_error = RuntimeError(approval_session.error)
+            # The app-server is long-lived. Reap it before the queue advances.
+            process_exit_confirmed = reap_approval_process(proc)
         except (OSError, ValueError) as exc:
             lifecycle_error = exc
             process_exit_confirmed = terminate_and_reap_process(proc)
-        if lifecycle_error is None:
-            try:
-                if approval_session:
-                    if not approval_session.finished.wait(timeout=timeout):
-                        timed_out = True
-                    approval_session.close()
-                    returncode = approval_session.returncode
-                    if approval_session.error:
-                        lifecycle_error = RuntimeError(approval_session.error)
-                    # The app-server is long-lived; one worker process owns one
-                    # exchange, and must be reaped before the queue advances.
-                    process_exit_confirmed = reap_approval_process(proc)
-                else:
-                    returncode = proc.wait(timeout=timeout)
-                    process_exit_confirmed = True
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                process_exit_confirmed = terminate_and_reap_process(proc)
-                returncode = proc.returncode if proc.returncode is not None else -1
-            except OSError as exc:
-                lifecycle_error = exc
-                process_exit_confirmed = terminate_and_reap_process(proc)
     finally:
-        if approval_session:
-            approval_session.close()
-            with lock:
-                if approval_sessions.get(task_id) is approval_session:
-                    approval_sessions.pop(task_id, None)
-        if not stdin_closed:
-            try:
-                proc.stdin.close()
-            except (OSError, ValueError):
-                pass
-        if process_exit_confirmed:
-            with lock:
-                if running_processes.get(task_id) is proc:
-                    running_processes.pop(task_id, None)
+        approval_session.close()
+        with lock:
+            if approval_sessions.get(task_id) is approval_session:
+                approval_sessions.pop(task_id, None)
+            if process_exit_confirmed and running_processes.get(task_id) is proc:
+                running_processes.pop(task_id, None)
         stdout_thread.join(timeout=5)
         stderr_thread.join(timeout=5)
 
     if task_cancellation_requested(task_id):
         return
-    if lifecycle_error is not None and not (approval_session and approval_session.turn_id):
+    if lifecycle_error is not None and not approval_session.turn_id:
         fail_task_launch(
             task_id,
             lifecycle_error,
             session_id=session_holder.get("session_id") or session_id,
-            summary="The Codex exchange could not finish." if approval_session else "Codex exited before accepting the task prompt.",
-            detail_prefix="Codex permission connection failed" if approval_session else "Could not send the task prompt to Codex",
+            summary="The Codex exchange could not finish.",
+            detail_prefix="Codex permission connection failed",
         )
         return
 
@@ -5241,21 +5159,29 @@ def get_log(task_id: str) -> Response:
 @app.get("/tasks/<task_id>/activity")
 @require_auth
 def get_activity(task_id: str) -> Response:
-    """Return the steps Codex reported for the latest exchange, after a sequence number."""
+    """Return steps for a turn in this conversation, defaulting to the latest."""
     if TASK_ID_RE.fullmatch(task_id) is None:
         return jsonify({"ok": False, "error": "task not found"}), 404
     try:
         after = int(request.args.get("after", "0"))
     except ValueError:
         return jsonify({"ok": False, "error": "after must be a number"}), 400
+    requested_turn = request.args.get("turn_id")
     with lock:
         task = tasks.get(task_id)
         if task is None:
             return jsonify({"ok": False, "error": "task not found"}), 404
+        current_turn = str(task.get("current_turn_id") or "")
+        if requested_turn is not None:
+            turns = task.get("turns", [{"turn_id": current_turn}]) or []
+            if TURN_ID_RE.fullmatch(requested_turn) is None or not any(
+                turn.get("turn_id") == requested_turn for turn in turns
+            ):
+                return jsonify({"ok": False, "error": "turn not found"}), 404
         record = task_activity.get(task_id)
-        if record is not None:
+        if record is not None and (requested_turn is None or requested_turn == record["turn_id"]):
             return jsonify({"ok": True, **activity_payload_locked(record, after)})
-        turn_id = str(task.get("current_turn_id") or "")
+        turn_id = requested_turn if requested_turn is not None else current_turn
     stored = load_stored_activity(task_id, turn_id)
     if stored is None:
         return jsonify({"ok": True, "turn_id": turn_id, "seq": 0, "running": False, "total": 0, "steps": []})
@@ -5354,7 +5280,7 @@ def decide_approval(task_id: str, approval_id: str) -> Response:
         if not session or payload.get("turn_id") != task.get("current_turn_id"):
             return jsonify({"ok": False, "error": APPROVAL_GONE}), 409
         try:
-            session.decide(approval_id, payload["decision"])
+            session.decide(approval_id, payload["decision"], payload.get("content"))
         except LookupError:
             return jsonify({"ok": False, "error": APPROVAL_GONE}), 409
         except ValueError as exc:

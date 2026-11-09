@@ -200,7 +200,7 @@ API: `GET /status` has `integration` with `state` (`ok`, `starting`, `not_instal
 
 The worker treats the legacy `gpt-5.3-codex` value as `default`. The retired `gpt-5.5` choice stays in the app's option list for existing installations and runs `gpt-5.6-sol`; it is not offered in the chat's model picker.
 
-`model_reasoning_effort` controls how much reasoning Codex asks supported models to use for each task. The app passes it for each exchange, through the app-server turn in sandboxed modes or a `codex exec` configuration override in full access. Available values are:
+`model_reasoning_effort` controls how much reasoning Codex asks supported models to use for each task. The app passes it for each app-server exchange. Available values are:
 
 - `minimal`: legacy value, normalized to `medium`.
 - `low`: lighter reasoning.
@@ -210,7 +210,7 @@ The worker treats the legacy `gpt-5.3-codex` value as `default`. The retired `gp
 
 The app configuration offers `low`, `medium`, `high`, and `xhigh` for all listed models. The chat also offers Max and Ultra where supported; see [Per-conversation model and reasoning](#per-conversation-model-and-reasoning). The worker maps `minimal` to `medium`, including when the model is `default`. See the [Codex models guide](https://learn.chatgpt.com/docs/models) for current availability.
 
-`reasoning_summary` controls the reasoning summaries shown in the activity list under your latest message. It is passed with each app-server turn in sandboxed modes, or as `--config model_reasoning_summary="<value>"` in full access. Summaries must be requested for them to appear, so the default is `concise`. This setting changes the reported summaries, not the selected reasoning effort.
+`reasoning_summary` controls the reasoning summaries shown in the activity list under your latest message. The worker passes it with each app-server turn. The default is `concise`, and the setting controls which summaries Codex reports.
 
 - `concise`: short headlines such as "Checking the automation". This is the default.
 - `detailed`: asks for fuller summaries; current models still mostly return headlines.
@@ -256,7 +256,7 @@ Codex needs to be able to write to the backup folder. In `workspace-write` mode 
 
 - `read-only`: Codex can inspect files. Writes and shell networking require permission for the specific action.
 - `workspace-write`: Codex can edit the mounted `/config` workspace. Shell networking and writes outside the workspace require permission. This remains the default setting.
-- `danger-full-access`: Codex sandboxing is disabled inside the app container, so tasks can use the files and network available to the app without sandbox approval prompts.
+- `danger-full-access`: Codex sandboxing is disabled inside the app container, so tasks can use the files and network available to the app. The worker automatically grants permissions for this mode, including MCP confirmations that need only a decision.
 
 **My recommendation is `danger-full-access`.** The name sounds scary, but this is the mode I use and recommend for working freely in Home Assistant. The app still provides safeguards: instructions to save per-file backups, optional full snapshots, checks of changed YAML and JSON, Home Assistant configuration checks, and built-in verification of states and dashboards. These help catch mistakes and recover changes; they do not guarantee that every action is safe or reversible. A configuration check does not prove automation behavior, and file backups do not undo device actions, service calls, or changes outside the backed-up configuration. Keep normal Home Assistant backups too.
 
@@ -272,9 +272,15 @@ When a request starts waiting, the worker sends a **Codex needs permission** not
 
 **Deny** refuses the action and lets Codex continue, for example by finding another way or explaining the limitation. **Cancel** stops the exchange. Requests expire when the exchange ends, times out, is cancelled, loses its CLI connection, or the worker restarts. If a file diff changes while its request is waiting, the exchange stops and the old request expires. The task timeout includes time spent waiting for permission. An unanswered request keeps the worker busy and later messages in the queue. Decisions from another tab refresh automatically; an old or repeated button cannot grant access.
 
-The request and decision remain in the exchange's `approvals` history, with sensitive values redacted. An incomplete, oversized, or redacted action can be denied but cannot be allowed, since hidden text could contain executable instructions. Ask for an action whose command, working folder, paths, and diff can be shown in full. API calls should refer to credentials through environment variables instead of embedding their values in a command. This first version supports individual command and file-change requests; broad turn or session permission grants and permanent policy changes are refused. Input that Codex wants to type into a command already running outside the sandbox is shown and can only be denied; Codex can run the whole action as one command instead. API credentials are separate: an approval does not create a Home Assistant token or expose the Supervisor token to Codex. The built-in verification tool continues to work through the worker without shell network approval.
+The request and decision remain in the exchange's `approvals` history, with sensitive values redacted. An incomplete, oversized, or redacted action can be denied but cannot be allowed, since hidden text could contain executable instructions. Ask for an action whose command, working folder, paths, and diff can be shown in full. API calls should refer to credentials through environment variables instead of embedding their values in a command. In sandboxed modes, review individual command, file-change, and supported MCP confirmation requests in chat. The worker refuses broad grants and permanent policy changes in those modes. Input that Codex wants to type into a command already running outside the sandbox is shown and can only be denied; Codex can run the whole action as one command instead. API credentials are separate: an approval does not create a Home Assistant token or expose the Supervisor token to Codex. The built-in verification tool continues to work through the worker without shell network approval.
 
 Authenticated API clients can answer a live request using `POST /tasks/<task_id>/approvals/<approval_id>` with `{"turn_id":"<current_turn_id>","decision":"allow"}` or `"deny"`. Read the redacted `approvals` records from `GET /tasks/<task_id>` first. A stale or already answered request returns HTTP 409. Task summaries include `permission_required` while an exchange is waiting. Permission decisions are made directly on the live exchange and are never queued as chat messages.
+
+MCP confirmations show **Approve** and **Reject** in sandboxed modes. Tool questions can appear in any mode and show **Send answer** and **Dismiss**. Select a listed answer for each required field before submitting. You can skip optional fields. The worker sends the response to the original request. Dismissal and expiry leave questions unanswered. Unanswered requests expire within five minutes, or sooner if Codex provides a shorter deadline.
+
+Supported MCP forms have no fields or use boolean and single-choice string fields. The worker also supports fixed-choice `tool/requestUserInput` questions, including the listed choices of a question that allows an optional free-text answer. Questions that require free text, request secrets, or use a URL flow are reported as unsupported. When answering a question through the API, send a `content` object mapping displayed field IDs to their chosen values. Use the decision alone to approve a permission-only confirmation or dismiss a request. The worker keeps protocol request IDs private and rejects stale or repeated submissions.
+
+Each approval or question stays beside the activity that preceded it, with its decision recorded in the same place. Pending controls are available when activity is collapsed. The final answer appears below the timeline. Saved activity and approval positions are available when the chat is reopened.
 
 ## Codex Sign-In
 
@@ -458,13 +464,13 @@ The authenticated worker API exposes `GET /chat-options` for choices and default
 
 ### Live activity
 
-From **0.1.53**, the chat shows what Codex is doing while it works on your latest message. Steps appear under the message as Codex reports them: reasoning headlines, progress notes, the commands it runs, the files it edits, web searches, and tool calls. A failed command or an error is highlighted. When a run is stopped or fails, the list ends with a **Stopped** or **Failed** row. The list is expanded while the run lasts and collapses to **Show activity (N steps)** under the answer when it finishes. Only the latest exchange of a chat shows steps; earlier exchanges do not.
+The chat shows activity between your message and Codex's answer. It includes reasoning headlines, progress notes, commands, file edits, web searches, and tool calls. Failed commands and errors are highlighted. When a run stops or fails, the list ends with a **Stopped** or **Failed** row. Activity opens by default while the run is in progress. After it finishes, use **Show activity (N steps)** to see the steps. You can also expand the saved activity for earlier exchanges that contain an approval or tool question.
 
 From **0.1.63**, the list starts as soon as a message is accepted. The worker reports its own steps alongside those of Codex: recording the state of the configuration files, saving a full snapshot when that option is on, starting Codex, waiting for its first response, and checking the changes afterwards. The heading shows how long the exchange has been running, and its dot pulses for as long as the run lasts.
 
 Command output is not shown by default because it can contain configuration secrets. Each command offers **Show output**, which reveals up to 2,048 characters after the same redaction as the task log and marks output that was cut. File edits list paths only. Reasoning summaries and other activity text are limited to 4,000 characters per field, and at most 500 steps are kept per exchange. The task's `codex.log` retains the underlying redacted event stream.
 
-The worker keeps the steps of the running exchange in memory and writes them to `<task_root>/<task_id>/turns/<turn_id>/activity.json` once when the run ends, so the latest exchange's steps survive a page reload and a worker restart. The authenticated worker API exposes `GET /tasks/<task_id>/activity?after=<seq>`, which returns `turn_id`, `running`, `seq`, `total`, the `steps` whose sequence number is above `after`, and `elapsed_ms` while the exchange runs. A step that changes, such as a command that finishes, is returned again with a new sequence number and the same `index`. The web UI polls this endpoint once a second while a chat is working and pauses when the tab is hidden. The Home Assistant integration does not use it.
+The worker keeps the running exchange's steps in memory and saves them to `<task_root>/<task_id>/turns/<turn_id>/activity.json` whenever a new approval request or tool question arrives and when the run ends. The authenticated endpoint `GET /tasks/<task_id>/activity?after=<seq>` returns `turn_id`, `running`, `seq`, `total`, the steps added or changed after that sequence, and `elapsed_ms` during a run. Add `turn_id` to read the activity of an earlier exchange in the same chat. A step update keeps its original `index`. The worker stores each approval card's position separately so it stays in place as steps arrive and decisions are made. The web UI polls the active turn once a second and pauses when the tab is hidden.
 
 ### Generated images
 
@@ -472,7 +478,7 @@ From **0.1.49**, images that Codex generates during a conversation appear in the
 
 Image generation uses Codex's built-in `image_gen` tool with the signed-in ChatGPT account. It needs no separate OpenAI API key. Tool availability and usage limits depend on the account. The app currently bundles Codex CLI 0.165.0.
 
-After each run, the worker reads the session's rollout file under `/data/codex-home/sessions` and looks for completed `image_gen.generation` items that were not already present before the exchange. This works for sandboxed app-server turns and full-access `codex exec` runs, including images absent from the live event stream. Codex saves each result under `/data/codex-home/generated_images/<session_id>/`. The worker copies the file into `<task_root>/<task_id>/turns/<turn_id>/attachments/` and records metadata on that exchange. If the saved file is missing, the worker decodes the inline result from the rollout instead. The original stays where Codex saved it so follow-up edits in the same conversation keep working.
+After each run, the worker reads the session's rollout file under `/data/codex-home/sessions` and looks for completed `image_gen.generation` items that were not already present before the exchange. This works in all sandbox modes, including for images absent from the live event stream. Codex saves each result under `/data/codex-home/generated_images/<session_id>/`. The worker copies the file into `<task_root>/<task_id>/turns/<turn_id>/attachments/` and records metadata on that exchange. If the saved file is missing, the worker decodes the inline result from the rollout instead. The original stays where Codex saved it so follow-up edits in the same conversation keep working.
 
 The task prompt tells Codex that generated images are attached automatically and that it should leave them at the default save location unless the user asks for a file at a specific path, for example under `/config/www` for use on a dashboard.
 
@@ -486,7 +492,7 @@ If an image does not appear, open the task log and look for `Skipped image gener
 
 From **0.1.51**, you can attach images to a message: a screenshot of a dashboard problem, a photo of a device, or a design mockup. Use the paperclip button next to the model pill, paste an image from the clipboard into the message box, or drop image files onto the composer. Pending images appear above the message box with a remove button and go out with the next message, in a new chat or when continuing a saved one. They then appear with your message in the conversation and stay with it across reloads and worker restarts.
 
-Codex receives each image with the message as a `localImage` input in sandboxed app-server turns. In `danger-full-access`, the worker uses `codex exec --image` for a new chat or `codex exec resume --image` for a continued one. The task prompt also names the attached files. Images become part of the saved session and can contribute to the context of later turns, so the UI resizes images whose longest edge exceeds 2048 pixels before uploading.
+Codex receives each image with the message as a `localImage` input in new and continued app-server turns. The task prompt also names the attached files. Images become part of the saved session and can contribute to the context of later turns, so the UI resizes images whose longest edge exceeds 2048 pixels before uploading.
 
 In the Home Assistant Android app, the paperclip picks one image at a time; use it again to add more. The app's file chooser returns nothing when a multi-select picker is used, so the web UI asks Android WebViews for a single selection. Paste and drag-and-drop still accept several images at once.
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.82
+
+- Added chat support for MCP confirmations and fixed-choice connector questions, including optional answers, dismissal, and expiry.
+- Kept approval cards and selected answers in their original positions in the activity timeline, including after reopening a chat.
+- Made Full access grant permissions automatically while still showing connector questions that need an answer.
+
+Update the worker app to **0.1.82** for these changes. The integration is also available at **0.1.82**.
+
 ## 0.1.81
 
 - Added the OpenSSH client for optional connections to existing SSH servers, including Home Assistant's SSH apps, NAS devices, and Linux machines.

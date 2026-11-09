@@ -551,6 +551,8 @@ function controls() {
   if (waiting)
     notice =
       "This chat's message is waiting in the queue and has not been sent yet. You can edit or remove it above.";
+  else if (task?.answer_required)
+    notice = "Answer the tool's question above to continue, or stop the task.";
   else if (task?.permission_required)
     notice = "Review the permission request above to continue, or stop the task.";
   else if (working && task?.browser_retry)
@@ -635,6 +637,7 @@ function renderRow(chat, queued = null) {
       "span",
       queued
         ? markdownPlain(queued.message) || queued.message
+        : chat.answer_required ? "Waiting for your answer"
         : chat.permission_required ? "Waiting for your permission" : markdownPlain(chat.summary || chat.question) ||
             labels[chat.status] ||
             chat.status,
@@ -649,7 +652,7 @@ function renderRow(chat, queued = null) {
         ? queued.position === 1
           ? "Next in queue"
           : `In queue · ${queued.position} of ${state.queue.length}`
-        : chat.permission_required ? "Permission needed" : labels[chat.status] || chat.status,
+        : chat.answer_required ? "Answer needed" : chat.permission_required ? "Permission needed" : labels[chat.status] || chat.status,
       queued || chat.status === "waiting_for_input" || chat.permission_required ? "waiting" : "",
     ),
   );
@@ -1265,7 +1268,7 @@ function renderTask(force = false) {
   $("chat-status").textContent =
     task.status === "in_queue"
       ? "In queue · not sent yet"
-      : `${task.permission_required ? "Permission needed" : labels[task.status] || task.status} · ${dateLabel(task.updated_at, true)}${queued ? " · next message in queue" : ""}`;
+      : `${task.answer_required ? "Answer needed" : task.permission_required ? "Permission needed" : labels[task.status] || task.status} · ${dateLabel(task.updated_at, true)}${queued ? " · next message in queue" : ""}`;
   const signature = JSON.stringify([
     task.turns,
     task.history_incomplete,
@@ -1315,8 +1318,8 @@ function renderTask(force = false) {
       );
     if (turn.message)
       exchange.append(renderMarkdown(turn.message, "message user"));
-    for (const approval of turn.approvals || [])
-      exchange.append(renderApproval(approval, task.task_id, turn.turn_id, latest && task.status === "running"));
+    if (latest || turn.approvals?.length)
+      exchange.append(activityBlock(turn, latest, task));
     const attachments = imageAttachments(turn.attachments);
     const hasAnswer =
       turn.summary || turn.details || turn.question || attachments.length || turn.verification?.length;
@@ -1362,14 +1365,13 @@ function renderTask(force = false) {
           "turn-meta",
         ),
       );
-      if (latest) answer.append(activityBlock());
       exchange.append(answer);
     } else if (["queued", "running"].includes(turn.status)) {
       const pending = textNode(
         "p",
         turn.status === "queued"
           ? "Getting started…"
-          : task.permission_required ? "Waiting for your permission…" : "Working on your request…",
+          : taskWaitLabel(task),
         "pending",
       );
       if (latest) {
@@ -1377,7 +1379,6 @@ function renderTask(force = false) {
         pending.append(textNode("span", "", "elapsed"));
       }
       exchange.append(pending);
-      if (latest) exchange.append(activityBlock());
     }
     area.append(exchange);
   }
@@ -1390,10 +1391,17 @@ function renderTask(force = false) {
 /** Show a native permission request as text, with its precise action and scope. */
 function renderApproval(approval, taskId, turnId, active) {
   const pending = active && approval.status === "pending";
+  const question = approval.kind === "user_input";
+  const isMcp = approval.kind === "mcp" || question;
+  const inputs = [];
+  const drafts = state.activity?.answers;
+  const selected = drafts?.get(approval.approval_id) || new Map();
+  if (!pending) drafts?.delete(approval.approval_id);
+  else if (approval.fields?.length) drafts?.set(approval.approval_id, selected);
   const card = textNode("section", "", "permission-card");
-  card.setAttribute("aria-label", "Permission request");
-  const statuses = { allowed: "Allowed once", denied: "Denied", expired: "Expired" };
-  card.append(textNode("strong", pending ? "Permission needed" : statuses[approval.status] || "Expired"));
+  card.setAttribute("aria-label", question ? "Tool question" : "Permission request");
+  const statuses = { allowed: question ? "Answered" : "Allowed once", denied: question ? "Dismissed" : "Denied", expired: "Expired" };
+  card.append(textNode("strong", pending ? (question ? "Answer needed" : "Permission needed") : statuses[approval.status] || "Expired"));
   if (approval.reason) card.append(textNode("p", approval.reason));
   card.append(textNode("p", approval.scope || "", "permission-scope"));
   if (approval.cwd) card.append(textNode("p", `Working folder: ${approval.cwd}`, "permission-folder"));
@@ -1405,16 +1413,62 @@ function renderApproval(approval, taskId, turnId, active) {
     card.append(textNode("pre", change.diff || "No diff available", "permission-diff"));
   }
   if (approval.note) card.append(textNode("p", approval.note, "permission-note"));
+  if (isMcp && approval.server) card.append(textNode("p", `Server: ${approval.server}`));
+  for (const field of approval.fields || []) {
+    if (!pending) {
+      const index = approval.selected_choices?.[field.id];
+      const choice = Number.isInteger(index) ? field.choices[index] : null;
+      if (approval.status === "allowed" && choice) {
+        const answer = textNode("p", "");
+        answer.append(textNode("strong", field.label), textNode("span", ` ${choice.label}`));
+        card.append(answer);
+      }
+      continue;
+    }
+    const label = textNode("label", field.label);
+    if (field.description) label.append(textNode("p", field.description));
+    const select = document.createElement("select");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = field.required === false ? "Skip (optional)" : "Choose an answer";
+    select.append(placeholder);
+    field.choices.forEach((choice, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = choice.description ? `${choice.label} — ${choice.description}` : choice.label;
+      select.append(option);
+    });
+    if (selected.has(field.id)) select.value = selected.get(field.id);
+    select.addEventListener("change", () => selected.set(field.id, select.value));
+    label.append(select);
+    card.append(label);
+    inputs.push({ field, select });
+  }
   if (pending) {
     const actions = textNode("div", "", "choices");
     actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", "Permission decision");
-    for (const [decision, label] of [["allow", "Allow once"], ["deny", "Deny"]]) {
+    actions.setAttribute("aria-label", question ? "Answer options" : "Permission decision");
+    const submit = question ? "Send answer" : isMcp ? "Approve" : "Allow once";
+    const dismiss = question ? "Dismiss" : isMcp ? "Reject" : "Deny";
+    for (const [decision, label] of [["allow", submit], ["deny", dismiss]]) {
       const button = textNode("button", label, "subtle permission-action");
       button.type = "button";
       button.dataset.canAllow = String(decision !== "allow" || approval.can_allow);
       button.disabled = state.busy || button.dataset.canAllow === "false";
-      button.onclick = () => sendApproval(taskId, turnId, approval.approval_id, decision);
+      const updateDisabled = () => {
+        button.dataset.canAllow = String(decision !== "allow" || (approval.can_allow &&
+          inputs.every(({ field, select }) => field.required === false || select.value !== "")));
+        button.disabled = state.busy || button.dataset.canAllow === "false";
+      };
+      for (const { select } of inputs) select.addEventListener("change", updateDisabled);
+      updateDisabled();
+      button.onclick = () => {
+        const content = isMcp && decision === "allow" ? Object.fromEntries(
+          inputs.filter(({ select }) => select.value !== "")
+            .map(({ field, select }) => [field.id, field.choices[Number(select.value)].value])
+        ) : undefined;
+        return sendApproval(taskId, turnId, approval.approval_id, decision, content);
+      };
       actions.append(button);
     }
     card.append(actions);
@@ -1422,14 +1476,14 @@ function renderApproval(approval, taskId, turnId, active) {
   return card;
 }
 /** Reply to the live request, preserving the draft and refreshing stale decisions. */
-async function sendApproval(taskId, turnId, approvalId, decision) {
+async function sendApproval(taskId, turnId, approvalId, decision, content) {
   if (state.busy || state.id !== taskId) return;
   state.busy = true;
   controls();
   showError(null);
   try {
     await api(`tasks/${encodeURIComponent(taskId)}/approvals/${encodeURIComponent(approvalId)}`, {
-      turn_id: turnId, decision,
+      turn_id: turnId, decision, ...(content === undefined ? {} : { content }),
     });
   } catch (error) {
     showError(error);
@@ -1669,6 +1723,11 @@ function taskActive() {
     state.task && ["queued", "running"].includes(state.task.status),
   );
 }
+function taskWaitLabel(task) {
+  if (task?.answer_required) return "Waiting for your answer…";
+  if (task?.permission_required) return "Waiting for your permission…";
+  return "Working on your request…";
+}
 /** Forget the steps of the previous chat and stop polling for them. */
 function resetActivity(id) {
   clearTimeout(activityTimer);
@@ -1685,15 +1744,48 @@ function resetActivity(id) {
         loading: false,
         expanded: null,
         open: new Set(),
+        history: new Map(),
+        answers: new Map(),
       }
     : null;
 }
-/** Build the empty, hidden container that renderActivity fills with steps. */
-function activityBlock() {
+const activityCards = new WeakMap();
+
+/** Keep the cards visible at their original positions even with steps collapsed. */
+function activityBlock(turn, latest, task) {
   const block = textNode("div", "", "activity");
-  block.id = "activity";
+  block.id = latest ? "activity" : `activity-${turn.turn_id}`;
+  block.dataset.turnId = turn.turn_id || "";
   block.hidden = true;
+  const cards = (turn.approvals || []).map(approval => ({
+    index: Number.isInteger(approval.activity_index) ? approval.activity_index : -1,
+    element: renderApproval(approval, task.task_id, turn.turn_id, latest && task.status === "running"),
+  }));
+  activityCards.set(block, cards);
+  if (!latest) {
+    const history = state.activity.history;
+    if (!history.has(turn.turn_id))
+      history.set(turn.turn_id, {id: task.task_id, steps: new Map(), open: new Set(), expanded: false, loaded: false});
+    renderActivity(block, history.get(turn.turn_id));
+  }
   return block;
+}
+
+async function loadTurnActivity(block, activity) {
+  if (activity.loaded || activity.loading) return;
+  const currentChat = state.activity;
+  activity.loading = true;
+  try {
+    const data = await api(`tasks/${encodeURIComponent(activity.id)}/activity?turn_id=${encodeURIComponent(block.dataset.turnId)}`);
+    if (state.activity !== currentChat) return;
+    for (const step of data.steps) activity.steps.set(step.index, step);
+    activity.loaded = true;
+    renderActivity($(block.id), activity);
+  } catch {
+    // A later expansion can retry loading the saved steps.
+  } finally {
+    activity.loading = false;
+  }
 }
 /** Load steps once for an idle chat, and keep loading them while Codex works. */
 function ensureActivity() {
@@ -1763,17 +1855,19 @@ async function pollActivity() {
     }
   }
 }
-/** Draw the step list of the latest exchange, with its heading, count, and timer. */
-function renderActivity() {
-  const block = $("activity");
-  const activity = state.activity;
+/** Draw a turn's ordered activity and approval cards. */
+function renderActivity(block = $("activity"), activity = state.activity) {
   if (!block || !activity || activity.id !== state.id) return;
-  const steps = [...activity.steps.values()].sort((a, b) => a.index - b.index);
-  const running = activity.running || taskActive();
-  block.hidden = !steps.length;
+  const latest = block.id === "activity";
+  const steps = latest && activity.turnId && activity.turnId !== block.dataset.turnId
+    ? [] : [...activity.steps.values()];
+  const cards = activityCards.get(block) || [];
+  const running = latest && (activity.running || taskActive());
+  const canExpand = Boolean(steps.length || (!latest && !activity.loaded));
+  block.hidden = !cards.length && !canExpand;
   block.classList.toggle("running", running);
   // The step list takes the place of the waiting line once Codex reports steps.
-  const pending = $("pending");
+  const pending = latest && $("pending");
   if (pending) pending.hidden = !block.hidden;
   if (block.hidden) {
     block.replaceChildren();
@@ -1783,37 +1877,51 @@ function renderActivity() {
   const area = $("messages");
   const nearBottom =
     area.scrollHeight - area.scrollTop - area.clientHeight < 100;
-  const count = steps.length === 1 ? "1 step" : `${steps.length} steps`;
-  const toggle = textNode("button", "", "activity-toggle");
-  toggle.type = "button";
-  toggle.setAttribute("aria-expanded", String(expanded));
-  toggle.setAttribute("aria-controls", "activity-steps");
-  const label = textNode(
-    "span",
-    running
-      ? `${state.task?.permission_required ? "Waiting for your permission…" : "Working on your request…"} · ${count}`
-      : `${expanded ? "Hide" : "Show"} activity (${count})`,
-  );
-  if (running) label.append(textNode("span", "", "elapsed"));
-  toggle.append(textNode("span", "", "activity-chevron"), label);
-  toggle.onclick = () => {
-    activity.expanded = !expanded;
-    renderActivity();
-  };
+  const focused = block.contains(document.activeElement) ? document.activeElement : null;
+  const redraw = () => renderActivity(block, activity);
   const list = textNode("div", "", "activity-steps");
-  list.id = "activity-steps";
-  list.hidden = !expanded;
-  for (const step of steps) list.append(renderStep(step, activity));
-  block.replaceChildren(toggle, list);
-  tickElapsed();
-  if (nearBottom) area.scrollTop = area.scrollHeight;
+  list.id = `${block.id}-steps`;
+  list.hidden = !expanded && !cards.length;
+  const rows = [...cards];
+  if (expanded) {
+    for (const step of steps) rows.push({index: step.index, element: renderStep(step, activity, redraw)});
+  }
+  rows.sort((a, b) => a.index - b.index);
+  list.append(...rows.map(row => row.element));
+  if (canExpand) {
+    const count = steps.length === 1 ? "1 step" : `${steps.length} steps`;
+    const toggle = textNode("button", "", "activity-toggle");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-controls", list.id);
+    const label = textNode("span", running ? `${taskWaitLabel(state.task)} · ${count}`
+      : `${expanded ? "Hide" : "Show"} activity${activity.loaded ? ` (${count})` : ""}`);
+    if (running) label.append(textNode("span", "", "elapsed"));
+    toggle.append(textNode("span", "", "activity-chevron"), label);
+    toggle.onclick = () => {
+      activity.expanded = !expanded;
+      redraw();
+      if (!latest && !expanded) loadTurnActivity(block, activity);
+    };
+    block.replaceChildren(toggle, list);
+    if (focused?.classList.contains("activity-toggle")) toggle.focus({preventScroll: true});
+  } else block.replaceChildren(list);
+  if (focused?.isConnected) focused.focus({preventScroll: true});
+  else if (focused?.classList.contains("step-output-toggle")) {
+    const index = CSS.escape(focused.dataset.stepIndex);
+    list.querySelector(`.step-output-toggle[data-step-index="${index}"]`)?.focus({preventScroll: true});
+  }
+  if (latest) {
+    tickElapsed();
+    if (nearBottom) area.scrollTop = area.scrollHeight;
+  }
 }
 /**
  * Build one row of the step list: icon, text, and a line with a failed
  * command's exit code, the duration, and the running state. A step with
  * output gets a button that shows or hides it.
  */
-function renderStep(step, activity) {
+function renderStep(step, activity, redraw) {
   const row = textNode("div", "", `step step-${step.kind} is-${step.status}`);
   row.append(textNode("span", stepIcons[step.kind] || "•", "step-icon"));
   const body = textNode("div", "", "step-body");
@@ -1840,10 +1948,11 @@ function renderStep(step, activity) {
       "step-output-toggle",
     );
     button.type = "button";
+    button.dataset.stepIndex = String(step.index);
     button.onclick = () => {
       if (open) activity.open.delete(step.index);
       else activity.open.add(step.index);
-      renderActivity();
+      redraw();
     };
     footer.append(button);
     if (open) body.append(textNode("pre", step.output, "step-output"));

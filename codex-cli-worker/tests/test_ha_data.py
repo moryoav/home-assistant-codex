@@ -626,17 +626,12 @@ class DataMcpTests(unittest.TestCase):
                 self.assertEqual(engine.capabilities, {})
                 self.assertFalse(export.exists())
 
-    def test_both_cli_paths_register_automatically_approved_data_tools(self):
-        """Use the same required bridge in exec and app-server so changing sandbox mode cannot hide it."""
-        options = {**server.DEFAULT_OPTIONS, "codex_sandbox": "workspace-write"}
-        with patch.object(server, "read_options", return_value=options), patch.object(server, "tasks", {}):
-            exec_args = server.build_codex_args("chat", Path("prompt"), Path("final"), None)
-            app_args = server.build_app_server_args()
-        for args in (exec_args, app_args):
-            self.assertIn('mcp_servers.home_assistant_data.tools.history.approval_mode="approve"', args)
-            self.assertIn('mcp_servers.home_assistant_data.tools.statistics.approval_mode="approve"', args)
-            self.assertIn('mcp_servers.home_assistant_data.required=true', args)
-            self.assertNotIn("SUPERVISOR_TOKEN", " ".join(args))
+    def test_app_server_registers_automatically_approved_data_tools(self):
+        args = server.build_app_server_args()
+        self.assertIn('mcp_servers.home_assistant_data.tools.history.approval_mode="approve"', args)
+        self.assertIn('mcp_servers.home_assistant_data.tools.statistics.approval_mode="approve"', args)
+        self.assertIn('mcp_servers.home_assistant_data.required=true', args)
+        self.assertNotIn("SUPERVISOR_TOKEN", " ".join(args))
 
 
 if __name__ == "__main__":

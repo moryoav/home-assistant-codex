@@ -76,9 +76,85 @@ async function testApprovals(browser, output, errors) {
   assert.match(await approvalPage.locator(".permission-card").textContent(), /Move to: \/other\/renamed.yaml/);
   await approvalPage.getByRole("button", {name: "Allow once", exact: true}).click();
   await approvalPage.locator(".permission-card strong").filter({hasText: /^Allowed once$/}).waitFor();
+  await testConnectorTimeline(approvalPage);
   await approvalPage.close();
 }
 module.exports = testApprovals;
+
+/** A live question stays between the same events and before the final response. */
+async function testConnectorTimeline(page) {
+  const prompt = "Request permission for a connector question";
+  const before = "Prepared the connector request";
+  const after = "Received another activity event";
+  await page.getByRole("button", {name: "New chat", exact: true}).click();
+  await page.locator("#message").fill(prompt);
+  await page.getByRole("button", {name: "Send message", exact: true}).click();
+  const exchange = page.locator(".exchange").filter({has: page.getByText(prompt, {exact: true})});
+  const answer = exchange.getByRole("button", {name: "Send answer", exact: true});
+  const question = exchange.locator(".permission-card");
+  await answer.waitFor();
+  await exchange.getByText(before, {exact: true}).waitFor();
+  assert.equal(await answer.isEnabled(), false);
+  await question.locator("select").selectOption({label: "Office"});
+  const taskId = await page.evaluate(() => localStorage.getItem("codex-last-chat"));
+  assert.equal((await page.request.post("http://127.0.0.1:9137/preview/fixture/approval-step", {
+    data: {task_id: taskId},
+  })).ok(), true);
+  await exchange.getByText(after, {exact: true}).waitFor();
+
+  async function checkOrder(finished) {
+    const order = await exchange.evaluate((turn, labels) => {
+      const steps = [...turn.querySelectorAll(".step-text")];
+      const first = steps.find(step => step.textContent === labels.before);
+      const last = steps.find(step => step.textContent === labels.after);
+      const card = turn.querySelector(".permission-card");
+      const final = turn.querySelector(".answer");
+      const precedes = (left, right) => left && right &&
+        Boolean(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING);
+      return Boolean(precedes(first, card) && precedes(card, last) &&
+        (!labels.finished || precedes(last, final)));
+    }, {before, after, finished});
+    assert.ok(order, "The question should stay between its surrounding activity and before the answer");
+  }
+
+  await checkOrder(false);
+  await page.setViewportSize({width: 390, height: 844});
+  await exchange.locator(".activity-toggle").click();
+  await exchange.getByText(before, {exact: true}).waitFor({state: "hidden"});
+  assert.equal(await answer.isEnabled(), true);
+  assert.equal(await question.locator("select option:checked").textContent(), "Office");
+  const [decision] = await Promise.all([
+    page.waitForRequest(request => request.method() === "POST" &&
+      new URL(request.url()).pathname.startsWith(`/preview/tasks/${taskId}/approvals/`)),
+    answer.click(),
+  ]);
+  assert.deepEqual(decision.postDataJSON().content, {destination: "Office"});
+  await exchange.getByText("Answered", {exact: true}).waitFor();
+  await question.getByText("Which room? Office", {exact: true}).waitFor();
+  await exchange.getByText(`Preview response: ${prompt}`, {exact: true}).waitFor();
+  assert.equal(await answer.count(), 0);
+  await exchange.getByRole("button", {name: /^Show activity/}).click();
+  await checkOrder(true);
+
+  await page.locator("#message").fill("Continue after the connector");
+  await page.getByRole("button", {name: "Send message", exact: true}).click();
+  await page.locator("#messages").getByText("Preview response: Continue after the connector", {exact: true}).waitFor();
+  await page.reload();
+  await exchange.getByRole("button", {name: /^Show activity/}).click();
+  await exchange.getByText(after, {exact: true}).waitFor();
+  await checkOrder(true);
+  await question.getByText("Which room? Office", {exact: true}).waitFor();
+  assert.equal(await question.locator(".permission-action").count(), 0);
+  const showOutput = exchange.getByRole("button", {name: "Show output", exact: true});
+  const hideOutput = exchange.getByRole("button", {name: "Hide output", exact: true});
+  await showOutput.focus();
+  await page.keyboard.press("Enter");
+  await exchange.locator(".step-output").waitFor();
+  assert.equal(await hideOutput.evaluate(button => button === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await exchange.locator(".step-output").waitFor({state: "hidden"});
+  assert.equal(await showOutput.evaluate(button => button === document.activeElement), true);
+}
 
 /** Run these focused checks on their own when diagnosing the approval UI. */
 async function main() {
@@ -89,7 +165,7 @@ async function main() {
     const errors = [];
     await testApprovals(browser, output, errors);
     assert.deepEqual(errors, []);
-    console.log("PASS: permission UI on desktop and mobile, allow/deny, stale replies, cancellation, drafts, and safe text.");
+    console.log("PASS: permission UI on desktop and mobile, approval timeline, collapse and reload, allow/deny, cancellation, and safe text.");
   } finally {
     await browser.close();
   }

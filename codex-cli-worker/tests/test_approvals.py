@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_server import server
-from approvals import AppServerSession, COMMAND_APPROVAL, FILE_APPROVAL, DISPLAY_LIMIT
+from approvals import AppServerSession, COMMAND_APPROVAL, DISPLAY_LIMIT, FILE_APPROVAL, MCP_ELICITATION
 
 
 class Transport(io.StringIO):
@@ -324,6 +324,7 @@ class ApprovalApiTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.patches = [patch.object(server, "tasks", {}), patch.object(server, "approval_sessions", {}),
+                        patch.object(server, "task_activity", {}),
                         patch.object(server, "running_processes", {}), patch.object(server, "save_task_index"),
                         patch.object(server, "api_token", return_value="worker-secret"),
                         patch.object(server, "get_task_dir", return_value=Path(self.temp.name) / "task"),
@@ -366,6 +367,30 @@ class ApprovalApiTests(unittest.TestCase):
         task = server.tasks["task"]
         self.assertEqual(task["turns"][-1]["approvals"][0]["status"], "allowed")
         self.assertFalse(server.task_payload(task)["permission_required"])
+
+    def test_mcp_confirmations_accept_a_decision_without_form_content(self):
+        self.addCleanup(self.session.close)
+        question_id = "mcp_tool_call_approval_tool-call"
+        cases = (
+            (MCP_ELICITATION, {"mode": "form", "message": "Allow the tool?",
+                               "requestedSchema": {"type": "object", "properties": {}}},
+             {"action": "accept", "content": {}}),
+            ("item/tool/requestUserInput", {"itemId": "tool-call", "questions": [{
+                "id": question_id, "question": "Allow the tool?", "isOther": False,
+                "options": [{"label": "Allow"}, {"label": "Deny"}],
+            }]}, {"answers": {question_id: {"answers": ["Allow"]}}}),
+        )
+        for request_id, (method, params, result) in enumerate(cases, 11):
+            with self.subTest(method=method):
+                self.session.receive({"id": request_id, "method": method, "params": {
+                    "threadId": "thread", "turnId": "turn", **params,
+                }})
+                self.approval_id = server.tasks["task"]["approvals"][-1]["approval_id"]
+                self.assertEqual(self.answer({
+                    "decision": "allow", "turn_id": "worker-turn", "content": {"extra": True},
+                }).status_code, 400)
+                self.assertEqual(self.answer().status_code, 200)
+                self.assertEqual(self.writer.messages()[-1], {"id": request_id, "result": result})
 
     def test_each_new_request_is_announced_once(self):
         """A request that starts waiting sends one notification; its decision and its expiry send none."""
@@ -464,19 +489,33 @@ class ApprovalApiTests(unittest.TestCase):
         self.assertEqual(self.session.turn_params["outputSchema"], server.FINAL_RESPONSE_SCHEMA)
         self.assertEqual(self.session.turn_params["sandboxPolicy"], {
             "type": "workspaceWrite", "networkAccess": False, "writableRoots": ["/config"]})
-        self.assertTrue(server.uses_user_approvals({}))
-        self.assertTrue(server.uses_user_approvals({"codex_sandbox": "read-only"}))
-        self.assertFalse(server.uses_user_approvals({"codex_sandbox": "danger-full-access"}))
+        full = server.create_approval_session("task", self.proc, "Inspect this", Path(self.temp.name) / "final",
+            "thread", {}, {**server.DEFAULT_OPTIONS, "codex_sandbox": "danger-full-access"})
+        self.assertEqual(full.thread_params["sandbox"], "danger-full-access")
+        self.assertEqual(full.turn_params["sandboxPolicy"], {"type": "dangerFullAccess"})
+        self.assertEqual(full.turn_params["approvalPolicy"], "on-request")
 
     def test_restore_marks_pending_audit_expired_and_active_task_failed(self):
-        """Restart loads the audit for display while dropping every live grant capability."""
+        """Restart expires the card and preserves the activity before it."""
+        server.start_activity("task", "worker-turn")
+        server.start_phase("task", "explain", "Explained the next action")
+        self.session.receive({"id": 11, "method": COMMAND_APPROVAL, "params": {
+            "threadId": "thread", "turnId": "turn", "itemId": "another",
+            "command": "curl https://example.test/other", "cwd": "/config"}})
+        server.start_phase("task", "after", "Later activity")
         server.tasks.clear()
         server.approval_sessions.clear()
+        server.task_activity.clear()
         server.load_task_index()
         restored = server.tasks["task"]
         self.assertEqual(restored["status"], "failed")
         self.assertEqual(restored["turns"][-1]["status"], "failed")
         self.assertEqual(restored["approvals"][0]["status"], "expired")
+        self.assertEqual(restored["approvals"][1]["status"], "expired")
+        self.assertEqual(restored["approvals"][1]["activity_index"], 1)
+        activity = self.client.get("/tasks/task/activity", headers={"Authorization": "Bearer worker-secret"})
+        self.assertEqual(activity.status_code, 200)
+        self.assertEqual([step["text"] for step in activity.json["steps"]], ["Explained the next action"])
         self.assertEqual(self.answer().status_code, 409)
 
     def test_app_server_preserves_model_images_and_hides_known_credentials(self):

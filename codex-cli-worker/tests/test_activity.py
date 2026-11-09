@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+from app_server_fixture import StubAppServer
 from test_server import server
 
 
@@ -222,6 +223,43 @@ class ActivityApiTests(unittest.TestCase):
         fresh = self.get(task_id).json
         self.assertNotEqual(fresh["turn_id"], turn_id)
         self.assertEqual(fresh["steps"], [])
+        server.start_activity(task_id, fresh["turn_id"])
+        url = f"/tasks/{task_id}/activity"
+        earlier = self.client.get(url, query_string={"turn_id": turn_id}, headers=self.headers)
+        self.assertEqual(earlier.json, stored)
+        for unknown in ("0" * 32, "../task"):
+            self.assertEqual(self.client.get(url, query_string={"turn_id": unknown}, headers=self.headers).status_code, 404)
+
+    def test_index_recovery_keeps_approval_activity_after_continuing(self):
+        task_id = self.create()
+        turn_id = server.tasks[task_id]["current_turn_id"]
+        server.start_activity(task_id, turn_id)
+        server.record_activity_event(task_id, command("before-approval", "ls"))
+        server.update_task(
+            task_id, status="completed", session_id=self.session_id, summary="Done",
+            approvals=[{"status": "allowed", "activity_index": 1}],
+        )
+        server.finish_activity(task_id)
+        saved = self.get(task_id).json
+
+        (self.root / "tasks" / task_id / "task.json").unlink()
+        server.tasks.clear()
+        server.active_task_runners.clear()
+        server.load_task_index()
+        recovered = self.client.get(f"/tasks/{task_id}", headers=self.headers).json["task"]
+        self.assertTrue(recovered["history_incomplete"])
+        old_turn = recovered["turns"][0]
+        self.assertEqual(old_turn["approvals"], [{"status": "allowed", "activity_index": 1}])
+        url = f"/tasks/{task_id}/activity"
+        params = {"turn_id": old_turn["turn_id"]}
+        self.assertEqual(self.client.get(url, query_string=params, headers=self.headers).json, saved)
+
+        response = self.client.post(f"/tasks/{task_id}/continue", json={"message": "Go on"}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        server.tasks.clear()
+        server.load_task_index()
+        self.assertEqual(self.client.get(url, query_string=params, headers=self.headers).json, saved)
+        self.assertEqual(self.get(task_id).json["steps"], [])
 
     def test_failed_run_records_its_summary(self):
         """A failed run stores an outcome step that carries the task's failure summary."""
@@ -232,6 +270,38 @@ class ActivityApiTests(unittest.TestCase):
         server.finish_activity(task_id)
         steps = self.get(task_id).json["steps"]
         self.assertEqual([step["text"] for step in steps], ["Failed: Codex timed out after 5 seconds."])
+
+    def test_app_server_plan_updates_stay_at_their_first_activity_position(self):
+        task_id = self.create()
+        turn_id = server.tasks[task_id]["current_turn_id"]
+        server.update_task(task_id, status="running")
+        server.start_activity(task_id, turn_id)
+        proc = StubAppServer(self.session_id)
+        session = server.create_approval_session(
+            task_id, proc, "Review", self.root / "final.json", None, {}, {"codex_sandbox": "danger-full-access"},
+        )
+        self.addCleanup(session.close)
+        session.thread_id, session.turn_id = self.session_id, proc.turn_id
+
+        def update(status, turn=proc.turn_id):
+            session.receive({"method": "turn/plan/updated", "params": {
+                "threadId": self.session_id, "turnId": turn,
+                "plan": [{"step": "Read the automation", "status": status}],
+            }})
+
+        update("pending")
+        first = self.get(task_id).json
+        self.assertEqual([step["text"] for step in first["steps"]], ["☐ Read the automation"])
+        server.record_activity_event(task_id, command("c1", "ls"))
+        update("completed", turn="other-turn")
+        self.assertEqual(self.get(task_id).json["steps"][0]["text"], "☐ Read the automation")
+        update("completed")
+        server.update_task(task_id, status="completed")
+        server.finish_activity(task_id)
+        steps = self.get(task_id).json["steps"]
+        self.assertEqual([(step["kind"], step["text"]) for step in steps],
+                         [("plan", "☑ Read the automation"), ("command", "ls")])
+        self.assertEqual(steps[0]["index"], first["steps"][0]["index"])
 
     def test_deleting_a_chat_forgets_its_steps(self):
         """Deleting a chat also drops the steps held in memory for it."""
@@ -252,13 +322,11 @@ class ReasoningSummaryOptionTests(unittest.TestCase):
         for configured, expected in (("detailed", "detailed"), ("none", "none"), (None, "concise"), ("auto", "concise"), ("  Concise ", "concise")):
             with self.subTest(configured=configured):
                 self.assertEqual(server.reasoning_summary({"reasoning_summary": configured}), expected)
-        with (
-            patch.object(server, "tasks", {"t": {"task_id": "t", "turns": [], "chat_settings": server.DEFAULT_CHAT_SETTINGS}}),
-            patch.object(server, "read_options", return_value={"reasoning_summary": "detailed"}),
-        ):
-            args = server.build_codex_args("t", Path("p"), Path("f"), None)
-        self.assertIn('model_reasoning_summary="detailed"', args)
-        self.assertIn('model_reasoning_effort="medium"', args)
+        session = server.create_approval_session(
+            "t", StubAppServer("thread"), "Prompt", Path("final"), None, {}, {"reasoning_summary": "detailed"},
+        )
+        self.assertEqual(session.turn_params["summary"], "detailed")
+        self.assertEqual(session.turn_params["effort"], "medium")
 
 
 if __name__ == "__main__":

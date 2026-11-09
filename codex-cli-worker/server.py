@@ -1597,6 +1597,10 @@ def task_turns(task: dict[str, Any]) -> list[dict[str, Any]]:
             "turn_id": f"legacy-{index + 1}", "message": reply.get("reply", ""),
             "created_at": reply.get("at", ""), "legacy": True,
         })
+    # The slim index still knows the latest turn ID, even if task.json was lost.
+    current_turn = task.get("current_turn_id")
+    if isinstance(current_turn, str) and TURN_ID_RE.fullmatch(current_turn):
+        turns[-1]["turn_id"] = current_turn
     turns[-1].update({key: copy.deepcopy(task[key]) for key in TURN_RESULT_FIELDS if key in task})
     return turns
 
@@ -5167,15 +5171,17 @@ def get_activity(task_id: str) -> Response:
         task = tasks.get(task_id)
         if task is None:
             return jsonify({"ok": False, "error": "task not found"}), 404
-        if requested_turn is not None and (
-            TURN_ID_RE.fullmatch(requested_turn) is None
-            or not any(turn.get("turn_id") == requested_turn for turn in task.get("turns") or [])
-        ):
-            return jsonify({"ok": False, "error": "turn not found"}), 404
+        current_turn = str(task.get("current_turn_id") or "")
+        if requested_turn is not None:
+            turns = task.get("turns", [{"turn_id": current_turn}]) or []
+            if TURN_ID_RE.fullmatch(requested_turn) is None or not any(
+                turn.get("turn_id") == requested_turn for turn in turns
+            ):
+                return jsonify({"ok": False, "error": "turn not found"}), 404
         record = task_activity.get(task_id)
         if record is not None and (requested_turn is None or requested_turn == record["turn_id"]):
             return jsonify({"ok": True, **activity_payload_locked(record, after)})
-        turn_id = requested_turn if requested_turn is not None else str(task.get("current_turn_id") or "")
+        turn_id = requested_turn if requested_turn is not None else current_turn
     stored = load_stored_activity(task_id, turn_id)
     if stored is None:
         return jsonify({"ok": True, "turn_id": turn_id, "seq": 0, "running": False, "total": 0, "steps": []})

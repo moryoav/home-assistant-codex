@@ -230,6 +230,37 @@ class ActivityApiTests(unittest.TestCase):
         for unknown in ("0" * 32, "../task"):
             self.assertEqual(self.client.get(url, query_string={"turn_id": unknown}, headers=self.headers).status_code, 404)
 
+    def test_index_recovery_keeps_approval_activity_after_continuing(self):
+        task_id = self.create()
+        turn_id = server.tasks[task_id]["current_turn_id"]
+        server.start_activity(task_id, turn_id)
+        server.record_activity_event(task_id, command("before-approval", "ls"))
+        server.update_task(
+            task_id, status="completed", session_id=self.session_id, summary="Done",
+            approvals=[{"status": "allowed", "activity_index": 1}],
+        )
+        server.finish_activity(task_id)
+        saved = self.get(task_id).json
+
+        (self.root / "tasks" / task_id / "task.json").unlink()
+        server.tasks.clear()
+        server.active_task_runners.clear()
+        server.load_task_index()
+        recovered = self.client.get(f"/tasks/{task_id}", headers=self.headers).json["task"]
+        self.assertTrue(recovered["history_incomplete"])
+        old_turn = recovered["turns"][0]
+        self.assertEqual(old_turn["approvals"], [{"status": "allowed", "activity_index": 1}])
+        url = f"/tasks/{task_id}/activity"
+        params = {"turn_id": old_turn["turn_id"]}
+        self.assertEqual(self.client.get(url, query_string=params, headers=self.headers).json, saved)
+
+        response = self.client.post(f"/tasks/{task_id}/continue", json={"message": "Go on"}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        server.tasks.clear()
+        server.load_task_index()
+        self.assertEqual(self.client.get(url, query_string=params, headers=self.headers).json, saved)
+        self.assertEqual(self.get(task_id).json["steps"], [])
+
     def test_failed_run_records_its_summary(self):
         """A failed run stores an outcome step that carries the task's failure summary."""
         task_id = self.create()

@@ -22,6 +22,8 @@ COMMAND_APPROVAL = "item/commandExecution/requestApproval"
 FILE_APPROVAL = "item/fileChange/requestApproval"
 MCP_ELICITATION = "mcpServer/elicitation/request"
 USER_INPUT = {"tool/requestUserInput", "item/tool/requestUserInput"}
+PERMISSIONS_APPROVAL = "item/permissions/requestApproval"
+MCP_APPROVAL_QUESTION_PREFIX = "mcp_tool_call_approval_"
 MCP_TIMEOUT_SECONDS = 300
 
 
@@ -44,6 +46,7 @@ class AppServerSession:
         self.writer = writer
         self.lock = lock
         self.thread_params = copy.deepcopy(thread_params)
+        self._full_access = thread_params.get("sandbox") == "danger-full-access"
         self.turn_params = copy.deepcopy(turn_params)
         self.on_event = on_event
         self.on_approvals = on_approvals
@@ -158,18 +161,16 @@ class AppServerSession:
         deadline = monotonic() + timeout
         is_form = method == MCP_ELICITATION
         fallback = {"action": "decline", "content": None} if is_form else {"answers": {}}
-        if (params.get("threadId") != self.thread_id or
+        if (not self.turn_id or params.get("threadId") != self.thread_id or
                 params.get("turnId") not in (None, self.turn_id) or
                 (not is_form and params.get("turnId") != self.turn_id)):
             self._write({"id": request_id, "result": fallback})
             return
         if request_id in self._pending.values():
             raise ValueError("duplicate live permission request")
-        if len(self._records) >= REQUEST_LIMIT:
-            self._write({"id": request_id, "result": fallback})
-            return
         fields = []
         supported = True
+        acceptance = None
         if is_form:
             reason = params.get("message", "")
             schema = params.get("requestedSchema") or {}
@@ -177,7 +178,7 @@ class AppServerSession:
                          isinstance(schema, dict) and schema.get("type") == "object" and
                          set(schema) <= {"type", "properties", "required", "$schema"})
             properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
-            required = (schema.get("required", []) or []) if isinstance(schema, dict) else []
+            required = schema.get("required", []) if isinstance(schema, dict) else []
             supported = (supported and isinstance(properties, dict) and len(properties) <= 10
                          and isinstance(required, list) and len(required) <= len(properties)
                          and all(isinstance(k, str) and k in properties for k in required))
@@ -211,6 +212,9 @@ class AppServerSession:
                         break
                     fields.append({"id": key, "label": str(spec.get("title") or key),
                                    "description": str(spec.get("description") or ""), "choices": choices})
+            meta = params.get("_meta")
+            if supported and not fields and not (isinstance(meta, dict) and meta.get("codex_requires_user_input") is True):
+                acceptance = {"action": "accept", "content": {}}
         else:
             questions = params.get("questions")
             supported = isinstance(questions, list) and 1 <= len(questions) <= 3
@@ -227,12 +231,28 @@ class AppServerSession:
                                    "description": "", "choices": [{"value": o["label"], "label": o["label"],
                                    "description": str(o.get("description") or "")} for o in q["options"]]})
                 supported &= len({f["id"] for f in fields}) == len(fields)
+                # The pinned CLI's legacy tool approval uses a reserved question ID
+                # derived from the tool call ID and an explicit one-time choice.
+                item_id = params.get("itemId")
+                if (supported and len(fields) == 1 and isinstance(item_id, str) and item_id
+                        and questions[0].get("isOther") is False
+                        and fields[0]["id"] == MCP_APPROVAL_QUESTION_PREFIX + item_id
+                        and any(choice["value"] == "Allow" for choice in fields[0]["choices"])):
+                    reason = fields[0]["label"]
+                    acceptance = {"answers": {fields[0]["id"]: {"answers": ["Allow"]}}}
+                    fields = []
+        if acceptance is not None and self._full_access:
+            self._write({"id": request_id, "result": acceptance})
+            return
+        if len(self._records) >= REQUEST_LIMIT:
+            self._write({"id": request_id, "result": fallback})
+            return
         display = {"reason": reason, "server": params.get("serverName", "Codex"), "fields": fields}
         raw = json.dumps(display, ensure_ascii=False)
         safe = self.redact(raw)
         supported &= safe == raw and len(raw) <= DISPLAY_LIMIT and bool(reason)
         approval_id = uuid.uuid4().hex
-        record = {"approval_id": approval_id, "status": "pending", "kind": "mcp" if is_form else "user_input",
+        record = {"approval_id": approval_id, "status": "pending", "kind": "mcp" if acceptance is not None else "user_input",
                   "reason": self._display(reason)[0], "server": self._display(display["server"])[0],
                   "fields": fields if supported else [], "can_allow": supported,
                   "scope": "Your response applies only to this request.",
@@ -246,7 +266,7 @@ class AppServerSession:
             return
         self._pending[approval_id] = request_id
         self._pending_mcp[approval_id] = {
-            "form": is_form, "fields": fields, "fallback": fallback, "deadline": deadline,
+            "form": is_form, "fields": fields, "fallback": fallback, "deadline": deadline, "acceptance": acceptance,
         }
         timer = threading.Timer(max(0, deadline - monotonic()), self._expire_mcp, args=(approval_id,))
         timer.daemon = True
@@ -266,14 +286,17 @@ class AppServerSession:
 
     def _publish_approval(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
         """Expose only a request for the active thread and turn, with an opaque UI ID."""
-        if params.get("threadId") != self.thread_id or params.get("turnId") != self.turn_id:
+        if not self.turn_id or params.get("threadId") != self.thread_id or params.get("turnId") != self.turn_id:
             raise ValueError("permission request does not belong to the active exchange")
+        if request_id in self._pending.values():
+            raise ValueError("duplicate live permission request")
+        if self._full_access:
+            self._write({"id": request_id, "result": {"decision": "accept"}})
+            return
         if len(self._records) >= REQUEST_LIMIT:
             self._write({"id": request_id, "result": {"decision": "decline"}})
             self.on_event({"type": "error", "message": "Too many permission requests in this exchange; request denied."})
             return
-        if request_id in self._pending.values():
-            raise ValueError("duplicate live permission request")
         reason, _ = self._display(params.get("reason"))
         clipped = False
         # Anything but a new command, such as input typed into a running one, is shown but never allowed.
@@ -349,8 +372,12 @@ class AppServerSession:
                             any(not any(type(content[f["id"]]) is type(c["value"]) and content[f["id"]] == c["value"]
                                         for c in f["choices"]) for f in fields)):
                         raise ValueError("Choose a listed answer for every field; arbitrary values are not accepted.")
-                    result = ({"action": "accept", "content": content} if pending["form"] else
-                              {"answers": {key: {"answers": [value]} for key, value in content.items()}})
+                    if pending["acceptance"] is not None:
+                        result = pending["acceptance"]
+                    elif pending["form"]:
+                        result = {"action": "accept", "content": content}
+                    else:
+                        result = {"answers": {key: {"answers": [value]} for key, value in content.items()}}
             elif content is not None:
                 raise ValueError("This approval does not accept form content.")
             self._settle(approval_id, "allowed" if decision == "allow" else "denied", result)
@@ -391,10 +418,17 @@ class AppServerSession:
                     self.close()
                 elif method in {COMMAND_APPROVAL, FILE_APPROVAL}:
                     self._publish_approval(message["id"], method, params)
-                elif method == "item/permissions/requestApproval":
-                    # Broad turn/session grants are deliberately unsupported.
-                    self._write({"id": message["id"], "result": {"permissions": {}, "scope": "turn"}})
-                    self.on_event({"type": "error", "message": "Broad permission grant denied. Request a single command or file change instead."})
+                elif method == PERMISSIONS_APPROVAL:
+                    permissions = {}
+                    if self._full_access:
+                        if (not self.turn_id or params.get("threadId") != self.thread_id
+                                or params.get("turnId") != self.turn_id
+                                or not isinstance(params.get("permissions"), dict)):
+                            raise ValueError("permission request does not belong to the active exchange")
+                        permissions = params["permissions"]
+                    else:
+                        self.on_event({"type": "error", "message": "Broad permission grant denied. Request a single command or file change instead."})
+                    self._write({"id": message["id"], "result": {"permissions": permissions, "scope": "turn"}})
                 elif method == MCP_ELICITATION or method in USER_INPUT:
                     self._publish_mcp(message["id"], method, params)
                 else:
@@ -446,6 +480,8 @@ class AppServerSession:
         elif method in {"thread/start", "thread/resume"}:
             if result.get("approvalPolicy") != "on-request" or result.get("approvalsReviewer") != "user":
                 raise ValueError("Codex did not enable user approval requests")
+            if self._full_access and (result.get("sandbox") or {}).get("type") != "dangerFullAccess":
+                raise ValueError("Codex did not enable Full access")
             self.thread_id = result["thread"]["id"]
             expected = self.thread_params.get("threadId")
             if expected and self.thread_id != expected:

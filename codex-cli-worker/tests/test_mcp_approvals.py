@@ -24,12 +24,16 @@ class ApprovalTests(unittest.TestCase):
         self.out = Capture()
         self.records = []
         self.events = []
-        self.s = approvals.AppServerSession(
-            self.out, lock=threading.RLock(), thread_params={}, turn_params={},
+        self.s = self.session()
+
+    def session(self, sandbox='workspace-write'):
+        session = approvals.AppServerSession(
+            self.out, lock=threading.RLock(), thread_params={'sandbox': sandbox}, turn_params={},
             on_event=self.events.append, on_approvals=lambda r: self.records.append(copy.deepcopy(r)),
             on_final=lambda x: None, is_active=lambda: True, redact=lambda s: s.replace('SENSITIVE', '[redacted]'))
-        self.s.thread_id, self.s.turn_id = 'thread', 'turn'
-        self.addCleanup(self.s.close)
+        session.thread_id, session.turn_id = 'thread', 'turn'
+        self.addCleanup(session.close)
+        return session
 
     def form(self, schema=None, **extra):
         return {'id': 71, 'method': approvals.MCP_ELICITATION, 'params': {
@@ -86,6 +90,39 @@ class ApprovalTests(unittest.TestCase):
 
     def test_empty_form_returns_required_empty_content(self):
         self.s.receive(self.form({'type': 'object', 'properties': {}}))
+        self.s.decide(self.record()['approval_id'], 'allow', {})
+        self.assertEqual(self.response()['result'], {'action': 'accept', 'content': {}})
+
+    def test_full_access_grants_confirmations_without_a_pending_card(self):
+        self.s = self.session('danger-full-access')
+        self.s.receive(self.form({'type': 'object', 'properties': {}}))
+        self.assertEqual(self.response(), {'id': 71, 'result': {'action': 'accept', 'content': {}}})
+        self.s.receive({'id': 80, 'method': approvals.COMMAND_APPROVAL, 'params': {
+            'threadId': 'thread', 'turnId': 'turn', 'command': 'echo harmless', 'cwd': '/tmp'}})
+        self.assertEqual(self.response(), {'id': 80, 'result': {'decision': 'accept'}})
+        self.s.receive({'id': 81, 'method': approvals.FILE_APPROVAL, 'params': {'threadId': 'thread', 'turnId': 'turn'}})
+        self.assertEqual(self.response(), {'id': 81, 'result': {'decision': 'accept'}})
+        self.s.receive({'id': 82, 'method': approvals.PERMISSIONS_APPROVAL, 'params': {
+            'threadId': 'thread', 'turnId': 'turn', 'permissions': {'network': {'enabled': True}}}})
+        self.assertEqual(self.response(), {'id': 82, 'result': {'permissions': {'network': {'enabled': True}}, 'scope': 'turn'}})
+        self.assertEqual(self.records, [])
+
+    def test_full_access_requires_confirmation_of_the_effective_sandbox(self):
+        self.s = self.session('danger-full-access')
+        self.s.start()
+        self.s.receive({'id': 'worker-1', 'result': {}})
+        with self.assertRaisesRegex(ValueError, 'did not enable Full access'):
+            self.s.receive({'id': 'worker-2', 'result': {
+                'thread': {'id': 'thread'}, 'approvalPolicy': 'on-request', 'approvalsReviewer': 'user',
+                'sandbox': {'type': 'readOnly'},
+            }})
+        self.assertEqual(self.response()['method'], 'thread/start')
+
+    def test_full_access_still_waits_for_an_actual_answer(self):
+        self.s = self.session('danger-full-access')
+        self.s.receive(self.form({'type': 'object', 'properties': {}}, _meta={'codex_requires_user_input': True}))
+        self.assertEqual(self.out.getvalue(), '')
+        self.assertEqual(self.record()['kind'], 'user_input')
         self.s.decide(self.record()['approval_id'], 'allow', {})
         self.assertEqual(self.response()['result'], {'action': 'accept', 'content': {}})
 

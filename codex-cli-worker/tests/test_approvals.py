@@ -464,9 +464,11 @@ class ApprovalApiTests(unittest.TestCase):
         self.assertEqual(self.session.turn_params["outputSchema"], server.FINAL_RESPONSE_SCHEMA)
         self.assertEqual(self.session.turn_params["sandboxPolicy"], {
             "type": "workspaceWrite", "networkAccess": False, "writableRoots": ["/config"]})
-        self.assertTrue(server.uses_user_approvals({}))
-        self.assertTrue(server.uses_user_approvals({"codex_sandbox": "read-only"}))
-        self.assertFalse(server.uses_user_approvals({"codex_sandbox": "danger-full-access"}))
+        full = server.create_approval_session("task", self.proc, "Inspect this", Path(self.temp.name) / "final",
+            "thread", {}, {**server.DEFAULT_OPTIONS, "codex_sandbox": "danger-full-access"})
+        self.assertEqual(full.thread_params["sandbox"], "danger-full-access")
+        self.assertEqual(full.turn_params["sandboxPolicy"], {"type": "dangerFullAccess"})
+        self.assertEqual(full.turn_params["approvalPolicy"], "on-request")
 
     def test_restore_marks_pending_audit_expired_and_active_task_failed(self):
         """Restart loads the audit for display while dropping every live grant capability."""

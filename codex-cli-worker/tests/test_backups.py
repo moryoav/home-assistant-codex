@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
+from app_server_fixture import StubAppServer
 from test_server import server
 
 
@@ -337,8 +338,6 @@ class RunTests(unittest.TestCase):
         """Run against a temporary config tree with Codex and Home Assistant faked."""
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
-        # The backup harness emits exec JSON; native approvals are covered separately.
-        self.stack.enter_context(patch.object(server, "uses_user_approvals", return_value=False))
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.config = self.root / "config"
         for name, value in (("tasks", {}), ("task_activity", {}), ("active_task_runners", set()), ("running_processes", {})):
@@ -372,45 +371,25 @@ class RunTests(unittest.TestCase):
 
     def codex(self, *, keep_copy):
         """A fake Codex that edits two files and a Home Assistant that rewrites its own state meanwhile."""
-        test = self
+        def change_files():
+            if keep_copy:
+                (self.run_dir / "backups" / "automations.yaml").write_text("- alias: old\n", encoding="utf-8")
+            (self.config / "automations.yaml").write_text("- alias: new\n", encoding="utf-8")
+            (self.config / "scripts.yaml").write_text("a: 2\n", encoding="utf-8")
+            (self.config / "packages").mkdir(exist_ok=True)
+            (self.config / "packages" / "new.yaml").write_text("sensor: []\n", encoding="utf-8")
+            (self.config / ".storage" / "core.restore_state").write_text('{"data": 2}', encoding="utf-8")
 
-        class FakeProcess:
-            """A stand-in for the Codex process that reports a file change and makes the edits when waited on."""
-
-            def __init__(self, args, **kwargs):
-                """Remember where Codex writes its answer and prepare its event stream."""
-                del kwargs
-                self.output = Path(args[args.index("--output-last-message") + 1])
-                self.stdin = io.StringIO()
-                self.stdout = io.StringIO("".join(json.dumps(event) + "\n" for event in (
-                    {"type": "thread.started", "thread_id": "019fc242-910a-7c92-a17d-54c014e19fc4"},
-                    {"type": "turn.started"},
-                    {"type": "item.completed", "item": {"id": "item_0", "type": "file_change", "status": "completed", "changes": [
-                        {"path": str(test.config / "scripts.yaml"), "kind": "update"},
-                        {"path": str(test.config / "packages" / "new.yaml"), "kind": "add"}]}},
-                )))
-                self.stderr = io.StringIO("")
-                self.returncode = 0
-
-            def poll(self):
-                """Report that the process has exited."""
-                return 0
-
-            def wait(self, timeout=None):
-                """Make the edits, with or without a copy first, and write the final answer."""
-                del timeout
-                if keep_copy:
-                    backups = self.output.parent / "backups"
-                    (backups / "automations.yaml").write_text("- alias: old\n", encoding="utf-8")
-                (test.config / "automations.yaml").write_text("- alias: new\n", encoding="utf-8")
-                (test.config / "scripts.yaml").write_text("a: 2\n", encoding="utf-8")
-                (test.config / "packages").mkdir(exist_ok=True)
-                (test.config / "packages" / "new.yaml").write_text("sensor: []\n", encoding="utf-8")
-                (test.config / ".storage" / "core.restore_state").write_text('{"data": 2}', encoding="utf-8")
-                self.output.write_text(json.dumps({"status": "completed", "summary": "Renamed", "question": "", "details": "Notes"}))
-                return 0
-
-        return patch.object(server.subprocess, "Popen", side_effect=FakeProcess)
+        file_change = {"id": "item_0", "type": "fileChange", "status": "completed", "changes": [
+            {"path": str(self.config / "scripts.yaml"), "kind": {"type": "update"}},
+            {"path": str(self.config / "packages" / "new.yaml"), "kind": {"type": "add"}},
+        ]}
+        process = StubAppServer(
+            "019fc242-910a-7c92-a17d-54c014e19fc4",
+            {"status": "completed", "summary": "Renamed", "question": "", "details": "Notes"},
+            items=[file_change], on_turn=change_files,
+        )
+        return patch.object(server.subprocess, "Popen", return_value=process)
 
     def steps(self):
         """The kind, text, and status of the steps recorded for the exchange."""

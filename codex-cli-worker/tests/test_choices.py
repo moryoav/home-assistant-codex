@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import io
 import json
 import tempfile
 import unittest
@@ -10,6 +9,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+from app_server_fixture import StubAppServer
 from test_server import server
 
 
@@ -61,34 +61,14 @@ class ChoiceTests(unittest.TestCase):
         session = self.session_id
         events = []
 
-        class FakeProcess:
-            """A Codex process that reports the session and writes the final answer when waited for."""
-
-            def __init__(self, args, **kwargs):
-                """Serve the session id on stdout and note where the final answer goes."""
-                self.stdin = io.StringIO()
-                self.stdout = io.StringIO(json.dumps({"type": "thread.started", "thread_id": session}) + "\n")
-                self.stderr = io.StringIO("")
-                self.returncode = 0
-                self.output = Path(args[args.index("--output-last-message") + 1])
-
-            def poll(self):
-                """Report that the process has exited."""
-                return 0
-
-            def wait(self, timeout=None):
-                """Write the final answer and report a clean exit."""
-                self.output.write_text(json.dumps(final))
-                return 0
-
+        process = StubAppServer(session, final)
         with (
             patch.object(server, "CONFIG_ROOT", self.root),
             patch.object(server, "build_manifest", return_value={}),
             patch.object(server, "sandbox_readiness", return_value={"required": True, "ready": True}),
             patch.object(server, "read_options", return_value={"task_timeout_seconds": 30, "auto_save_lovelace": False}),
             patch.object(server, "validate_changed_files", return_value=[]),
-            patch.object(server.subprocess, "Popen", side_effect=FakeProcess),
-            patch.object(server, "uses_user_approvals", return_value=False),
+            patch.object(server.subprocess, "Popen", return_value=process),
             patch.object(server, "fire_ha_event", side_effect=lambda _type, data: (events.append(data), (True, ""))[1]),
             patch.object(server, "notify"), patch.object(server, "notify_question") as question,
         ):

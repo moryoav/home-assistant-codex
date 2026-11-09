@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+from app_server_fixture import StubAppServer
 from test_server import server
 
 
@@ -252,13 +253,11 @@ class ReasoningSummaryOptionTests(unittest.TestCase):
         for configured, expected in (("detailed", "detailed"), ("none", "none"), (None, "concise"), ("auto", "concise"), ("  Concise ", "concise")):
             with self.subTest(configured=configured):
                 self.assertEqual(server.reasoning_summary({"reasoning_summary": configured}), expected)
-        with (
-            patch.object(server, "tasks", {"t": {"task_id": "t", "turns": [], "chat_settings": server.DEFAULT_CHAT_SETTINGS}}),
-            patch.object(server, "read_options", return_value={"reasoning_summary": "detailed"}),
-        ):
-            args = server.build_codex_args("t", Path("p"), Path("f"), None)
-        self.assertIn('model_reasoning_summary="detailed"', args)
-        self.assertIn('model_reasoning_effort="medium"', args)
+        session = server.create_approval_session(
+            "t", StubAppServer("thread"), "Prompt", Path("final"), None, {}, {"reasoning_summary": "detailed"},
+        )
+        self.assertEqual(session.turn_params["summary"], "detailed")
+        self.assertEqual(session.turn_params["effort"], "medium")
 
 
 if __name__ == "__main__":

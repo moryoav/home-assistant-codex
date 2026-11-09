@@ -11,7 +11,10 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from threading import Event, Thread
 from unittest.mock import patch
+
+from app_server_fixture import StubAppServer
 
 
 SERVER_PATH = Path(__file__).resolve().parents[1] / "server.py"
@@ -29,52 +32,11 @@ class SessionIdParsingTests(unittest.TestCase):
     THREAD_ID = "019fc242-910a-7c92-a17d-54c014e19fc4"
     OTHER_ID = "123e4567-e89b-12d3-a456-426614174000"
 
-    def read_stdout(
-        self,
-        lines: list[str],
-        session_holder: dict[str, str] | None = None,
-    ) -> tuple[dict[str, str], list[dict[str, object]]]:
-        """Feed lines to the stdout reader; return the session holder and the task updates the reader made."""
-        holder = session_holder if session_holder is not None else {}
-        updates: list[dict[str, object]] = []
-        with (
-            patch.object(server, "write_task_log"),
-            patch.object(
-                server,
-                "update_task",
-                side_effect=lambda _task_id, **values: updates.append(values),
-            ),
-        ):
-            server.reader_thread("task", "stdout", io.StringIO("".join(lines)), holder)
-        return holder, updates
-
     def test_accepts_valid_top_level_thread_started_id(self) -> None:
         """A top-level thread.started event with a valid thread id gives the session id."""
         event = {"type": "thread.started", "thread_id": self.THREAD_ID}
 
         self.assertEqual(server.extract_session_id(event), self.THREAD_ID)
-
-    def test_later_web_search_item_cannot_replace_captured_id(self) -> None:
-        """Once a session id is captured, later items and thread.started events do not replace it."""
-        holder, updates = self.read_stdout(
-            [
-                json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n",
-                json.dumps(
-                    {
-                        "type": "item.completed",
-                        "item": {
-                            "type": "web_search",
-                            "id": f"exec-{self.OTHER_ID}",
-                        },
-                    }
-                )
-                + "\n",
-                json.dumps({"type": "thread.started", "thread_id": self.OTHER_ID}) + "\n",
-            ]
-        )
-
-        self.assertEqual(holder["session_id"], self.THREAD_ID)
-        self.assertEqual(updates, [{"session_id": self.THREAD_ID}])
 
     def test_nested_ids_and_ids_in_arbitrary_strings_are_ignored(self) -> None:
         """A thread id nested in an item, wrapped in a list, or embedded in text is not taken as the session id."""
@@ -91,37 +53,17 @@ class SessionIdParsingTests(unittest.TestCase):
 
     def run_resumed_task(
         self,
-        stdout: str,
         *,
         final_payload: dict[str, str] | None,
-        returncode: int = 0,
+        returned_thread: str | None = None,
+        turn_error: str | None = None,
         stale_payload: dict[str, str] | None = None,
     ) -> tuple[dict[str, object], list[dict[str, object]]]:
         """Resume a waiting task with a fake Codex process; return the final task record and the result events."""
         task_id = "resumed-task"
         events: list[dict[str, object]] = []
 
-        class FakeProcess:
-            """A Codex process that has already exited and writes its final response when waited for."""
-
-            def __init__(self, final_file: Path) -> None:
-                """Remember where the final response goes and serve the given stdout."""
-                self.final_file = final_file
-                self.stdin = io.StringIO()
-                self.stdout = io.StringIO(stdout)
-                self.stderr = io.StringIO("")
-                self.returncode = returncode
-
-            def poll(self) -> int:
-                """Return the exit code; the process has already exited."""
-                return self.returncode
-
-            def wait(self, timeout: float | None = None) -> int:
-                """Write the final response, when the run has one, and return the exit code."""
-                del timeout
-                if final_payload is not None:
-                    self.final_file.write_text(json.dumps(final_payload), encoding="utf-8")
-                return self.returncode
+        proc = StubAppServer(returned_thread or self.THREAD_ID, final_payload, turn_error=turn_error)
 
         saved_task = server.tasks.get(task_id)
         server.tasks[task_id] = {
@@ -138,8 +80,6 @@ class SessionIdParsingTests(unittest.TestCase):
                     final_file.write_text(json.dumps(stale_payload), encoding="utf-8")
 
                 with (
-                    # This harness emits exec events; app-server has its own protocol tests.
-                    patch.object(server, "uses_user_approvals", return_value=False),
                     patch.object(server, "get_task_dir", return_value=task_dir),
                     patch.object(server, "save_task_index"),
                     patch.object(
@@ -163,7 +103,7 @@ class SessionIdParsingTests(unittest.TestCase):
                     patch.object(
                         server.subprocess,
                         "Popen",
-                        return_value=FakeProcess(final_file),
+                        return_value=proc,
                     ),
                     patch.object(
                         server,
@@ -200,46 +140,24 @@ class SessionIdParsingTests(unittest.TestCase):
 
                 with patch.object(server.verification, "after_changes", side_effect=record_check):
                     task, _ = self.run_resumed_task(
-                        "", final_payload={"status": "completed", "summary": "Done", "details": "Original details"},
+                        final_payload={"status": "completed", "summary": "Done", "details": "Original details"},
                     )
                 self.assertEqual(task["status"], "completed")
                 self.assertIn("Original details", task["details"])
                 self.assertEqual("Verification needs review" in task["details"],
                                  check_status in {"failed", "issues", "unavailable"})
 
-    def test_resume_uses_authoritative_emitted_session_id(self) -> None:
-        """A resumed task takes the session id Codex emits, even when it differs from the id it was resumed with."""
+    def test_resume_rejects_a_different_thread(self) -> None:
+        task, events = self.run_resumed_task(returned_thread=self.OTHER_ID, final_payload=None)
+        self.assertEqual(task["status"], "failed")
+        self.assertIn("Codex resumed a different conversation", task["details"])
+        self.assertEqual(task["session_id"], self.THREAD_ID)
+        self.assertEqual(events[-1]["session_id"], self.THREAD_ID)
+
+    def test_resume_preserves_the_requested_thread(self) -> None:
         task, events = self.run_resumed_task(
-            json.dumps({"type": "thread.started", "thread_id": self.OTHER_ID}) + "\n",
-            final_payload={
-                "status": "completed",
-                "summary": "resumed",
-                "question": "",
-                "details": "",
-            },
+            final_payload={"status": "completed", "summary": "resumed", "question": "", "details": ""},
         )
-
-        self.assertEqual(task["session_id"], self.OTHER_ID)
-        self.assertEqual(events[-1]["session_id"], self.OTHER_ID)
-
-    def test_resume_keeps_requested_id_without_thread_started_event(self) -> None:
-        """Without a thread.started event, a resumed task keeps the session id it was resumed with."""
-        task, events = self.run_resumed_task(
-            json.dumps(
-                {
-                    "type": "item.completed",
-                    "item": {"id": f"exec-{self.OTHER_ID}", "type": "web_search"},
-                }
-            )
-            + "\n",
-            final_payload={
-                "status": "completed",
-                "summary": "resumed",
-                "question": "",
-                "details": "",
-            },
-        )
-
         self.assertEqual(task["session_id"], self.THREAD_ID)
         self.assertEqual(events[-1]["session_id"], self.THREAD_ID)
 
@@ -252,51 +170,31 @@ class SessionIdParsingTests(unittest.TestCase):
             "details": "old details",
         }
         task, events = self.run_resumed_task(
-            json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n",
             final_payload=None,
-            returncode=1,
             stale_payload=old_response,
         )
 
         self.assertEqual(task["status"], "failed")
-        self.assertIn("before writing the final response", str(task["summary"]))
+        self.assertIn("without a final answer", str(task["error"]))
         self.assertNotEqual(task["summary"], old_response["summary"])
         self.assertNotEqual(task["question"], old_response["question"])
         self.assertEqual(events[-1]["status"], "failed")
 
     def test_failed_exchange_names_the_reason_in_the_task_error(self) -> None:
         """A task that ends as failed names the reason in its error; any other outcome leaves the error empty."""
-        stdout = json.dumps({"type": "thread.started", "thread_id": self.THREAD_ID}) + "\n"
-        answer ={"status": "completed", "summary": "Edited the automation", "question": "", "details": ""}
+        answer = {"status": "completed", "summary": "Edited the automation", "question": "", "details": ""}
         cases = [
-            # Codex reports the failure itself.
-            ({**answer, "status": "failed", "summary": "The entity does not exist"}, 0, "failed", "The entity does not exist"),
-            # Codex answers and then exits with an error.
-            (answer, 1, "failed", "Codex exited with 1."),
-            # Codex exits without an answer.
-            (None, 1, "failed", "Codex exited before writing the final response file (returncode=1)."),
-            (answer, 0, "completed", ""),
-            ({**answer, "status": "needs_input", "question": "Which light?"}, 0, "waiting_for_input", ""),
+            ({**answer, "status": "failed", "summary": "The entity does not exist"}, None, "failed", "The entity does not exist"),
+            (answer, "Model connection lost", "failed", "Model connection lost"),
+            (None, None, "failed", "Codex finished without a final answer."),
+            (answer, None, "completed", ""),
+            ({**answer, "status": "needs_input", "question": "Which light?"}, None, "waiting_for_input", ""),
         ]
-        for final_payload, returncode, status, error in cases:
+        for final_payload, turn_error, status, error in cases:
             with self.subTest(status=status, error=error):
-                task, _events = self.run_resumed_task(stdout, final_payload=final_payload, returncode=returncode)
+                task, _events = self.run_resumed_task(final_payload=final_payload, turn_error=turn_error)
                 self.assertEqual(task["status"], status)
                 self.assertEqual(task["error"], error)
-
-    def test_malformed_and_non_json_output_do_not_set_session_id(self) -> None:
-        """Plain text, cut-off JSON and a thread id that is not a UUID leave the session id unset."""
-        holder, updates = self.read_stdout(
-            [
-                f"not json exec-{self.THREAD_ID}\n",
-                '{"type":"thread.started","thread_id":\n',
-                json.dumps({"type": "thread.started", "thread_id": "not-a-uuid"}) + "\n",
-            ]
-        )
-
-        self.assertNotIn("session_id", holder)
-        self.assertEqual(updates, [])
-
 
 class CodexBinaryTests(unittest.TestCase):
     """The fixed path of the Codex executable, and its place on the command line."""
@@ -314,16 +212,8 @@ class CodexBinaryTests(unittest.TestCase):
             with patch.object(server, "CODEX_BINARY", str(binary)):
                 self.assertIsNone(server.codex_binary_path())
 
-    def test_build_codex_args_uses_fixed_binary(self) -> None:
-        """The Codex command line starts with the fixed path /usr/local/bin/codex."""
-        with patch.object(
-            server,
-            "read_options",
-            return_value={"codex_sandbox": "workspace-write"},
-        ):
-            args = server.build_codex_args("task", Path("prompt"), Path("final"), None)
-
-        self.assertEqual(args[0], "/usr/local/bin/codex")
+    def test_app_server_uses_fixed_binary(self) -> None:
+        self.assertEqual(server.build_app_server_args()[:2], ["/usr/local/bin/codex", "app-server"])
 
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
@@ -621,16 +511,13 @@ class UsageProcessCleanupTests(unittest.TestCase):
 
 
 class ModelSelectionTests(unittest.TestCase):
-    """Which model reaches the Codex command line for default, legacy, retired and named add-on options."""
+    """Which model reaches app-server for default, legacy, retired and named add-on options."""
 
-    def build_args_for_model(self, model: str, session_id: str | None = None) -> list[str]:
-        """Build the Codex command line with the given model set in the add-on options."""
-        with patch.object(
-            server,
-            "read_options",
-            return_value={"codex_model": model, "codex_sandbox": "workspace-write"},
-        ):
-            return server.build_codex_args("task", Path("prompt"), Path("final"), session_id)
+    def session_for_model(self, model, session_id=None):
+        return server.create_approval_session(
+            "task", StubAppServer(session_id or "thread"), "Prompt", Path("final"), session_id, {},
+            {"codex_model": model, "codex_sandbox": "workspace-write"},
+        )
 
     def test_worker_model_schema_matches_supported_choices(self) -> None:
         """config.yaml and the worker default the model to "default", and the schema lists the accepted models."""
@@ -660,24 +547,24 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertIn("HA_URL", translations["configuration"]["ha_url"]["description"])
 
     def test_default_model_omits_model_argument(self) -> None:
-        """The default option passes no --model to Codex, and the model the chat names meanwhile is one on offer."""
-        args = self.build_args_for_model("default")
+        """The default option lets Codex pick the model, and the model the chat names meanwhile is one on offer."""
+        session = self.session_for_model("default")
 
-        self.assertNotIn("--model", args)
+        self.assertNotIn("model", session.thread_params)
         # The chat names the bundled CLI's pick until the CLI reports its own; it must be a model on offer.
         self.assertIn(server.CLI_DEFAULT_MODEL, server.CHAT_MODEL_EFFORTS)
 
     def test_legacy_default_model_omits_model_argument(self) -> None:
-        """The old default gpt-5.3-codex is treated like default: no --model is passed to Codex."""
-        args = self.build_args_for_model("gpt-5.3-codex")
+        """The old default gpt-5.3-codex is treated like the default model option."""
+        session = self.session_for_model("gpt-5.3-codex")
 
-        self.assertNotIn("--model", args)
+        self.assertNotIn("model", session.thread_params)
 
     def test_retired_option_model_runs_on_the_next_model_up(self) -> None:
         """A retired model saved in the add-on options runs on the model that replaces it."""
-        args = self.build_args_for_model("gpt-5.5")
+        session = self.session_for_model("gpt-5.5")
 
-        self.assertEqual(args[args.index("--model") + 1], "gpt-5.6-sol")
+        self.assertEqual(session.thread_params["model"], "gpt-5.6-sol")
 
     def test_retired_models_stay_accepted_and_lead_to_an_offered_model(self) -> None:
         """Every retired model stays in the option schema, is not offered in chats, and leads to a model that is."""
@@ -694,17 +581,15 @@ class ModelSelectionTests(unittest.TestCase):
                 self.assertIn(server.current_model(model), server.CHAT_MODEL_EFFORTS)
 
     def test_explicit_model_is_passed_to_codex(self) -> None:
-        """A model named in the options is passed to Codex with --model, on a new session and on a resumed one."""
+        """A model named in the options is passed to app-server on new and resumed sessions."""
         for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra"):
             for session_id in (None, "019fc242-910a-7c92-a17d-54c014e19fc4"):
                 with self.subTest(model=model, session_id=session_id):
-                    args = self.build_args_for_model(model, session_id)
+                    session = self.session_for_model(model, session_id)
 
-                    model_index = args.index("--model")
-                    self.assertEqual(args[model_index + 1], model)
-                    self.assertIn('model_reasoning_effort="medium"', args)
-                    if session_id:
-                        self.assertEqual(args[-3:], ["resume", session_id, "-"])
+                    self.assertEqual(session.thread_params["model"], model)
+                    self.assertEqual(session.turn_params["effort"], "medium")
+                    self.assertEqual(session.thread_params.get("threadId"), session_id)
 
 
 class RuntimeConfigTests(unittest.TestCase):
@@ -718,7 +603,6 @@ class RuntimeConfigTests(unittest.TestCase):
                 patch.object(server, "CODEX_HOME", root / "codex-home"),
                 patch.object(server, "DATA_ROOT", root),
                 patch.object(server, "AUTH_QR_DIR", root / "auth-qr"),
-                patch.object(server, "SCHEMA_PATH", root / "schema.json"),
                 patch.object(server, "CODEX_CONFIG_PATH", root / "codex-home" / "config.toml"),
                 patch.object(server, "task_root", return_value=root / "tasks"),
                 patch.object(server, "api_token", return_value="configured"),
@@ -819,60 +703,33 @@ class TaskLaunchFailureTests(unittest.TestCase):
         self.assertEqual(events[-1]["status"], "failed")
         self.assertEqual(events[-1]["session_id"], session_id)
 
-    def test_stdin_write_and_close_failures_are_cleaned_up(self) -> None:
-        """A broken pipe while sending the prompt gets Codex reaped and the task failed, with one result event."""
-        class FailingStdin:
-            """A stdin pipe that breaks on write or on close."""
-
-            def __init__(self, fail_at: str) -> None:
-                """Choose which call fails: write or close."""
+    def test_stdin_write_and_flush_failures_are_cleaned_up(self) -> None:
+        """A broken pipe on the first request fails the task and reaps the process."""
+        class FakeProcess(StubAppServer):
+            def __init__(self, fail_at):
+                super().__init__(session_id)
                 self.fail_at = fail_at
+                self.terminated = False
+                self.wait_calls = 0
 
-            def write(self, _value: str) -> None:
-                """Raise a broken pipe error when writing is the call that fails."""
+            def write(self, _value):
                 if self.fail_at == "write":
                     raise BrokenPipeError(32, "broken pipe")
 
-            def close(self) -> None:
-                """Raise a broken pipe error when closing is the call that fails."""
-                if self.fail_at == "close":
+            def flush(self):
+                if self.fail_at == "flush":
                     raise BrokenPipeError(32, "broken pipe")
 
-        class FakeProcess:
-            """A Codex process with a failing stdin that records how it was stopped."""
-
-            def __init__(self, fail_at: str) -> None:
-                """Start as a running process whose stdin fails at the given call."""
-                self.stdin = FailingStdin(fail_at)
-                self.stdout = io.StringIO("")
-                self.stderr = io.StringIO("")
-                self.returncode: int | None = None
-                self.terminated = False
-                self.killed = False
-                self.wait_calls = 0
-
-            def poll(self) -> int | None:
-                """Return the exit code, or None while the process runs."""
-                return self.returncode
-
-            def terminate(self) -> None:
-                """Record the request and exit as terminated."""
+            def terminate(self):
                 self.terminated = True
-                self.returncode = -15
+                super().terminate()
 
-            def kill(self) -> None:
-                """Record the request and exit as killed."""
-                self.killed = True
-                self.returncode = -9
-
-            def wait(self, timeout: float | None = None) -> int:
-                """Count the call and return the exit code, or 0 if the process was never stopped."""
-                del timeout
+            def wait(self, timeout=None):
                 self.wait_calls += 1
-                return self.returncode if self.returncode is not None else 0
+                return super().wait(timeout)
 
         session_id = "019fc242-910a-7c92-a17d-54c014e19fc4"
-        for fail_at in ("write", "close"):
+        for fail_at in ("write", "flush"):
             with self.subTest(fail_at=fail_at), tempfile.TemporaryDirectory() as temp_dir:
                 task_id = f"task-{fail_at}"
                 task_dir = Path(temp_dir) / task_id
@@ -880,12 +737,20 @@ class TaskLaunchFailureTests(unittest.TestCase):
                 updates: list[dict[str, object]] = []
                 events: list[dict[str, object]] = []
                 server.running_processes.pop(task_id, None)
+                task = {"task_id": task_id, "status": "queued"}
+
+                def record_update(_task_id, **values):
+                    task.update(values)
+                    updates.append(values)
+                    return True
+
                 with (
+                    patch.object(server, "tasks", {task_id: task}),
                     patch.object(server, "get_task_dir", return_value=task_dir),
                     patch.object(
                         server,
                         "update_task",
-                        side_effect=lambda _task_id, **values: updates.append(values),
+                        side_effect=record_update,
                     ),
                     patch.object(
                         server,
@@ -902,7 +767,6 @@ class TaskLaunchFailureTests(unittest.TestCase):
                     ),
                     patch.object(server, "write_task_log"),
                     patch.object(server.subprocess, "Popen", return_value=proc),
-                    patch.object(server, "uses_user_approvals", return_value=False),
                     patch.object(
                         server,
                         "fire_ha_event",
@@ -1151,54 +1015,17 @@ class TaskCancellationTests(unittest.TestCase):
         events: list[dict[str, object]] = []
         server.tasks[task_id] = {"task_id": task_id, "status": "queued"}
 
-        class FakeProcess:
-            """A running Codex process during whose first wait the task is cancelled and another one is attempted."""
+        class FakeProcess(StubAppServer):
+            def __init__(self):
+                super().__init__("019fc242-910a-7c92-a17d-54c014e19fc4", hold=True)
+                self.reaping = Event()
+                self.release_exit = Event()
 
-            def __init__(self) -> None:
-                """Start as a running process with no output; the test sets the API client afterwards."""
-                self.stdin = io.StringIO()
-                self.stdout = io.StringIO("")
-                self.stderr = io.StringIO("")
-                self.returncode: int | None = None
-                self.terminated = False
-                self.killed = False
-                self.wait_calls = 0
-                self.client = None
-                self.overlap_status: int | None = None
-
-            def poll(self) -> int | None:
-                """Return the exit code, or None while the process runs."""
-                return self.returncode
-
-            def terminate(self) -> None:
-                """Record the request and exit as terminated."""
-                self.terminated = True
-                self.returncode = -15
-
-            def kill(self) -> None:
-                """Record the request and exit as killed."""
-                self.killed = True
-                self.returncode = -9
-
-            def wait(self, timeout: float | None = None) -> int:
-                """On the first call cancel the task over the API and try to start another; return the exit code."""
-                del timeout
-                self.wait_calls += 1
-                if self.wait_calls == 1:
-                    assert self.client is not None
-                    response = self.client.post(
-                        f"/tasks/{task_id}/cancel",
-                        headers={"Authorization": "Bearer test-token"},
-                    )
-                    if response.status_code != 200:
-                        raise AssertionError(response.get_json())
-                    overlap = self.client.post(
-                        "/tasks",
-                        headers={"Authorization": "Bearer test-token"},
-                        json={"prompt": "must remain blocked"},
-                    )
-                    self.overlap_status = overlap.status_code
-                return self.returncode if self.returncode is not None else 0
+            def wait(self, timeout=None):
+                self.reaping.set()
+                if not self.release_exit.wait(5):
+                    raise subprocess.TimeoutExpired("codex", timeout)
+                return super().wait(timeout)
 
         proc = FakeProcess()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1223,19 +1050,29 @@ class TaskCancellationTests(unittest.TestCase):
                 ),
                 patch.object(server, "write_task_log"),
                 patch.object(server.subprocess, "Popen", return_value=proc),
-                patch.object(server, "uses_user_approvals", return_value=False),
                 patch.object(server, "fire_ha_event", side_effect=self.capture_event(events)),
                 patch.object(server, "notify"),
                 patch.object(server, "refresh_usage_status_async"),
             ):
-                proc.client = server.app.test_client()
+                headers = {"Authorization": "Bearer test-token"}
                 thread = server.start_background_task(task_id, "cancel while running")
-                thread.join(timeout=5)
+                self.assertTrue(proc.started.wait(5))
+                cancelled = []
+                cancel_thread = Thread(target=lambda: cancelled.append(
+                    server.app.test_client().post(f"/tasks/{task_id}/cancel", headers=headers).status_code))
+                cancel_thread.start()
+                try:
+                    self.assertTrue(proc.reaping.wait(5))
+                    overlap = server.app.test_client().post("/tasks", headers=headers, json={"prompt": "must remain blocked"})
+                    self.assertEqual(overlap.status_code, 409)
+                finally:
+                    proc.release_exit.set()
+                    thread.join(timeout=5)
+                    cancel_thread.join(timeout=5)
 
         self.assertFalse(thread.is_alive())
-        self.assertTrue(proc.terminated)
-        self.assertGreaterEqual(proc.wait_calls, 2)
-        self.assertEqual(proc.overlap_status, 409)
+        self.assertEqual(cancelled, [200])
+        self.assertIsNotNone(proc.poll())
         self.assertNotIn(task_id, server.running_processes)
         self.assertNotIn(task_id, server.active_task_runners)
         self.assertEqual(server.tasks[task_id]["status"], "cancelled")

@@ -306,10 +306,9 @@ class RunTaskWiringTests(unittest.TestCase):
     def run_with(self, assessment):
         """Run a resumed task through the test harness with a canned assessment."""
         from test_server import SessionIdParsingTests
-        harness = SessionIdParsingTests("read_stdout")
+        harness = SessionIdParsingTests()
         with patch.object(server, "assess_changes", return_value=assessment):
             return harness.run_resumed_task(
-                json.dumps({"type": "thread.started", "thread_id": harness.THREAD_ID}) + "\n",
                 final_payload={"status": "completed", "summary": "Edited the automation", "question": "", "details": "Notes"},
             )
 

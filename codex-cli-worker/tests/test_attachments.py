@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import io
 import json
 import struct
 import tempfile
@@ -12,6 +11,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+from app_server_fixture import StubAppServer
 from test_server import server
 
 SESSION_ID = "019fc242-910a-7c92-a17d-54c014e19fc4"
@@ -92,30 +92,8 @@ class AttachmentTests(unittest.TestCase):
         """Run one exchange with a fake Codex process that writes the final response."""
         final = final or {"status": "completed", "summary": "Here is your sheep.", "details": "", "question": ""}
 
-        class FakeProcess:
-            """A stand-in for the Codex process that reports the session and writes the final response."""
-
-            def __init__(self, args, **kwargs):
-                """Record the final-response path Codex was asked to write."""
-                self.stdin = io.StringIO()
-                self.stderr = io.StringIO("")
-                self.stdout = io.StringIO(json.dumps({"type": "thread.started", "thread_id": SESSION_ID}) + "\n")
-                self.returncode = 0
-                self.output = Path(args[args.index("--output-last-message") + 1])
-
-            def poll(self):
-                """Report that the fake process has exited."""
-                return 0
-
-            def wait(self, timeout=None):
-                """Simulate Codex finishing, running the test hook first."""
-                if on_wait:
-                    on_wait()
-                self.output.write_text(json.dumps(final), encoding="utf-8")
-                return 0
-
-        with (patch.object(server.subprocess, "Popen", side_effect=FakeProcess),
-              patch.object(server, "uses_user_approvals", return_value=False)):
+        process = StubAppServer(SESSION_ID, final, on_turn=on_wait)
+        with patch.object(server.subprocess, "Popen", return_value=process):
             server.run_task(task_id, "Draw a sheep", session_id, reply)
         server.active_task_runners.discard(task_id)
 
@@ -329,7 +307,7 @@ class AttachmentTests(unittest.TestCase):
         return {"name": name, "data": base64.b64encode(data).decode()}
 
     def test_attached_images_are_stored_served_and_passed_to_codex(self):
-        """Images attached to a message stay with the exchange and reach Codex through --image."""
+        """Images attached to a message stay with the exchange and reach Codex as localImage inputs."""
         png, jpeg = png_bytes(), b"\xff\xd8\xff\xe0" + b"\x00" * 64
         response = self.client.post(
             "/tasks",
@@ -355,15 +333,14 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual([item["attachment_id"] for item in payload["turns"][0]["prompt_attachments"]],
                          [item["attachment_id"] for item in sent])
         self.assertEqual(payload["attachments"], [])
-        # The prompt names the images and the CLI receives them ahead of the other exec flags.
+        # The prompt names the images and Codex receives them with that turn.
         prompt = server.build_prompt("Fix the card in this screenshot", task_id)
         self.assertIn("attached 2 image(s) to this message: Screen shot.PNG, photo.jpg", prompt)
-        with patch.object(server, "read_options", return_value={"codex_sandbox": "workspace-write"}):
-            args = server.build_codex_args(task_id, Path("prompt"), Path("final"), None)
+        options = {"codex_sandbox": "danger-full-access"}
+        session = server.create_approval_session(task_id, StubAppServer(SESSION_ID), prompt, Path("final"), None, {}, options)
         paths = [str((server.get_task_dir(task_id) / item["path"]).resolve()) for item in sent]
-        self.assertEqual(args[1:7], ["exec", "--image", paths[0], "--image", paths[1], "--cd"])
-        self.assertEqual(args[-1], "-")
-        # A continued exchange puts its own images after the resume subcommand.
+        self.assertEqual(session.turn_params["input"][1:], [{"type": "localImage", "path": path} for path in paths])
+        # A continued exchange supplies its own images.
         self.run_codex(task_id)
         response = self.client.post(
             f"/tasks/{task_id}/continue",
@@ -375,11 +352,10 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in second], ["second.png"])
         self.assertEqual(server.tasks[task_id]["turns"][0]["prompt_attachments"], sent)
         self.assertIn("attached 1 image(s) to this message: second.png", server.build_prompt("x", task_id, reply="And this one?"))
-        with patch.object(server, "read_options", return_value={"codex_sandbox": "workspace-write"}):
-            args = server.build_codex_args(task_id, Path("prompt"), Path("final"), SESSION_ID)
+        session = server.create_approval_session(task_id, StubAppServer(SESSION_ID), "Follow up", Path("final"), SESSION_ID, {}, options)
         second_path = str((server.get_task_dir(task_id) / second[0]["path"]).resolve())
-        self.assertEqual(args[-5:], ["resume", SESSION_ID, "--image", second_path, "-"])
-        self.assertNotIn(paths[0], args)
+        self.assertEqual(session.thread_params["threadId"], SESSION_ID)
+        self.assertEqual(session.turn_params["input"][1:], [{"type": "localImage", "path": second_path}])
         # Uploads survive a worker restart and both kinds resolve through find_attachment.
         server.tasks.clear()
         server.load_task_index()
@@ -391,9 +367,8 @@ class AttachmentTests(unittest.TestCase):
         self.run_codex(task_id, session_id=SESSION_ID, reply="And this one?")
         self.client.post(f"/tasks/{task_id}/continue", json={"message": "Thanks"}, headers=self.headers)
         self.assertEqual(server.tasks[task_id]["turns"][2]["prompt_attachments"], [])
-        with patch.object(server, "read_options", return_value={"codex_sandbox": "workspace-write"}):
-            args = server.build_codex_args(task_id, Path("prompt"), Path("final"), SESSION_ID)
-        self.assertNotIn("--image", args)
+        session = server.create_approval_session(task_id, StubAppServer(SESSION_ID), "Follow up", Path("final"), SESSION_ID, {}, options)
+        self.assertEqual(session.turn_params["input"], [{"type": "text", "text": "Follow up"}])
         self.assertNotIn("The user attached", server.build_prompt("x", task_id, reply="Thanks"))
 
     def test_attached_image_validation(self):

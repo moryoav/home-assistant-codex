@@ -14,16 +14,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from approvals import AppServerSession
 import server
-from server import FINAL_RESPONSE_SCHEMA
 
 
 @contextmanager
 def worker_approval_session(proc, workspace, root, mode, resume_id, approve, finals, events):
     """Exercise production session creation, translating only container fixture paths."""
-    task_id = "ssh-fixture"
-    task = {"status": "running", "current_turn_id": "ssh-turn", "turns": [{
+    task_id = "approval-fixture"
+    task = {"status": "running", "current_turn_id": "approval-turn", "turns": [{
         "execution_settings": {"model": "gpt-5.1-codex", "reasoning_effort": "low"},
     }]}
 
@@ -42,13 +40,16 @@ def worker_approval_session(proc, workspace, root, mode, resume_id, approve, fin
         patch.object(server, "notify_permission_async"),
     ):
         session = server.create_approval_session(
-            task_id, proc, "Exercise SSH sandbox approvals", root / "ssh-final.json",
+            task_id, proc, "Exercise sandbox and tool approvals", root / "approval-final.json",
             resume_id, {}, {"codex_sandbox": mode},
         )
         # Production owns the security policy, including on resumed threads.
         policy = session.turn_params["sandboxPolicy"]
-        assert policy["networkAccess"] is False, policy
-        assert policy["type"] == ("readOnly" if mode == "read-only" else "workspaceWrite"), policy
+        if mode == "danger-full-access":
+            assert policy == {"type": "dangerFullAccess"}, policy
+        else:
+            assert policy["networkAccess"] is False, policy
+            assert policy["type"] == ("readOnly" if mode == "read-only" else "workspaceWrite"), policy
         assert session.thread_params["cwd"] == "/config", session.thread_params
         session.thread_params["cwd"] = str(workspace)
         if mode == "workspace-write":
@@ -95,6 +96,10 @@ def main():
         stage = 0
         final_only = False
         file_case = False
+        mcp_case = False
+        full_access = False
+        tool_names = ("native_gate", "server_gate", "choose_room")
+        full_write = root / "outside-workspace.txt"
         outside_file = root / "outside.yaml"
         moved_file = root / "renamed.yaml"
 
@@ -123,7 +128,24 @@ def main():
                         functions.extend((tool["name"], child) for child in tool["tools"])
                     else:
                         functions.append((None, tool))
-                if file_case and stage < 2:
+                if mcp_case and stage < len(tool_names) + int(full_access):
+                    if full_access and stage == 0:
+                        namespace, tool = next((ns, tool) for ns, tool in functions if tool.get("name") == "exec_command")
+                        command = shlex.quote(sys.executable) + " -c " + shlex.quote(
+                            f"from pathlib import Path; import urllib.request; "
+                            f"urllib.request.urlopen('http://127.0.0.1:{provider.server_port}/probe', timeout=3).read(); "
+                            f"Path({str(full_write)!r}).write_text('full access')"
+                        )
+                        arguments = {"cmd": command}
+                    else:
+                        name = tool_names[stage - int(full_access)]
+                        namespace, tool = next((ns, tool) for ns, tool in functions if ns == "mcp__probe" and tool.get("name") == name)
+                        arguments = {}
+                    item = {"type": "function_call", "call_id": f"probe_{stage}", "name": tool["name"],
+                            "arguments": json.dumps(arguments)}
+                    if namespace:
+                        item["namespace"] = namespace
+                elif file_case and stage < 2:
                     selected = next(((namespace, tool) for namespace, tool in functions if tool.get("name") == "exec_command"), None)
                     assert selected, [(namespace, tool.get("name")) for namespace, tool in functions]
                     namespace, tool = selected
@@ -136,12 +158,13 @@ def main():
                             "arguments": json.dumps({"cmd": "apply_patch <<'PATCH'\n" + patch + "\nPATCH"})}
                     if namespace:
                         item["namespace"] = namespace
-                elif stage < 3 and not final_only and not file_case:
+                elif stage < 3 and not final_only and not file_case and not mcp_case:
                     selected = next(((namespace, tool) for namespace, tool in functions if tool.get("name") == "exec_command"), None)
                     assert selected, [(namespace, tool.get("name")) for namespace, tool in functions]
                     namespace, tool = selected
                     command = ssh_command or shlex.quote(sys.executable) + " -c " + shlex.quote(
-                        f"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{provider.server_port}/probe', timeout=3).read().decode())")
+                        f"print('sandbox-command-started', flush=True); import urllib.request; "
+                        f"print(urllib.request.urlopen('http://127.0.0.1:{provider.server_port}/probe', timeout=3).read().decode())")
                     arguments = {"cmd": command, "max_output_tokens": 1000}
                     if stage == 1:
                         arguments.update(sandbox_permissions="require_escalated", justification="Run the local test operation once")
@@ -173,13 +196,13 @@ def main():
             "model_provider": "fixture", "model_providers.fixture.name": "Fixture",
             "model_providers.fixture.base_url": f"http://127.0.0.1:{provider.server_port}/v1",
             "model_providers.fixture.wire_api": "responses", "model_providers.fixture.requires_openai_auth": False,
-            "check_for_update_on_startup": False,
+            "check_for_update_on_startup": False, "features.apps": False,
         }
         config_args = [arg for key, value in settings.items() for arg in ["-c", key + "=" + json.dumps(value)]]
         try:
             # Start in the old transport to prove existing saved chats can resume.
             final_only = True
-            legacy_mode = "danger-full-access" if args.ssh else "workspace-write"
+            legacy_mode = "danger-full-access"
             legacy = subprocess.run([binary, "exec", "--sandbox", legacy_mode, "--skip-git-repo-check", "--json",
                                      "--model", "gpt-5.1-codex", *config_args, "Say fixture finished"],
                                     cwd=workspace, env=environment, capture_output=True, text=True, timeout=30)
@@ -190,8 +213,23 @@ def main():
             if args.ssh:
                 cases = [(mode, decision, thread_id if (mode, decision) == ("workspace-write", "allow") else None)
                          for mode in ("workspace-write", "read-only") for decision in ("allow", "deny")]
+            else:
+                cases += [("read-only", "mcp_allow", None), ("workspace-write", "mcp_deny", None),
+                          ("danger-full-access", "mcp_auto", thread_id), ("danger-full-access", "mcp_legacy_auto", None)]
+            mcp_args = [
+                "-c", f"mcp_servers.probe.command={json.dumps(sys.executable)}",
+                "-c", f"mcp_servers.probe.args={json.dumps([str(Path(__file__).with_name('mcp_confirmation_fixture.py').resolve()), str(root)])}",
+                "-c", 'mcp_servers.probe.default_tools_approval_mode="approve"',
+                "-c", 'mcp_servers.probe.tools.native_gate.approval_mode="prompt"',
+                "-c", "mcp_servers.probe.required=true",
+            ]
             for mode, decision, resume_id in cases:
                 file_case = decision == "file"
+                mcp_case = decision.startswith("mcp_")
+                full_access = mode == "danger-full-access"
+                for name in tool_names:
+                    (root / name).unlink(missing_ok=True)
+                full_write.unlink(missing_ok=True)
                 outside_file.write_text("value: 0\n")
                 stage = 0
                 requests.clear()
@@ -200,30 +238,32 @@ def main():
                 finals = []
                 events = []
                 with (root / "stderr.log").open("w+") as errors, ExitStack() as session_context:
-                    proc = subprocess.Popen([binary, "app-server", *config_args], cwd=workspace, env=environment,
+                    flags = config_args + (mcp_args if mcp_case else [])
+                    if decision == "mcp_legacy_auto":
+                        flags += ["-c", "features.tool_call_mcp_elicitation=false"]
+                    proc = subprocess.Popen([binary, "app-server", *flags], cwd=workspace, env=environment,
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, bufsize=1)
-                    params = {"cwd": str(workspace), "model": "gpt-5.1-codex", "sandbox": mode,
-                              "approvalPolicy": "on-request", "approvalsReviewer": "user"}
-                    if resume_id:
-                        params["threadId"] = resume_id
 
                     def approve(published):
                         """Simulate the browser's explicit decision for every live request."""
                         records[:] = published
                         for record in published:
                             if record["status"] == "pending":
-                                answer = ("allow" if len(published) == 1 else "deny") if file_case else decision
-                                session.decide(record["approval_id"], answer)
+                                if mcp_case:
+                                    if record["kind"] == "user_input":
+                                        assert record["fields"][0]["id"] == "room", record
+                                        session.decide(record["approval_id"], "allow", {"room": "kitchen"})
+                                    else:
+                                        assert not full_access, ("Unexpected Full access prompt", record)
+                                        answer = "allow" if decision == "mcp_allow" else "deny"
+                                        session.decide(record["approval_id"], answer, {} if answer == "allow" else None)
+                                else:
+                                    answer = ("allow" if len(published) == 1 else "deny") if file_case else decision
+                                    session.decide(record["approval_id"], answer)
 
-                    if args.ssh:
-                        session = session_context.enter_context(worker_approval_session(
-                            proc, workspace, root, mode, resume_id, approve, finals, events,
-                        ))
-                    else:
-                        session = AppServerSession(proc.stdin, lock=threading.RLock(), thread_params=params,
-                                                   turn_params={"input": [{"type": "text", "text": "Exercise sandbox and approval"}], "outputSchema": FINAL_RESPONSE_SCHEMA},
-                                                   on_event=events.append, on_approvals=approve, on_final=finals.append,
-                                                   is_active=lambda: proc.poll() is None, redact=lambda text: text)
+                    session = session_context.enter_context(worker_approval_session(
+                        proc, workspace, root, mode, resume_id, approve, finals, events,
+                    ))
                     reader = threading.Thread(target=session.read, args=(proc.stdout,), daemon=True)
                     reader.start()
                     try:
@@ -240,6 +280,20 @@ def main():
                     errors.seek(0)
                     diagnostic = (session.error, errors.read()[-6000:], events[-5:])
                 assert session.returncode == 0 and finals, diagnostic
+                if mcp_case:
+                    for name in tool_names:
+                        effect = root / name
+                        if decision != "mcp_deny" or name == "choose_room":
+                            assert effect.read_text() == "executed\n", (mode, name, diagnostic)
+                        else:
+                            assert not effect.exists(), (mode, name, diagnostic)
+                    if full_access:
+                        assert full_write.read_text() == "full access" and len(probes) == 1, diagnostic
+                        assert [(record["kind"], record["status"]) for record in records] == [("user_input", "allowed")], records
+                    else:
+                        expected = "allowed" if decision == "mcp_allow" else "denied"
+                        assert [record["status"] for record in records] == [expected, expected, "allowed"], records
+                    continue
                 if file_case:
                     assert len(records) == 2 and [record["status"] for record in records] == ["allowed", "denied"], (records, diagnostic)
                     assert all(record["kind"] == "file_change" and record["changes"] for record in records), records
@@ -258,10 +312,12 @@ def main():
                                if item.get("type") == "function_call_output" and item.get("call_id") == call_id]
                     assert outputs, (call_id, requests[-1]["input"])
                     assert "network-action-executed" not in json.dumps(outputs), outputs
+                    if not args.ssh:
+                        assert "sandbox-command-started" in json.dumps(outputs), outputs
             if args.ssh:
                 print("Pinned CLI SSH approvals passed: allow executes once, deny prevents execution, and subsequent SSH commands stay sandboxed in both modes.")
             else:
-                print("Pinned CLI approvals passed: legacy sessions resume, command and file allow/deny works, subsequent actions stay sandboxed.")
+                print("Pinned CLI passed: sandboxed command, file, and MCP approvals, Full access grants and shell access, genuine input, and legacy resume.")
         finally:
             provider.shutdown()
             provider.server_close()

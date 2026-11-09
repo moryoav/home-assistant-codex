@@ -1490,6 +1490,16 @@ def activity_file(task_id: str, turn_id: str) -> Path:
     return (root / "turns" / turn_id / ACTIVITY_FILE) if turn_id else (root / ACTIVITY_FILE)
 
 
+def save_activity(task_id: str, turn_id: str, payload: dict[str, Any]) -> None:
+    """Persist the activity prefix at an approval, or all steps at completion."""
+    try:
+        path = activity_file(task_id, turn_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, payload)
+    except OSError as exc:
+        print(f"Could not save task activity for {task_id}: {redact(str(exc))}", flush=True)
+
+
 def finish_activity(task_id: str) -> None:
     """Close the running exchange's steps, note how it ended, and save them once."""
     with lock:
@@ -1522,12 +1532,7 @@ def finish_activity(task_id: str) -> None:
         record["running"] = False
         payload = activity_payload_locked(record)
         turn_id = record["turn_id"]
-    try:
-        path = activity_file(task_id, turn_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(path, payload)
-    except OSError as exc:
-        print(f"Could not save task activity for {task_id}: {redact(str(exc))}", flush=True)
+    save_activity(task_id, turn_id, payload)
     with lock:
         if task_activity.get(task_id) is record:
             task_activity.pop(task_id, None)
@@ -2898,13 +2903,13 @@ def notify_permission(task_id: str, approval: dict[str, Any], withdrawn: threadi
     if reason and reason[-1] not in ".!?…":
         reason += "."
     detail = f" Reason: {reason}" if reason else ""
+    question = kind == "user_input"
+    waiting = "Codex is waiting for your answer." if question else f"Codex is waiting for your decision on {subject}."
     notify(
         "Codex needs an answer" if question else "Codex needs permission",
         f"{waiting}{detail} Open the Codex chat to review it. Task: {task_id}",
         still_wanted=lambda: not withdrawn.is_set(),
     )
-    question = kind == "user_input"
-    waiting = "Codex is waiting for your answer." if question else f"Codex is waiting for your decision on {subject}."
 
 
 def notify_permission_async(task_id: str, approval: dict[str, Any], withdrawn: threading.Event) -> None:
@@ -3692,12 +3697,22 @@ def create_approval_session(
         if str(task.get("current_turn_id") or "") != turn_id:
             return
         previous = {item["approval_id"]: item for item in task.get("approvals") or []}
+        activity = task_activity.get(task_id)
+        checkpoint = False
         for item in records:
             older = previous.get(item["approval_id"], {})
             item["turn_id"] = turn_id
             item["requested_at"] = older.get("requested_at") or utc_now()
+            if "activity_index" in older:
+                item["activity_index"] = older["activity_index"]
+            elif activity is not None and activity["turn_id"] == turn_id:
+                item["activity_index"] = len(activity["steps"])
+                checkpoint = True
             if item["status"] != "pending":
                 item["resolved_at"] = older.get("resolved_at") or utc_now()
+        if checkpoint:
+            # A restart can expire the card and still show the steps before it.
+            save_activity(task_id, turn_id, activity_payload_locked(activity))
         if not update_task(task_id, approvals=records, **({"status": "cancelled"} if task.get("cancellation_requested") else {})):
             return
         # The task now waits for the user, who may not have the chat open.
@@ -5140,21 +5155,27 @@ def get_log(task_id: str) -> Response:
 @app.get("/tasks/<task_id>/activity")
 @require_auth
 def get_activity(task_id: str) -> Response:
-    """Return the steps Codex reported for the latest exchange, after a sequence number."""
+    """Return steps for a turn in this conversation, defaulting to the latest."""
     if TASK_ID_RE.fullmatch(task_id) is None:
         return jsonify({"ok": False, "error": "task not found"}), 404
     try:
         after = int(request.args.get("after", "0"))
     except ValueError:
         return jsonify({"ok": False, "error": "after must be a number"}), 400
+    requested_turn = request.args.get("turn_id")
     with lock:
         task = tasks.get(task_id)
         if task is None:
             return jsonify({"ok": False, "error": "task not found"}), 404
+        if requested_turn is not None and (
+            TURN_ID_RE.fullmatch(requested_turn) is None
+            or not any(turn.get("turn_id") == requested_turn for turn in task.get("turns") or [])
+        ):
+            return jsonify({"ok": False, "error": "turn not found"}), 404
         record = task_activity.get(task_id)
-        if record is not None:
+        if record is not None and (requested_turn is None or requested_turn == record["turn_id"]):
             return jsonify({"ok": True, **activity_payload_locked(record, after)})
-        turn_id = str(task.get("current_turn_id") or "")
+        turn_id = requested_turn if requested_turn is not None else str(task.get("current_turn_id") or "")
     stored = load_stored_activity(task_id, turn_id)
     if stored is None:
         return jsonify({"ok": True, "turn_id": turn_id, "seq": 0, "running": False, "total": 0, "steps": []})

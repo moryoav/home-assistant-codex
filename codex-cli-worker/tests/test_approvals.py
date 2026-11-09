@@ -324,6 +324,7 @@ class ApprovalApiTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.patches = [patch.object(server, "tasks", {}), patch.object(server, "approval_sessions", {}),
+                        patch.object(server, "task_activity", {}),
                         patch.object(server, "running_processes", {}), patch.object(server, "save_task_index"),
                         patch.object(server, "api_token", return_value="worker-secret"),
                         patch.object(server, "get_task_dir", return_value=Path(self.temp.name) / "task"),
@@ -471,14 +472,26 @@ class ApprovalApiTests(unittest.TestCase):
         self.assertEqual(full.turn_params["approvalPolicy"], "on-request")
 
     def test_restore_marks_pending_audit_expired_and_active_task_failed(self):
-        """Restart loads the audit for display while dropping every live grant capability."""
+        """Restart expires the card and preserves the activity before it."""
+        server.start_activity("task", "worker-turn")
+        server.start_phase("task", "explain", "Explained the next action")
+        self.session.receive({"id": 11, "method": COMMAND_APPROVAL, "params": {
+            "threadId": "thread", "turnId": "turn", "itemId": "another",
+            "command": "curl https://example.test/other", "cwd": "/config"}})
+        server.start_phase("task", "after", "Later activity")
         server.tasks.clear()
         server.approval_sessions.clear()
+        server.task_activity.clear()
         server.load_task_index()
         restored = server.tasks["task"]
         self.assertEqual(restored["status"], "failed")
         self.assertEqual(restored["turns"][-1]["status"], "failed")
         self.assertEqual(restored["approvals"][0]["status"], "expired")
+        self.assertEqual(restored["approvals"][1]["status"], "expired")
+        self.assertEqual(restored["approvals"][1]["activity_index"], 1)
+        activity = self.client.get("/tasks/task/activity", headers={"Authorization": "Bearer worker-secret"})
+        self.assertEqual(activity.status_code, 200)
+        self.assertEqual([step["text"] for step in activity.json["steps"]], ["Explained the next action"])
         self.assertEqual(self.answer().status_code, 409)
 
     def test_app_server_preserves_model_images_and_hides_known_credentials(self):

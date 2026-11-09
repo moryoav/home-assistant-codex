@@ -695,6 +695,13 @@ h1 {
 .permission-card p {
   margin: 10px 0;
 }
+.permission-card label {
+  display: block;
+}
+.permission-card select {
+  display: block;
+  max-width: 100%;
+}
 .permission-card pre {
   max-height: 320px;
   overflow: auto;
@@ -1088,9 +1095,6 @@ h1 {
 }
 .activity {
   margin-top: 14px;
-}
-.answer .activity {
-  margin-top: 10px;
 }
 .activity-toggle {
   display: inline-flex;

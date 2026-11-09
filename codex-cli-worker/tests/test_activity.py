@@ -223,6 +223,12 @@ class ActivityApiTests(unittest.TestCase):
         fresh = self.get(task_id).json
         self.assertNotEqual(fresh["turn_id"], turn_id)
         self.assertEqual(fresh["steps"], [])
+        server.start_activity(task_id, fresh["turn_id"])
+        url = f"/tasks/{task_id}/activity"
+        earlier = self.client.get(url, query_string={"turn_id": turn_id}, headers=self.headers)
+        self.assertEqual(earlier.json, stored)
+        for unknown in ("0" * 32, "../task"):
+            self.assertEqual(self.client.get(url, query_string={"turn_id": unknown}, headers=self.headers).status_code, 404)
 
     def test_failed_run_records_its_summary(self):
         """A failed run stores an outcome step that carries the task's failure summary."""

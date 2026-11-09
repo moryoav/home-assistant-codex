@@ -464,7 +464,7 @@ The authenticated worker API exposes `GET /chat-options` for choices and default
 
 ### Live activity
 
-From **0.1.53**, the chat shows what Codex is doing while it works on your latest message. Steps appear under the message as Codex reports them: reasoning headlines, progress notes, the commands it runs, the files it edits, web searches, and tool calls. A failed command or an error is highlighted. When a run is stopped or fails, the list ends with a **Stopped** or **Failed** row. The list is expanded while the run lasts and collapses to **Show activity (N steps)** under the answer when it finishes. Only the latest exchange of a chat shows steps; earlier exchanges do not.
+The chat shows activity between your message and Codex's answer. It includes reasoning headlines, progress notes, commands, file edits, web searches, and tool calls. Failed commands and errors are highlighted. When a run stops or fails, the list ends with a **Stopped** or **Failed** row. Activity opens by default while the run is in progress. After it finishes, use **Show activity (N steps)** to see the steps. You can also expand the saved activity for earlier exchanges that contain an approval or tool question.
 
 From **0.1.63**, the list starts as soon as a message is accepted. The worker reports its own steps alongside those of Codex: recording the state of the configuration files, saving a full snapshot when that option is on, starting Codex, waiting for its first response, and checking the changes afterwards. The heading shows how long the exchange has been running, and its dot pulses for as long as the run lasts.
 

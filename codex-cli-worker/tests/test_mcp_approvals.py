@@ -88,6 +88,24 @@ class ApprovalTests(unittest.TestCase):
         self.s.decide(self.record()['approval_id'], 'allow', {'action': 'approve_once'})
         self.assertEqual(self.response()['result']['content'], {'action': 'approve_once'})
 
+    def test_form_can_omit_optional_fields_but_validates_supplied_values(self):
+        schema = {'type': 'object', 'properties': {
+            'confirm': {'type': 'boolean'}, 'notify': {'type': 'boolean', 'default': True},
+        }, 'required': ['confirm']}
+        self.s.receive(self.form(schema))
+        key = self.record()['approval_id']
+        for content in ({}, {'notify': False}, {'confirm': True, 'notify': 'false'}):
+            with self.assertRaises(ValueError):
+                self.s.decide(key, 'allow', content)
+        self.s.decide(key, 'allow', {'confirm': True})
+        self.assertEqual(self.response()['result'], {'action': 'accept', 'content': {'confirm': True}})
+        self.assertEqual([f['required'] for f in self.record()['fields']], [True, False])
+
+    def test_form_without_required_list_can_be_submitted_empty(self):
+        self.s.receive(self.form({'type': 'object', 'properties': {'notify': {'type': 'boolean'}}}))
+        self.s.decide(self.record()['approval_id'], 'allow', {})
+        self.assertEqual(self.response()['result'], {'action': 'accept', 'content': {}})
+
     def test_empty_form_returns_required_empty_content(self):
         self.s.receive(self.form({'type': 'object', 'properties': {}}))
         self.s.decide(self.record()['approval_id'], 'allow', {})

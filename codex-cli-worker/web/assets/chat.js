@@ -1421,7 +1421,7 @@ function renderApproval(approval, taskId, turnId, active) {
     select.disabled = !pending;
     const placeholder = document.createElement("option");
     placeholder.value = "";
-    placeholder.textContent = "Choose an answer";
+    placeholder.textContent = field.required === false ? "Skip (optional)" : "Choose an answer";
     select.append(placeholder);
     field.choices.forEach((choice, index) => {
       const option = document.createElement("option");
@@ -1448,14 +1448,15 @@ function renderApproval(approval, taskId, turnId, active) {
       button.disabled = state.busy || button.dataset.canAllow === "false";
       const updateDisabled = () => {
         button.dataset.canAllow = String(decision !== "allow" || (approval.can_allow &&
-          inputs.every(({ select }) => select.value !== "")));
+          inputs.every(({ field, select }) => field.required === false || select.value !== "")));
         button.disabled = state.busy || button.dataset.canAllow === "false";
       };
       for (const { select } of inputs) select.addEventListener("change", updateDisabled);
       updateDisabled();
       button.onclick = () => {
         const content = isMcp && decision === "allow" ? Object.fromEntries(
-          inputs.map(({ field, select }) => [field.id, field.choices[Number(select.value)].value])
+          inputs.filter(({ select }) => select.value !== "")
+            .map(({ field, select }) => [field.id, field.choices[Number(select.value)].value])
         ) : undefined;
         return sendApproval(taskId, turnId, approval.approval_id, decision, content);
       };

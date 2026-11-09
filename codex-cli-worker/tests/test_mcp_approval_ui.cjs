@@ -53,6 +53,18 @@ const request = { approval_id: 'opaque-ui-id', kind: 'mcp', status: 'pending', c
   await reject.onclick();
   assert.equal(calls[1].payload.decision, 'deny');
   assert(!('content' in calls[1].payload));
+  card = context.renderApproval({ ...request, fields: [
+    ...request.fields,
+    { id: 'notify', label: 'Notify?', required: false, choices: request.fields[0].choices },
+  ] }, 'task', 'turn', true);
+  const [required, optional] = flatten(card).filter(n => n.tag === 'select');
+  const submit = flatten(card).find(n => n.textContent === 'Approve');
+  assert(submit.disabled);
+  assert.equal(optional.children[0].textContent, 'Skip (optional)');
+  required.value = '0'; required.events.change.forEach(callback => callback());
+  assert(!submit.disabled);
+  await submit.onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[2].payload.content)), { confirm: true });
   card = context.renderApproval({ ...request, fields: [], can_allow: false }, 'task', 'turn', true);
   assert(flatten(card).find(n => n.textContent === 'Approve').disabled);
   card = context.renderApproval({ approval_id: 'cmd', kind: 'command', status: 'pending', can_allow: true }, 'task', 'turn', true);

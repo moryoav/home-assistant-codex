@@ -211,7 +211,8 @@ class AppServerSession:
                         supported = False
                         break
                     fields.append({"id": key, "label": str(spec.get("title") or key),
-                                   "description": str(spec.get("description") or ""), "choices": choices})
+                                   "description": str(spec.get("description") or ""),
+                                   "required": key in required, "choices": choices})
             meta = params.get("_meta")
             if supported and not fields and not (isinstance(meta, dict) and meta.get("codex_requires_user_input") is True):
                 acceptance = {"action": "accept", "content": {}}
@@ -367,11 +368,14 @@ class AppServerSession:
             if pending:
                 result = pending["fallback"]
                 if decision == "allow":
-                    fields = pending["fields"]
-                    if (not isinstance(content, dict) or set(content) != {f["id"] for f in fields} or
-                            any(not any(type(content[f["id"]]) is type(c["value"]) and content[f["id"]] == c["value"]
-                                        for c in f["choices"]) for f in fields)):
-                        raise ValueError("Choose a listed answer for every field; arbitrary values are not accepted.")
+                    fields = {field["id"]: field for field in pending["fields"]}
+                    required = {key for key, field in fields.items() if field.get("required", True)}
+                    if not isinstance(content, dict) or not required <= content.keys() <= fields.keys():
+                        raise ValueError("Choose an answer for every required field and use only listed fields.")
+                    for key, value in content.items():
+                        if not any(type(value) is type(choice["value"]) and value == choice["value"]
+                                   for choice in fields[key]["choices"]):
+                            raise ValueError("Choose a listed answer. Arbitrary values are not accepted.")
                     if pending["acceptance"] is not None:
                         result = pending["acceptance"]
                     elif pending["form"]:

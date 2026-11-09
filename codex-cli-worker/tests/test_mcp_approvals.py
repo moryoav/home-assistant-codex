@@ -136,26 +136,41 @@ class ApprovalTests(unittest.TestCase):
             self.assertEqual(self.response(), {'id': 'input-72', 'result': {
                 'answers': {'choice': {'answers': ['Accept']}}}})
 
-    def test_user_input_reject_selects_explicit_decline(self):
-        self.s.receive(self.input())
+    def test_dismissal_does_not_select_an_operation(self):
+        request = self.input()
+        request['params']['questions'][0]['options'][1] = {
+            'label': 'Cancel', 'description': 'Cancel the scheduled job'}
+        self.s.receive(request)
         self.s.decide(self.record()['approval_id'], 'deny')
-        self.assertEqual(self.response()['result'], {'answers': {'choice': {'answers': ['Decline']}}})
+        self.assertEqual(self.response()['result'], {'answers': {}})
 
-    def test_secret_and_freeform_questions_are_not_published(self):
-        for flag in ['isSecret', 'isOther']:
+    def test_secret_and_unbounded_questions_are_not_published(self):
+        for restrictions in [{'isSecret': True}, {'isOther': True, 'options': []}]:
             request = self.input()
-            request['params']['questions'][0][flag] = True
+            request['params']['questions'][0].update(restrictions)
             self.s.receive(request)
             self.assertFalse(self.record()['can_allow'])
             self.assertEqual(self.response()['result'], {'answers': {}})
 
-    def test_timer_is_bounded_and_rejects(self):
-        with patch.object(approvals.threading, 'Timer') as timer:
-            self.s.receive(self.input(autoResolutionMs=1000))
-            self.assertEqual(timer.call_args.args[0], 1)
-            timer.return_value.start.assert_called_once()
-            self.s._expire_mcp(self.record()['approval_id'])
-            self.assertEqual(self.response()['result']['answers']['choice']['answers'], ['Decline'])
+    def test_optional_other_does_not_hide_listed_answers(self):
+        request = self.input('item/tool/requestUserInput')
+        request['params']['questions'][0]['isOther'] = True
+        self.s.receive(request)
+        approval_id = self.record()['approval_id']
+        with self.assertRaises(ValueError):
+            self.s.decide(approval_id, 'allow', {'choice': 'An unlisted answer'})
+        self.s.decide(approval_id, 'allow', {'choice': 'Accept'})
+        self.assertEqual(self.response()['result'], {'answers': {'choice': {'answers': ['Accept']}}})
+
+    def test_timeout_expires_without_answering_the_question(self):
+        self.s.receive(self.input(autoResolutionMs=20))
+        deadline = time.monotonic() + 1
+        while not self.out.getvalue() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.response()['result'], {'answers': {}})
+        self.assertEqual(self.record()['status'], 'expired')
+        with self.assertRaises(LookupError):
+            self.s.decide(self.record()['approval_id'], 'allow', {'choice': 'Accept'})
 
     def test_duplicate_decision_is_not_replayed(self):
         self.s.receive(self.form())

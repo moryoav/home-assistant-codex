@@ -1390,12 +1390,13 @@ function renderTask(force = false) {
 /** Show a native permission request as text, with its precise action and scope. */
 function renderApproval(approval, taskId, turnId, active) {
   const pending = active && approval.status === "pending";
-  const isMcp = approval.kind === "mcp" || approval.kind === "user_input";
+  const question = approval.kind === "user_input";
+  const isMcp = approval.kind === "mcp" || question;
   const inputs = [];
   const card = textNode("section", "", "permission-card");
-  card.setAttribute("aria-label", "Permission request");
-  const statuses = { allowed: "Allowed once", denied: "Denied", expired: "Expired" };
-  card.append(textNode("strong", pending ? "Permission needed" : statuses[approval.status] || "Expired"));
+  card.setAttribute("aria-label", question ? "Tool question" : "Permission request");
+  const statuses = { allowed: question ? "Answered" : "Allowed once", denied: question ? "Dismissed" : "Denied", expired: "Expired" };
+  card.append(textNode("strong", pending ? (question ? "Answer needed" : "Permission needed") : statuses[approval.status] || "Expired"));
   if (approval.reason) card.append(textNode("p", approval.reason));
   card.append(textNode("p", approval.scope || "", "permission-scope"));
   if (approval.cwd) card.append(textNode("p", `Working folder: ${approval.cwd}`, "permission-folder"));
@@ -1430,8 +1431,10 @@ function renderApproval(approval, taskId, turnId, active) {
   if (pending) {
     const actions = textNode("div", "", "choices");
     actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", "Permission decision");
-    for (const [decision, label] of [["allow", isMcp ? "Approve" : "Allow once"], ["deny", isMcp ? "Reject" : "Deny"]]) {
+    actions.setAttribute("aria-label", question ? "Answer options" : "Permission decision");
+    const submit = question ? "Send answer" : isMcp ? "Approve" : "Allow once";
+    const dismiss = question ? "Dismiss" : isMcp ? "Reject" : "Deny";
+    for (const [decision, label] of [["allow", submit], ["deny", dismiss]]) {
       const button = textNode("button", label, "subtle permission-action");
       button.type = "button";
       button.dataset.canAllow = String(decision !== "allow" || approval.can_allow);

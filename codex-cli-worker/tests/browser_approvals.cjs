@@ -123,7 +123,12 @@ async function testConnectorTimeline(page) {
   await exchange.getByText(before, {exact: true}).waitFor({state: "hidden"});
   assert.equal(await answer.isEnabled(), true);
   assert.equal(await question.locator("select option:checked").textContent(), "Office");
-  await answer.click();
+  const [decision] = await Promise.all([
+    page.waitForRequest(request => request.method() === "POST" &&
+      new URL(request.url()).pathname.startsWith(`/preview/tasks/${taskId}/approvals/`)),
+    answer.click(),
+  ]);
+  assert.deepEqual(decision.postDataJSON().content, {destination: "Office"});
   await exchange.getByText("Answered", {exact: true}).waitFor();
   await exchange.getByText(`Preview response: ${prompt}`, {exact: true}).waitFor();
   assert.equal(await answer.count(), 0);

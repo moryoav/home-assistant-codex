@@ -1907,6 +1907,10 @@ function renderActivity(block = $("activity"), activity = state.activity) {
     if (focused?.classList.contains("activity-toggle")) toggle.focus({preventScroll: true});
   } else block.replaceChildren(list);
   if (focused?.isConnected) focused.focus({preventScroll: true});
+  else if (focused?.classList.contains("step-output-toggle")) {
+    const index = CSS.escape(focused.dataset.stepIndex);
+    list.querySelector(`.step-output-toggle[data-step-index="${index}"]`)?.focus({preventScroll: true});
+  }
   if (latest) {
     tickElapsed();
     if (nearBottom) area.scrollTop = area.scrollHeight;
@@ -1944,6 +1948,7 @@ function renderStep(step, activity, redraw) {
       "step-output-toggle",
     );
     button.type = "button";
+    button.dataset.stepIndex = String(step.index);
     button.onclick = () => {
       if (open) activity.open.delete(step.index);
       else activity.open.add(step.index);

@@ -145,6 +145,15 @@ async function testConnectorTimeline(page) {
   await checkOrder(true);
   await question.getByText("Which room? Office", {exact: true}).waitFor();
   assert.equal(await question.locator(".permission-action").count(), 0);
+  const showOutput = exchange.getByRole("button", {name: "Show output", exact: true});
+  const hideOutput = exchange.getByRole("button", {name: "Hide output", exact: true});
+  await showOutput.focus();
+  await page.keyboard.press("Enter");
+  await exchange.locator(".step-output").waitFor();
+  assert.equal(await hideOutput.evaluate(button => button === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await exchange.locator(".step-output").waitFor({state: "hidden"});
+  assert.equal(await showOutput.evaluate(button => button === document.activeElement), true);
 }
 
 /** Run these focused checks on their own when diagnosing the approval UI. */

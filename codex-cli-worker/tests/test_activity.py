@@ -240,6 +240,38 @@ class ActivityApiTests(unittest.TestCase):
         steps = self.get(task_id).json["steps"]
         self.assertEqual([step["text"] for step in steps], ["Failed: Codex timed out after 5 seconds."])
 
+    def test_app_server_plan_updates_stay_at_their_first_activity_position(self):
+        task_id = self.create()
+        turn_id = server.tasks[task_id]["current_turn_id"]
+        server.update_task(task_id, status="running")
+        server.start_activity(task_id, turn_id)
+        proc = StubAppServer(self.session_id)
+        session = server.create_approval_session(
+            task_id, proc, "Review", self.root / "final.json", None, {}, {"codex_sandbox": "danger-full-access"},
+        )
+        self.addCleanup(session.close)
+        session.thread_id, session.turn_id = self.session_id, proc.turn_id
+
+        def update(status, turn=proc.turn_id):
+            session.receive({"method": "turn/plan/updated", "params": {
+                "threadId": self.session_id, "turnId": turn,
+                "plan": [{"step": "Read the automation", "status": status}],
+            }})
+
+        update("pending")
+        first = self.get(task_id).json
+        self.assertEqual([step["text"] for step in first["steps"]], ["☐ Read the automation"])
+        server.record_activity_event(task_id, command("c1", "ls"))
+        update("completed", turn="other-turn")
+        self.assertEqual(self.get(task_id).json["steps"][0]["text"], "☐ Read the automation")
+        update("completed")
+        server.update_task(task_id, status="completed")
+        server.finish_activity(task_id)
+        steps = self.get(task_id).json["steps"]
+        self.assertEqual([(step["kind"], step["text"]) for step in steps],
+                         [("plan", "☑ Read the automation"), ("command", "ls")])
+        self.assertEqual(steps[0]["index"], first["steps"][0]["index"])
+
     def test_deleting_a_chat_forgets_its_steps(self):
         """Deleting a chat also drops the steps held in memory for it."""
         task_id = self.create()

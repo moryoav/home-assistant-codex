@@ -462,6 +462,13 @@ class AppServerSession:
                     self.on_event({"type": "turn.started"})
             elif params.get("threadId") == self.thread_id and params.get("turnId") == self.turn_id and method in {"item/started", "item/completed"}:
                 self._item(method, params["item"])
+            elif (method == "turn/plan/updated" and self.turn_id
+                  and params.get("threadId") == self.thread_id and params.get("turnId") == self.turn_id):
+                self.on_event({"type": "item.updated", "item": {
+                    "id": "app-server:plan", "type": "todo_list",
+                    "items": [{"text": step["step"], "completed": step["status"] == "completed"}
+                              for step in params["plan"]],
+                }})
             elif method == "item/fileChange/patchUpdated" and params.get("threadId") == self.thread_id and params.get("turnId") == self.turn_id:
                 self._cache_file_changes(str(params["itemId"]), params.get("changes") or [])
             elif method == "turn/completed" and params.get("threadId") == self.thread_id:

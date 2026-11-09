@@ -256,7 +256,7 @@ def main():
                                     else:
                                         assert not full_access, ("Unexpected Full access prompt", record)
                                         answer = "allow" if decision == "mcp_allow" else "deny"
-                                        session.decide(record["approval_id"], answer, {} if answer == "allow" else None)
+                                        session.decide(record["approval_id"], answer)
                                 else:
                                     answer = ("allow" if len(published) == 1 else "deny") if file_case else decision
                                     session.decide(record["approval_id"], answer)

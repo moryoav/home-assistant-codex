@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_server import server
-from approvals import AppServerSession, COMMAND_APPROVAL, FILE_APPROVAL, DISPLAY_LIMIT
+from approvals import AppServerSession, COMMAND_APPROVAL, DISPLAY_LIMIT, FILE_APPROVAL, MCP_ELICITATION
 
 
 class Transport(io.StringIO):
@@ -367,6 +367,30 @@ class ApprovalApiTests(unittest.TestCase):
         task = server.tasks["task"]
         self.assertEqual(task["turns"][-1]["approvals"][0]["status"], "allowed")
         self.assertFalse(server.task_payload(task)["permission_required"])
+
+    def test_mcp_confirmations_accept_a_decision_without_form_content(self):
+        self.addCleanup(self.session.close)
+        question_id = "mcp_tool_call_approval_tool-call"
+        cases = (
+            (MCP_ELICITATION, {"mode": "form", "message": "Allow the tool?",
+                               "requestedSchema": {"type": "object", "properties": {}}},
+             {"action": "accept", "content": {}}),
+            ("item/tool/requestUserInput", {"itemId": "tool-call", "questions": [{
+                "id": question_id, "question": "Allow the tool?", "isOther": False,
+                "options": [{"label": "Allow"}, {"label": "Deny"}],
+            }]}, {"answers": {question_id: {"answers": ["Allow"]}}}),
+        )
+        for request_id, (method, params, result) in enumerate(cases, 11):
+            with self.subTest(method=method):
+                self.session.receive({"id": request_id, "method": method, "params": {
+                    "threadId": "thread", "turnId": "turn", **params,
+                }})
+                self.approval_id = server.tasks["task"]["approvals"][-1]["approval_id"]
+                self.assertEqual(self.answer({
+                    "decision": "allow", "turn_id": "worker-turn", "content": {"extra": True},
+                }).status_code, 400)
+                self.assertEqual(self.answer().status_code, 200)
+                self.assertEqual(self.writer.messages()[-1], {"id": request_id, "result": result})
 
     def test_each_new_request_is_announced_once(self):
         """A request that starts waiting sends one notification; its decision and its expiry send none."""

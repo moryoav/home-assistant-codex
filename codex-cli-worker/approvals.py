@@ -368,6 +368,8 @@ class AppServerSession:
             if pending:
                 result = pending["fallback"]
                 if decision == "allow":
+                    if content is None and pending["acceptance"] is not None:
+                        content = {}
                     fields = {field["id"]: field for field in pending["fields"]}
                     required = {key for key, field in fields.items() if field.get("required", True)}
                     if not isinstance(content, dict) or not required <= content.keys() <= fields.keys():

@@ -187,7 +187,12 @@ class ApprovalTests(unittest.TestCase):
     def test_user_input_protocol_and_alias(self):
         for method in approvals.USER_INPUT:
             self.s.receive(self.input(method))
-            self.s.decide(self.record()['approval_id'], 'allow', {'choice': 'Accept'})
+            key = self.record()['approval_id']
+            with self.assertRaises(ValueError):
+                self.s.decide(key, 'allow', {})
+            with self.assertRaises(ValueError):
+                self.s.decide(key, 'allow')
+            self.s.decide(key, 'allow', {'choice': 'Accept'})
             self.assertEqual(self.response(), {'id': 'input-72', 'result': {
                 'answers': {'choice': {'answers': ['Accept']}}}})
 

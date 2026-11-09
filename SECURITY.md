@@ -23,6 +23,14 @@ devices through the paired integration. These images have the same authenticated
 access and retention as browser screenshots. No device navigation, refresh, or
 wake action is performed. See [Fully Kiosk screenshots](codex-cli-worker/VERIFICATION.md#fully-kiosk-screenshots).
 
+SSH connections use user-managed keys and server permissions. Keys stored under
+`/data/.ssh` are accessible to Codex tasks and are excluded from app backups;
+this storage is not a secret vault isolated from the AI process. Remote key
+restrictions must be enforced by the SSH server. Sandboxed modes require
+approval for shell networking, while `danger-full-access` does not. Review each
+approved command and keep connections short-lived. See [SSH setup and
+limits](codex-cli-worker/DOCS.md#ssh-connections).
+
 ## Supported Versions
 
 Security fixes are intended for the latest published release and the current `main` branch.

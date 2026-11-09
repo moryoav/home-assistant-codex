@@ -308,6 +308,65 @@ From **0.1.68**, a task that has `HA_TOKEN` also gets `HA_URL`, the address thos
 
 These calls come from Codex's shell. They can run freely in `danger-full-access`; in `workspace-write` and `read-only`, Codex must request permission for the specific command that needs networking. What Codex can do with the token is whatever the token's user may do, including reloading configuration and restarting Home Assistant.
 
+## SSH connections
+
+I include the OpenSSH client so Codex can use an existing SSH server, such as a Home Assistant SSH app, a NAS, or another Linux machine. There are no SSH app options or connection-management screens. Set up each connection through the existing chat and standard SSH files. No `HA_TOKEN` is needed for SSH authentication, and SSH does not mount remote folders inside the worker.
+
+### Set up a connection through chat
+
+Ask Codex, for example:
+
+> Set up a connection named `ha-terminal` to my SSH server at `ssh-host.example`, port `22`, username `hassio`. Generate a dedicated Ed25519 connection key under `/data/.ssh`. Keep the private key out of chat and logs, show me only its public key, and preserve any existing connections. Use `/data/.ssh/config` and `/data/.ssh/known_hosts` explicitly. Wait for me to verify the server fingerprint before trusting it. Save the connection name and invocation in `/config/AGENTS.md`, without credentials.
+
+Replace the example host, port, and username with those of the remote SSH server. For a Home Assistant SSH app, enable its SSH network port and use the Home Assistant host's address and that port. The web terminal's Ingress address is not an SSH endpoint.
+
+Ask Codex to create the directory with mode `700`, private keys and configuration with mode `600`, and a connection-specific key without overwriting an existing key. Check the permissions after setup; the app does not enforce these file modes. Setup writes outside `/config` and network checks require approval in sandboxed modes. Public-key authentication is intended for these non-interactive tasks; this setup does not save passwords or provide an interactive passphrase agent. A dedicated unattended key can be generated without a passphrase. Anyone able to read that private key can use the remote permissions granted to it.
+
+Add the generated **public** key to the remote server's authorized keys. In Advanced SSH & Web Terminal, use its `ssh.authorized_keys` option. Keep the remote server's existing credentials and other authorized keys intact. Do not copy the server's Git key into the worker.
+
+Verify the server's host-key fingerprint against a trusted source, such as its local console or administrator, before adding the matching public host key to `/data/.ssh/known_hosts`. `ssh-keyscan` can collect a host key but does not prove the server's identity. For a non-default port, the known-hosts entry uses `[host]:port`. Keep strict host-key checking enabled; investigate a changed key rather than disabling the check.
+
+An example `/data/.ssh/config` connection is:
+
+```sshconfig
+Host ha-terminal
+    HostName ssh-host.example
+    Port 22
+    User hassio
+    IdentityFile /data/.ssh/ha-terminal_ed25519
+    IdentitiesOnly yes
+    IdentityAgent none
+    UserKnownHostsFile /data/.ssh/known_hosts
+    StrictHostKeyChecking yes
+    BatchMode yes
+    ConnectTimeout 10
+    ConnectionAttempts 1
+    ControlMaster no
+    ControlPath none
+    ControlPersist no
+    ClearAllForwardings yes
+    ForwardAgent no
+    RequestTTY no
+```
+
+Use `ssh -F /data/.ssh/config -n ha-terminal '<remote-command>'`, replacing the quoted command with the intended operation. The explicit `-F` is important: OpenSSH can use the account's home directory for its default configuration even though Codex receives `HOME=/data`. Absolute identity and known-hosts paths also avoid that ambiguity. Add another `Host` entry and dedicated key for each additional server.
+
+### Permissions and approvals
+
+The remote SSH server controls what the account and key can do. A normal login may expose everything that account can read or execute, including credentials. To permit only fixed operations, configure a dedicated public key on the **server** with OpenSSH's `restrict` and `command="..."` authorized-key options. The forced command can dispatch a small set of exact operation names to existing scripts and reject everything else. Do not evaluate the requested string as shell code or accept arbitrary executable paths. Keep that dispatcher, the scripts it runs, and their executable configuration outside folders Codex can modify.
+
+Advanced SSH & Web Terminal 24.2.0 was tested with a restricted key for both `root` and the default `hassio` username: fixed dummy operations worked, while shell access, command injection, credential-file reads, SCP/SFTP, terminal allocation, and local/remote port forwarding were denied. Root-protected scripts also worked with a fixed `sudo -n` command for `hassio`. These checks used dummy files, not a real backup repository. Other versions and custom dispatchers need their own checks. See [OpenSSH key restrictions](https://man.openbsd.org/sshd.8#AUTHORIZED_KEYS_FILE_FORMAT) and the [SSH app documentation](https://github.com/hassio-addons/app-ssh/blob/main/ssh/DOCS.md).
+
+In `workspace-write` and `read-only`, shell networking is disabled until a specific command receives **Allow once** through the existing chat approval flow. Run each remote operation as a separate, short-lived SSH command. The configuration above disables connection sharing and forwarding so later operations do not reuse a connection opened by an earlier approved command. Review the full command: approval permits that command outside the sandbox with the app's available access. Preview and audit commands need network approval too. **Deny** must leave the remote operation unexecuted. See [permission requests](#permission-requests).
+
+`danger-full-access` does not enforce those command approvals. Neither an SSH key nor an instruction to ask first adds a mandatory approval gate in that mode. This feature does not add a per-operation policy engine or a preview transaction: the remote scripts remain responsible for ensuring a later operation uses exactly the contents the user reviewed. A separate unrestricted SSH login or administrator API token retains its own broader access.
+
+### Storage, backups, and removal
+
+`/data/.ssh` is private to this worker app and persists across restarts and updates, but Codex tasks can read it. Never print private keys or paste them into chat, task prompts, logs, or `/config`. The app excludes the entire `.ssh` directory from Home Assistant app backups, including keys, connection configuration, and trusted host keys. After restoring a backup, set up connections again and revoke replaced public keys on the remote servers. These exclusions do not remove credentials already copied elsewhere or included in older backups.
+
+To remove a connection, revoke its dedicated public key on the remote server, then remove its `Host` entry, local key files, and unused known-hosts entry through chat. Connections use only an SSH client; this feature does not start an SSH server or open an inbound worker port.
+
 ## Usage Status
 
 The worker performs a best-effort interactive probe of Codex CLI usage by starting a pseudo-terminal session and running `/status`. It extracts whichever usage windows Codex reports and exposes them through the worker `/status` payload, which the integration surfaces as sensors. Some accounts report both 5-hour and weekly windows, while others currently report only a weekly window.

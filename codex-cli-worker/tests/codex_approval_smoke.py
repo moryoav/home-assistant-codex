@@ -1,5 +1,7 @@
 """Exercise real pinned-CLI approvals against a local model fixture, without an account."""
 
+import argparse
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
@@ -9,24 +11,87 @@ import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from approvals import AppServerSession
+import server
 from server import FINAL_RESPONSE_SCHEMA
+
+
+@contextmanager
+def worker_approval_session(proc, workspace, root, mode, resume_id, approve, finals, events):
+    """Exercise production session creation, translating only container fixture paths."""
+    task_id = "ssh-fixture"
+    task = {"status": "running", "current_turn_id": "ssh-turn", "turns": [{
+        "execution_settings": {"model": "gpt-5.1-codex", "reasoning_effort": "low"},
+    }]}
+
+    def update_task(_task_id, **fields):
+        """Persist approvals in the fixture task as the worker's callback expects."""
+        task.update(fields)
+        return True
+
+    with (
+        patch.object(server, "tasks", {task_id: task}),
+        patch.object(server, "running_processes", {task_id: proc}),
+        patch.object(server, "api_token", return_value="fixture-worker-token"),
+        patch.object(server, "update_task", side_effect=update_task),
+        patch.object(server, "write_task_log"),
+        patch.object(server, "record_activity_event", side_effect=lambda _task_id, event: events.append(event)),
+        patch.object(server, "notify_permission_async"),
+    ):
+        session = server.create_approval_session(
+            task_id, proc, "Exercise SSH sandbox approvals", root / "ssh-final.json",
+            resume_id, {}, {"codex_sandbox": mode},
+        )
+        # Production owns the security policy, including on resumed threads.
+        policy = session.turn_params["sandboxPolicy"]
+        assert policy["networkAccess"] is False, policy
+        assert policy["type"] == ("readOnly" if mode == "read-only" else "workspaceWrite"), policy
+        assert session.thread_params["cwd"] == "/config", session.thread_params
+        session.thread_params["cwd"] = str(workspace)
+        if mode == "workspace-write":
+            assert policy["writableRoots"] == ["/config"], policy
+            policy["writableRoots"] = [str(workspace)]
+        save_approvals = session.on_approvals
+        save_final = session.on_final
+
+        def approve_and_persist(published):
+            """Keep production approval persistence before the simulated UI decision."""
+            save_approvals(published)
+            approve(published)
+
+        def finish(text):
+            """Keep production final-file persistence and collect the test answer."""
+            save_final(text)
+            finals.append(text)
+
+        session.on_approvals = approve_and_persist
+        session.on_final = finish
+        yield session
 
 
 def main():
     """Prove allow/deny and session resume preserve the next command's sandbox."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ssh", action="store_true", help="Exercise the packaged SSH client against a local fixed-command server")
+    args = parser.parse_args()
     binary = os.environ.get("HA_TEST_CODEX", "/usr/local/bin/codex")
     assert "0.165.0" in subprocess.check_output([binary, "--version"], text=True)
     cache = Path.home() / ".cache"
     cache.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="ha-approval-smoke-", dir=cache) as temporary:
+    with tempfile.TemporaryDirectory(prefix="ha-approval-smoke-", dir=cache) as temporary, ExitStack() as resources:
         root = Path(temporary)
         workspace = root / "workspace"
         workspace.mkdir()
         requests = []
         probes = []
+        ssh_command = None
+        if args.ssh:
+            from ssh_approval_fixture import ssh_probe
+
+            ssh_command = resources.enter_context(ssh_probe(root, probes))
         stage = 0
         final_only = False
         file_case = False
@@ -75,11 +140,11 @@ def main():
                     selected = next(((namespace, tool) for namespace, tool in functions if tool.get("name") == "exec_command"), None)
                     assert selected, [(namespace, tool.get("name")) for namespace, tool in functions]
                     namespace, tool = selected
-                    command = shlex.quote(sys.executable) + " -c " + shlex.quote(
+                    command = ssh_command or shlex.quote(sys.executable) + " -c " + shlex.quote(
                         f"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{provider.server_port}/probe', timeout=3).read().decode())")
                     arguments = {"cmd": command, "max_output_tokens": 1000}
                     if stage == 1:
-                        arguments.update(sandbox_permissions="require_escalated", justification="Read the local test endpoint once")
+                        arguments.update(sandbox_permissions="require_escalated", justification="Run the local test operation once")
                     item = {"type": "function_call", "call_id": f"call_{stage}", "name": tool["name"], "arguments": json.dumps(arguments)}
                     if namespace:
                         item["namespace"] = namespace
@@ -114,13 +179,18 @@ def main():
         try:
             # Start in the old transport to prove existing saved chats can resume.
             final_only = True
-            legacy = subprocess.run([binary, "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--json",
+            legacy_mode = "danger-full-access" if args.ssh else "workspace-write"
+            legacy = subprocess.run([binary, "exec", "--sandbox", legacy_mode, "--skip-git-repo-check", "--json",
                                      "--model", "gpt-5.1-codex", *config_args, "Say fixture finished"],
                                     cwd=workspace, env=environment, capture_output=True, text=True, timeout=30)
             assert legacy.returncode == 0, (legacy.stdout, legacy.stderr)
             thread_id = next(json.loads(line)["thread_id"] for line in legacy.stdout.splitlines() if json.loads(line).get("type") == "thread.started")
             final_only = False
-            for mode, decision, resume_id in [("workspace-write", "allow", thread_id), ("read-only", "deny", None), ("read-only", "file", None)]:
+            cases = [("workspace-write", "allow", thread_id), ("read-only", "deny", None), ("read-only", "file", None)]
+            if args.ssh:
+                cases = [(mode, decision, thread_id if (mode, decision) == ("workspace-write", "allow") else None)
+                         for mode in ("workspace-write", "read-only") for decision in ("allow", "deny")]
+            for mode, decision, resume_id in cases:
                 file_case = decision == "file"
                 outside_file.write_text("value: 0\n")
                 stage = 0
@@ -129,7 +199,7 @@ def main():
                 records = []
                 finals = []
                 events = []
-                with (root / "stderr.log").open("w+") as errors:
+                with (root / "stderr.log").open("w+") as errors, ExitStack() as session_context:
                     proc = subprocess.Popen([binary, "app-server", *config_args], cwd=workspace, env=environment,
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, bufsize=1)
                     params = {"cwd": str(workspace), "model": "gpt-5.1-codex", "sandbox": mode,
@@ -145,10 +215,15 @@ def main():
                                 answer = ("allow" if len(published) == 1 else "deny") if file_case else decision
                                 session.decide(record["approval_id"], answer)
 
-                    session = AppServerSession(proc.stdin, lock=threading.RLock(), thread_params=params,
-                                               turn_params={"input": [{"type": "text", "text": "Exercise sandbox and approval"}], "outputSchema": FINAL_RESPONSE_SCHEMA},
-                                               on_event=events.append, on_approvals=approve, on_final=finals.append,
-                                               is_active=lambda: proc.poll() is None, redact=lambda text: text)
+                    if args.ssh:
+                        session = session_context.enter_context(worker_approval_session(
+                            proc, workspace, root, mode, resume_id, approve, finals, events,
+                        ))
+                    else:
+                        session = AppServerSession(proc.stdin, lock=threading.RLock(), thread_params=params,
+                                                   turn_params={"input": [{"type": "text", "text": "Exercise sandbox and approval"}], "outputSchema": FINAL_RESPONSE_SCHEMA},
+                                                   on_event=events.append, on_approvals=approve, on_final=finals.append,
+                                                   is_active=lambda: proc.poll() is None, redact=lambda text: text)
                     reader = threading.Thread(target=session.read, args=(proc.stdout,), daemon=True)
                     reader.start()
                     try:
@@ -183,7 +258,10 @@ def main():
                                if item.get("type") == "function_call_output" and item.get("call_id") == call_id]
                     assert outputs, (call_id, requests[-1]["input"])
                     assert "network-action-executed" not in json.dumps(outputs), outputs
-            print("Pinned CLI approvals passed: legacy sessions resume, command and file allow/deny works, subsequent actions stay sandboxed.")
+            if args.ssh:
+                print("Pinned CLI SSH approvals passed: allow executes once, deny prevents execution, and subsequent SSH commands stay sandboxed in both modes.")
+            else:
+                print("Pinned CLI approvals passed: legacy sessions resume, command and file allow/deny works, subsequent actions stay sandboxed.")
         finally:
             provider.shutdown()
             provider.server_close()

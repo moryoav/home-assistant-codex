@@ -79,7 +79,7 @@ def main():
     parser.add_argument("--ssh", action="store_true", help="Exercise the packaged SSH client against a local fixed-command server")
     args = parser.parse_args()
     binary = os.environ.get("HA_TEST_CODEX", "/usr/local/bin/codex")
-    assert "0.165.0" in subprocess.check_output([binary, "--version"], text=True)
+    assert "0.171.0" in subprocess.check_output([binary, "--version"], text=True)
     cache = Path.home() / ".cache"
     cache.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="ha-approval-smoke-", dir=cache) as temporary, ExitStack() as resources:

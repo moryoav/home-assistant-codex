@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.83
+
+- Added GPT-6.2 Sol and GPT-6.2 Astra to the worker app options and the chat model picker, with reasoning levels from Low through Ultra.
+- Updated the bundled Codex CLI to 0.171.0. Its catalog now defaults to GPT-6.2 Sol when the account supports it.
+
+Update the worker app to **0.1.83** to use the new models. The integration is also available at **0.1.83**.
+
 ## 0.1.82
 
 - Added chat support for MCP confirmations and fixed-choice connector questions, including optional answers, dismissal, and expiry.

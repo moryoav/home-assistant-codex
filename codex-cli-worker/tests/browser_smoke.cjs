@@ -652,11 +652,11 @@ function pngBuffer(width = 8, height = 6) {
     );
     await page.locator("#model-button").click();
     await page
-      .getByRole("button", { name: "GPT-6.1 Terra", exact: true })
+      .getByRole("button", { name: "GPT-6.2 Astra", exact: true })
       .click();
     await page.waitForFunction(
       () =>
-        document.querySelector("#model-button").textContent === "GPT-6.1 Terra" &&
+        document.querySelector("#model-button").textContent === "GPT-6.2 Astra" &&
         !document.querySelector("#model-button").disabled,
     );
     assert.equal(await page.locator("#effort-label").textContent(), "Ultra");
@@ -665,16 +665,16 @@ function pngBuffer(width = 8, height = 6) {
         async () =>
           (await (await fetch("tasks/preview-00")).json()).task.chat_settings,
       ),
-      { model: "gpt-6.1-terra", reasoning_effort: "ultra" },
+      { model: "gpt-6.2-astra", reasoning_effort: "ultra" },
     );
     // Choosing the model the add-on runs anyway clears the chat's own selection.
     await page.locator("#model-button").click();
     await page
-      .getByRole("button", { name: "GPT-6.1 Sol", exact: true })
+      .getByRole("button", { name: "GPT-6.2 Sol", exact: true })
       .click();
     await page.waitForFunction(
       () =>
-        document.querySelector("#model-button").textContent === "GPT-6.1 Sol" &&
+        document.querySelector("#model-button").textContent === "GPT-6.2 Sol" &&
         !document.querySelector("#model-button").disabled,
     );
     assert.deepEqual(
@@ -749,7 +749,7 @@ function pngBuffer(width = 8, height = 6) {
     );
     assert.equal(
       await page.evaluate(() => document.activeElement.textContent),
-      "GPT-6 Astra",
+      "GPT-6.2 Sol",
     );
     await page.keyboard.press("Escape");
     await page.evaluate(() => {
@@ -759,7 +759,7 @@ function pngBuffer(width = 8, height = 6) {
     // A new chat names the model it runs on, and the menu marks that model.
     assert.equal(
       await page.locator("#model-button").textContent(),
-      "GPT-6.1 Sol",
+      "GPT-6.2 Sol",
     );
     await page.locator("#model-button").click();
     assert.deepEqual(
@@ -770,9 +770,9 @@ function pngBuffer(width = 8, height = 6) {
             .filter((option) => option.getAttribute("aria-pressed") === "true")
             .map((option) => option.textContent),
         ),
-      ["GPT-6.1 Sol✓"],
+      ["GPT-6.2 Sol✓"],
     );
-    assert.equal(await page.locator("#model-options .model-option").count(), 8);
+    assert.equal(await page.locator("#model-options .model-option").count(), 10);
     await page
       .getByRole("button", { name: "GPT-5.6 Luna", exact: true })
       .click();

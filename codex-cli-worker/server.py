@@ -120,9 +120,10 @@ BACKUP_RETENTION_DAYS_RANGE = (1, 365)
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 # Codex only emits reasoning items when summaries are requested; "auto" produced none.
 REASONING_SUMMARIES = {"concise", "detailed", "none"}
-# Supported choices in the bundled CLI 0.165.0 model catalog. Availability still
-# depends on the signed-in account; the CLI reports unavailable models normally.
+# Model choices for the bundled CLI. Availability depends on the signed-in account.
 CHAT_MODELS = (
+    ("gpt-6.2-sol", "GPT-6.2 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ("gpt-6.2-astra", "GPT-6.2 Astra", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6-astra", "GPT-6 Astra", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6.1-sol", "GPT-6.1 Sol", ("low", "medium", "high", "xhigh", "max", "ultra")),
     ("gpt-6.1-terra", "GPT-6.1 Terra", ("low", "medium", "high", "xhigh", "max", "ultra")),
@@ -135,7 +136,7 @@ CHAT_MODELS = (
 CHAT_MODEL_EFFORTS = {model: efforts for model, _, efforts in CHAT_MODELS}
 # The model the bundled CLI picks when none is named. The CLI refreshes its model
 # list per account, so the model its own /status names replaces this once seen.
-CLI_DEFAULT_MODEL = "gpt-6.1-sol"
+CLI_DEFAULT_MODEL = "gpt-6.2-sol"
 # Models that are no longer offered, each with the next model up. An add-on option
 # or a chat that still has one selected runs on the first model in that chain
 # that is still offered. The option schema keeps accepting them: Home Assistant
@@ -540,7 +541,7 @@ def _codex_sandbox_probe(mode: str) -> dict[str, Any]:
     if not codex:
         return {"ok": False, "error": "Codex CLI executable is unavailable."}
     try:
-        # The pinned CLI (0.165.0) takes the command directly: `codex sandbox
+        # The pinned CLI takes the command directly: `codex sandbox
         # [options] -- <command>`. It has no platform subcommand, so any word
         # before `--` that is not an option is executed as the program.
         result = subprocess.run(

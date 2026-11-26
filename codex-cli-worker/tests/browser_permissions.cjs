@@ -23,6 +23,7 @@ assert.equal(allowed.message({ ...moduleList, type: 'bubble_card_tools/delete_mo
 assert.equal(validate({ ...candidates[0], id: 'f'.repeat(64) }), null);
 const deniedTypes = ['call_service', 'auth/sign_path', 'camera/webrtc/offer', 'camera/webrtc/candidate',
   'web_rtc/ice_servers', 'bubble_card_tools/ma_queue_command', 'custom/device_command',
+  'supervisor/api', 'supervisor/subscribe', 'supervisor/event',
   'execute_script', 'subscribe_trigger', 'custom/get_and_update', 'auth/list', 'config/list', 'lovelace/config/save',
   'conversation/process', 'media_source/resolve_media', 'homeassistant/expose_entity', 'trace/debug/continue',
   'analytics/preferences', 'shopping_list/items/reorder', 'todo/item/move', 'zha/devices/permit',
@@ -66,6 +67,7 @@ for (const message of [{ type: 'knob_swipe_navigation/subscribe_rotations' }, { 
 assert.match(websocketBlockReason(moduleList), /Review this exact request for approval/);
 assert.match(websocketBlockReason({type: 'subscribe_events', event_type: 'zha_event'}), /read-only.*administrators/);
 assert.match(websocketBlockReason({type: 'browser_mod/connect'}), /stored browser details.*separate support/);
+assert.match(websocketBlockReason({type: 'supervisor/api'}), /Supervisor requests.*Approval is unavailable/);
 assert.match(websocketBlockReason({type: 'subscribe_events'}), /Listening is not a write.*approval is unavailable/);
 assert.match(websocketBlockReason({type: 'knob_swipe_navigation/navigation_result'}), /updates integration state/);
 assert.match(websocketBlockReason({type: 'knob_swipe_navigation/subscribe_rotations', extra: true}), /Extra parameters.*approval is unavailable/);

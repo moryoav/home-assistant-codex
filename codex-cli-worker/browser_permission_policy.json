@@ -29,7 +29,7 @@
     "refresh", "resume", "seek", "select", "unbind", "unmute", "unpair", "volume"
   ],
   "denied_websocket_prefixes": [
-    "auth", "config", "hassio", "cloud", "stream", "backup", "person", "automation", "script",
+    "auth", "config", "hassio", "supervisor", "cloud", "stream", "backup", "person", "automation", "script",
     "camera/webrtc", "camera/stream", "web_rtc", "knob_swipe_navigation", "custom_icons", "browser_mod",
     "debug_console", "trace/debug", "webhook", "marketplace"
   ],

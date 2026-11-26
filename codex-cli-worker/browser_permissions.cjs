@@ -114,6 +114,8 @@ function websocketBlockReason(message) {
     return 'This read handler accepts only id and type. Extra parameters are unsupported; approval is unavailable.';
   if (type === 'auth' || type.startsWith('auth/'))
     return 'Authentication changes and URL signing need separate support. Approval is unavailable.';
+  if (type === 'supervisor' || type.startsWith('supervisor/'))
+    return 'Supervisor requests are restricted during dashboard verification. Approval is unavailable.';
   if (type === 'camera/stream' || type === 'camera/webrtc' || type.startsWith('camera/webrtc/'))
     return 'Camera streaming and signaling need separate support. Approval is unavailable.';
   if (type === 'web_rtc/ice_servers')

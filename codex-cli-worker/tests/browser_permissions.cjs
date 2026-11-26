@@ -74,6 +74,10 @@ assert.match(websocketBlockReason(moduleList), /Review this exact request for ap
 assert.match(websocketBlockReason({type: 'subscribe_events', event_type: 'zha_event'}), /read-only.*administrators/);
 assert.match(websocketBlockReason({type: 'browser_mod/connect'}), /stored browser details.*separate support/);
 assert.match(websocketBlockReason({type: 'supervisor/api'}), /Supervisor requests.*Approval is unavailable/);
+for (const type of ['spotcast/playlists', 'spotcast/player', 'custom/get_settings', 'custom/signal_strength']) {
+  assert.equal(rule('websocket', {type}), null, type);
+  assert.match(websocketBlockReason({type}), /write-like name pattern.*may be a read.*Approval is unavailable/i);
+}
 assert.match(websocketBlockReason({type: 'subscribe_events'}), /Listening is not a write.*approval is unavailable/);
 assert.match(websocketBlockReason({type: 'knob_swipe_navigation/navigation_result'}), /updates integration state/);
 assert.match(websocketBlockReason({type: 'knob_swipe_navigation/subscribe_rotations', extra: true}), /Extra parameters.*approval is unavailable/);

@@ -137,7 +137,9 @@ function websocketBlockReason(message) {
     return 'WebRTC server setup can return TURN credentials. Approval is unavailable.';
   if (type === 'media_source/resolve_media')
     return 'This command can return a signed URL. Approval is unavailable.';
-  if (websocketWrites(type)) return 'Device actions and write-like commands are not supported by this observational browser. Approval is unavailable.';
+  if (writes(type)) return 'Device actions and write-like commands are not supported by this observational browser. Approval is unavailable.';
+  if (websocketWrites(type))
+    return 'This command matches a write-like name pattern. It may be a read. Approval is unavailable.';
   if (DENIED_TYPE.test(type) || POLICY.denied_websocket_types.includes(type))
     return 'This command is restricted during dashboard verification. Approval is unavailable.';
   return 'This request may contain credentials, an unsafe path, or details that exceed the review limits. Approval is unavailable.';

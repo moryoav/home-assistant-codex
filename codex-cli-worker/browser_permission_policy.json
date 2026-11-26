@@ -20,7 +20,7 @@
   "credential_value_names": ["token", "password", "secret", "authsig"],
   "write_words": [
     "set", "save", "create", "update", "delete", "remove", "add", "install", "download", "execute", "exec", "run",
-    "call", "fire", "start", "stop", "restart", "reload", "reboot", "register", "connect", "disconnect", "press",
+    "call", "command", "fire", "start", "stop", "restart", "reload", "reboot", "register", "connect", "disconnect", "press",
     "trigger", "toggle", "turn", "send", "offer", "candidate", "publish", "write", "reset", "clear", "purge", "wipe",
     "flash", "upgrade", "apply", "enable", "disable", "arm", "disarm", "unlock", "rename", "import", "migrate",
     "upload", "edit", "modify", "patch", "put", "post", "insert", "replace", "reconfigure", "activate", "deactivate",
@@ -28,7 +28,7 @@
   ],
   "denied_websocket_prefixes": [
     "auth", "config", "hassio", "cloud", "stream", "backup", "person", "automation", "script",
-    "camera/webrtc", "camera/stream", "knob_swipe_navigation", "custom_icons", "browser_mod",
+    "camera/webrtc", "camera/stream", "web_rtc", "knob_swipe_navigation", "custom_icons", "browser_mod",
     "debug_console", "trace/debug", "webhook", "marketplace"
   ],
   "denied_websocket_types": [

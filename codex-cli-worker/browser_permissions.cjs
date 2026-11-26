@@ -110,6 +110,8 @@ function websocketBlockReason(message) {
     return 'Authentication changes and URL signing need separate support. Approval is unavailable.';
   if (type === 'camera/stream' || type === 'camera/webrtc' || type.startsWith('camera/webrtc/'))
     return 'Camera streaming and signaling need separate support. Approval is unavailable.';
+  if (type === 'web_rtc/ice_servers')
+    return 'WebRTC server setup can return TURN credentials. Approval is unavailable.';
   if (type === 'media_source/resolve_media')
     return 'This command can return a signed URL. Approval is unavailable.';
   if (writes(type)) return 'Device actions and write-like commands are not supported by this observational browser. Approval is unavailable.';

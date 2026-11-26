@@ -22,6 +22,7 @@ assert.equal(allowed.message({ ...moduleList, query: 'different parameters' }), 
 assert.equal(allowed.message({ ...moduleList, type: 'bubble_card_tools/delete_modules' }), false);
 assert.equal(validate({ ...candidates[0], id: 'f'.repeat(64) }), null);
 const deniedTypes = ['call_service', 'auth/sign_path', 'camera/webrtc/offer', 'camera/webrtc/candidate',
+  'web_rtc/ice_servers', 'bubble_card_tools/ma_queue_command', 'custom/device_command',
   'execute_script', 'subscribe_trigger', 'custom/get_and_update', 'auth/list', 'config/list', 'lovelace/config/save',
   'conversation/process', 'media_source/resolve_media', 'homeassistant/expose_entity', 'trace/debug/continue',
   'analytics/preferences', 'shopping_list/items/reorder', 'todo/item/move', 'zha/devices/permit'];

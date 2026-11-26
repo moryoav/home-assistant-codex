@@ -146,12 +146,12 @@ Request IDs and object-key order do not change a WebSocket permission. Requests
 with hidden credentials, malformed query encoding, WebSocket path traversal,
 oversized details, or unsupported actions cannot be approved. If none of the blocked
 requests can be offered, the report explains why approval is unavailable. Known
-device controls, writes (including names with `-`, `.` or camelCase), sign-in
-changes, URL signing, camera WebRTC setup and signaling, redirects and arbitrary
-external access stay blocked. Commands the controller restricts by name or
-parameters (Knob Swipe Navigation, Custom Icons, Browser Mod and event
-subscriptions) cannot be widened by an approval. `browser_permission_policy.json`
-holds these rules for both the controller and the worker.
+device controls, command dispatchers, writes (including names with `-`, `.` or
+camelCase), sign-in changes, URL signing, camera and ICE server setup, WebRTC
+signaling, redirects and arbitrary external access stay blocked. Approval cannot
+widen the controller's name or parameter restrictions for Knob Swipe Navigation,
+Custom Icons, Browser Mod and event subscriptions. The controller and worker
+share these rules in `browser_permission_policy.json`.
 
 Browser Mod remains separate. Its `connect` handler can update stored browser
 details and attach a registered browser to its command channel, so it needs

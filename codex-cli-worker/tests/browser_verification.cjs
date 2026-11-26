@@ -159,6 +159,8 @@ async function main() {
             ids.map = send({type:'map_tiles/access_token'});
             send({type:'auth/sign_path',path:'/api/camera_proxy/camera.fixture'});
             send({type:'media_source/resolve_media',media_content_id:'media-source://fixture'});
+            send({type:'web_rtc/ice_servers'});
+            send({type:'bubble_card_tools/ma_queue_command'});
             send({type:'call_service',domain:'light',service:'turn_on'});
             fetch('/api/custom/data?entity_id=sensor.fixture').catch(()=>{});
             ` : ''}
@@ -349,10 +351,13 @@ async function main() {
     assert(upstream.includes('map_tiles/access_token'));
     assert(!upstream.includes('auth/sign_path'));
     assert(!upstream.includes('media_source/resolve_media'));
+    assert(!upstream.includes('web_rtc/ice_servers'));
+    assert(!upstream.includes('bubble_card_tools/ma_queue_command'));
     assert(!upstream.includes('call_service'));
     assert.equal(requests.filter(url => url.startsWith('/api/map_tiles/raster/')).length, 2);
     assert.equal(requests.filter(url => url.startsWith('/api/custom/data')).length, 2);
     assert(!JSON.stringify(granted).includes('private-map-access'));
+    assert(granted.blocked.some(item => item.includes('web_rtc/ice_servers:') && item.includes('TURN credentials')));
     assert(!requests.includes('/api/states/sensor.page_saw_real_credentials'), 'the real map token must stay out of page scripts');
     malformedMap = true;
     const malformed = await inspect({...input, permissions: pending.permission_candidates});

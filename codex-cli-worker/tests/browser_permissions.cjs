@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-const { BrowserPermissions, CommandTracker, LIMITS, canonical, rule, validate, boundedResult, websocketBlockReason } = require('../browser_permissions.cjs');
+const { BrowserPermissions, CommandTracker, LIMITS, canonical, rule, validate, boundedResult, httpBlockReason, websocketBlockReason } = require('../browser_permissions.cjs');
 
 const moduleList = { id: 1, type: 'bubble_card_tools/list_modules' };
 const moduleRead = { id: 1, type: 'bubble_card_tools/read_module', name: 'config.yaml' };
@@ -77,7 +77,7 @@ for (const message of [{ type: 'knob_swipe_navigation/subscribe_rotations' }, { 
   { type: 'subscribe_events' }, { type: 'subscribe_events', event_type: 'call_service' }, { type: 'browser_mod/settings/get' }]) {
   assert.equal(rule('websocket', message), null, JSON.stringify(message));
 }
-assert.match(websocketBlockReason(moduleList), /Review this exact request for approval/);
+assert.match(websocketBlockReason(moduleList), /eligible for approval.*may omit/);
 assert.match(websocketBlockReason({type: 'subscribe_events', event_type: 'zha_event'}), /read-only.*administrators/);
 assert.match(websocketBlockReason({type: 'browser_mod/connect'}), /stored browser details.*separate support/);
 assert.match(websocketBlockReason({type: 'supervisor/api'}), /Supervisor requests.*Approval is unavailable/);
@@ -148,6 +148,13 @@ for (const path of ['/api/map_tiles/raster/3/8/0.png', '/api/map_tiles/raster/30
 const bounded = new BrowserPermissions();
 for (let index = 0; index < 50; index++) bounded.message({ type: 'custom/get', entity: index });
 assert.equal(bounded.evidence().permission_candidates.length, 16);
+const boundedHttp = new BrowserPermissions();
+for (let index = 0; index < LIMITS.candidates; index++)
+  boundedHttp.http(new URL(`/api/custom/data?index=${index}`, origin), origin, 'GET');
+const excessRead = new URL(`/api/custom/data?index=${LIMITS.candidates}`, origin);
+assert.equal(boundedHttp.http(excessRead, origin, 'GET'), false);
+assert.equal(boundedHttp.evidence().permission_candidates_omitted, 1);
+assert.match(httpBlockReason(excessRead, origin, 'GET'), /eligible for approval.*may omit/);
 // Core requires increasing request IDs, so each response matches one request.
 const commands = new CommandTracker();
 assert.equal(commands.accept({id: 0, type: 'ping'}), 'invalid or reused request ID', 'Core starts IDs at 1');

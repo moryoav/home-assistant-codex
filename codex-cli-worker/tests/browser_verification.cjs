@@ -340,11 +340,11 @@ async function main() {
     permissionRequests = true;
     const pending = await inspect(input);
     assert.equal(pending.permission_candidates.length, 3, JSON.stringify(pending));
-    assert(pending.blocked.some(item => item.startsWith('GET /api/custom/data:') && item.includes('Review this exact request')));
+    assert(pending.blocked.some(item => item.startsWith('GET /api/custom/data:') && item.includes('eligible for approval')));
     assert(!pending.permission_candidates.some(item => item.request.includes('subscribe_condition')));
     const moduleCandidate = pending.permission_candidates.find(item => item.kind === 'websocket');
     assert.deepEqual(JSON.parse(moduleCandidate.request), {type: 'bubble_card_tools/read_module', name: 'config.yaml'});
-    assert(pending.blocked.some(item => item.includes('bubble_card_tools/read_module:') && item.includes('Review this exact request for approval')));
+    assert(pending.blocked.some(item => item.includes('bubble_card_tools/read_module:') && item.includes('eligible for approval')));
     assert(!JSON.stringify(pending).includes('private-map-access'));
     assert(!upstream.includes('bubble_card_tools/read_module'));
     const granted = await inspect({...input, permissions: pending.permission_candidates});

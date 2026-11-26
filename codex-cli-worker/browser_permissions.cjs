@@ -6,6 +6,7 @@ const POLICY = require('./browser_permission_policy.json');
 
 const LIMITS = POLICY.limits;
 const MAX_CANDIDATES = LIMITS.candidates;
+const APPROVAL_ELIGIBLE = 'This exact request is eligible for approval. Review limits may omit it from the list.';
 const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const any = list => list.map(escape).join('|');
 const TYPE = new RegExp(`^(?:${POLICY.type_pattern})$`);
@@ -133,7 +134,7 @@ function httpRule(url, origin, method) {
 
 /** Explain a refused Core API read without disclosing its query string. */
 function httpBlockReason(url, origin, method) {
-  if (httpRule(url, origin, method)) return 'Review this exact request for approval.';
+  if (httpRule(url, origin, method)) return APPROVAL_ELIGIBLE;
   if ([...url.searchParams.keys()].some(key => SENSITIVE.test(key)))
     return 'This request contains a sensitive query parameter. Approval is unavailable.';
   if (restrictedHttpPath(url.pathname)) return 'This API path is restricted during dashboard verification. Approval is unavailable.';
@@ -155,8 +156,8 @@ function websocketBlockReason(message) {
       : 'This event stream is outside the supported event allowlist. Listening is not a write, but approval is unavailable.';
   if (rule('websocket', message))
     return type === 'subscribe_condition'
-      ? 'This condition is outside the automatic built-in read checks. Review this exact request for approval.'
-      : 'This request needs your permission. Review this exact request for approval.';
+      ? `This condition is outside the automatic built-in read checks. ${APPROVAL_ELIGIBLE}`
+      : APPROVAL_ELIGIBLE;
   if (type === 'knob_swipe_navigation/navigation_result')
     return 'Reporting navigation results updates integration state. Approval is unavailable in this observational browser.';
   if (type === 'knob_swipe_navigation/subscribe_rotations' || type === 'knob_swipe_navigation/config')

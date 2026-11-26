@@ -1033,7 +1033,7 @@ function renderBrowserPermissions(check, turn, taskId) {
     return textNode("p", "This exchange was stopped, so its requests can't be approved. Start a new inspection to review them.", "muted");
   const panel = textNode("div", "", "browser-permission-review");
   panel.append(textNode("h4", "Review blocked browser requests"));
-  panel.append(textNode("p", "Review the exact parameters before approving requests. Custom commands can have side effects even during verification. Approve only commands you trust."));
+  panel.append(textNode("p", "Review the exact parameters below. A custom command can change state or make Home Assistant contact an external service. Approve only requests from dashboard code you trust."));
   const fields = document.createElement("fieldset");
   fields.append(textNode("legend", `Additional access for ${check.path}`));
   const boxes = [];
@@ -1050,9 +1050,7 @@ function renderBrowserPermissions(check, turn, taskId) {
     box.value = candidate.id;
     boxes.push(box);
     label.append(box, textNode("span", candidate.label));
-    const details = textNode("details", "", "browser-permission-details");
-    details.append(textNode("summary", "Request details"), textNode("pre", candidate.description));
-    item.append(label, details);
+    item.append(label, textNode("pre", candidate.description, "browser-permission-details"));
     fields.append(item);
   }
   const rememberLabel = textNode("label", "", "browser-permission-choice browser-permission-remember");

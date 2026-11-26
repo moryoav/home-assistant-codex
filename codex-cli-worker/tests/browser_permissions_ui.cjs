@@ -36,13 +36,17 @@ async function task(page) {
     const panel = await inspection(page);
     const allow = panel.getByRole('button', {name: 'Allow selected and retry', exact: true});
     assert.equal(await allow.isDisabled(), true);
+    assert.match(await panel.getByText('A custom command can change state', {exact: false}).textContent(), /contact an external service/);
+    const moduleDetails = panel.locator('.browser-permission-request').filter({hasText: 'WebSocket bubble_card_tools/read_module'}).locator('pre');
+    assert.equal(await moduleDetails.isVisible(), true);
+    assert.match(await moduleDetails.textContent(), /"name":"config\.yaml"/);
     await page.locator('#message').fill('Keep my unsent draft');
     await panel.getByRole('checkbox', {name: 'Select all requests', exact: true}).check();
     await panel.getByRole('checkbox', {name: 'Remember for this dashboard', exact: true}).check();
     assert.equal(await allow.isEnabled(), true);
     const old = await task(page);
     const source = old.verification[0];
-    await panel.getByText('Request details', {exact: true}).last().click();
+    assert.equal(await panel.locator('pre').last().isVisible(), true);
     assert.match(await panel.locator('pre').last().textContent(), /<img src=x onerror/);
     assert.equal(await panel.locator('img').count(), 0);
     await panel.scrollIntoViewIfNeeded();

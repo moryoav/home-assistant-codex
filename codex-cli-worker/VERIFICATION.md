@@ -93,7 +93,8 @@ screenshots. Matching devices can add images beyond the two browser viewports.
 
 After an inspection, open its verification result and choose requests under
 **Review blocked browser requests**. Select individual requests or **Select all
-requests**, inspect their details, then choose **Allow selected and retry**.
+requests** after reviewing the parameters shown with each request, then choose
+**Allow selected and retry**.
 Unselected requests stay blocked. **Keep blocked** closes the result without
 granting access. A batch is available only for the current exchange after tasks
 in every chat have finished, and can be approved once. Each exchange permits up
@@ -136,10 +137,11 @@ you to update the integration before requests can be approved.
 
 The same browser approval policy applies in every sandbox mode. The inspector
 offers unfamiliar WebSocket commands for review if they pass the policy below and
-their complete parameters can be shown. A custom handler may have side effects
-under the browser's read-only account. Review the parameters and approve only
-commands you trust. Exceptions also cover exact same-origin GET/HEAD resources
-and query parameters. Changing the request parameters requires another approval.
+their complete parameters can be shown. A custom handler can change state or
+make Home Assistant contact an external service under the browser's read-only
+account. Approve requests from dashboard code you trust. Exceptions also cover
+exact same-origin GET/HEAD resources and query parameters. Changing the request
+parameters requires another approval.
 Repeated query parameters retain their value order, so changing which value
 comes first requires another approval.
 Request IDs and object-key order do not change a WebSocket permission. Requests

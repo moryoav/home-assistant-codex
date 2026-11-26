@@ -962,9 +962,12 @@ h1 {
   cursor: pointer;
   font-size: 12px;
 }
-.browser-permission-details pre {
+.browser-permission-details pre,
+pre.browser-permission-details {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.browser-permission-details pre {
   max-height: 220px;
   overflow: auto;
 }

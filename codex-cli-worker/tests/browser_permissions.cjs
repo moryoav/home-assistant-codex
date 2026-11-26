@@ -28,7 +28,10 @@ const deniedTypes = ['call_service', 'auth/sign_path', 'camera/webrtc/offer', 'c
   'conversation/process', 'media_source/resolve_media', 'homeassistant/expose_entity', 'trace/debug/continue',
   'analytics/preferences', 'shopping_list/items/reorder', 'todo/item/move', 'zha/devices/permit',
   'custom/lock', 'custom/open', 'media/play', 'media/pause', 'custom/volume_mute', 'zha/devices/bind',
-  'hacs/repository/refresh', 'hacs/critical/acknowledge', 'custom/cancel', 'custom/change_unit', 'custom/turnon', 'custom/setvalue'];
+  'hacs/repository/refresh', 'hacs/critical/acknowledge', 'custom/cancel', 'custom/change_unit', 'custom/turnon', 'custom/setvalue',
+  'media/skip', 'next_track', 'previous', 'shuffle', 'custom/dim', 'brighten', 'alarm/snooze', 'silence', 'doorbell/ring',
+  'announce', 'notify', 'speak', 'speaker/join', 'speaker/unjoin', 'increase', 'decrement', 'shutdown', 'poweroff', 'wake',
+  'enqueue', 'favorite', 'feed', 'vacuum/clean', 'dock'];
 for (const type of deniedTypes) {
   assert.equal(rule('websocket', { type }), null, type);
 }

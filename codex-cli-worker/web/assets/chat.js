@@ -1006,6 +1006,8 @@ function renderVerification(turn, taskId) {
     if (check.permissions_used?.length)
       row.append(textNode("p", `${check.permissions_used.length} user-approved browser permission(s) used.`));
     if (check.permission_review_unavailable) row.append(textNode("p", check.permission_review_unavailable));
+    if (check.browser_approval_empty)
+      row.append(textNode("p", "No blocked requests are available to approve. See the findings for details."));
     if (check.permission_store_error) row.append(textNode("p", check.permission_store_error));
     if (check.permission_candidates_omitted)
       row.append(textNode("p", "The approval list may omit requests with incomplete details, credentials, or details that exceed review limits."));

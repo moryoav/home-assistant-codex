@@ -135,6 +135,7 @@ async function inspect(input) {
   const conditionBudget = {active: 0, limit: LIMITS.condition_subscriptions};
   let omitted = 0;
   let requestsBlocked = false;
+  let websocketRequestsBlocked = false;
   const policy = new ResourcePolicy(origin, input.resources);
   const permissions = new BrowserPermissions(input.permissions);
   let mapToken;
@@ -157,7 +158,10 @@ async function inspect(input) {
    * counted as omitted.
    */
   const add = (list, value, kind = list === errors ? 'dashboard' : 'policy') => {
-    if (list === blocked) requestsBlocked = true;
+    if (list === blocked) {
+      requestsBlocked = true;
+      if (kind === 'policy') websocketRequestsBlocked = true;
+    }
     const message = String(value).slice(0, 300), key = `${kind}:${message}`;
     let finding = findings.get(key);
     if (!finding) {
@@ -169,7 +173,7 @@ async function inspect(input) {
     if (activeViewport && !finding.viewports.includes(activeViewport.name)) finding.viewports.push(activeViewport.name);
   };
   /** Return the errors, blocked items, and findings gathered so far. */
-  const evidence = () => ({errors, blocked, requests_blocked: requestsBlocked, findings: [...findings.values()],
+  const evidence = () => ({errors, blocked, websocket_requests_blocked: websocketRequestsBlocked, findings: [...findings.values()],
     findings_omitted: omitted, ...permissions.evidence()});
   const policyNote = () => requestsBlocked
     ? ' Inspection policy blocks limit this capture. A blocked request is not necessarily a write or a fault on another device. Each WebSocket block explains whether approval is available.' : '';

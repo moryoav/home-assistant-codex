@@ -20,13 +20,13 @@ def request_rule(kind="websocket", request=None):
     return {"id": hashlib.sha256(f"{kind}\n{snapshot}".encode()).hexdigest(), "kind": kind, "request": snapshot}
 
 
-def echo_controller(sent, candidates=(), delay=0, *, requests_blocked=False):
+def echo_controller(sent, candidates=(), delay=0, *, websocket_requests_blocked=False, blocked=()):
     """Return a Popen stand-in whose controller reports the permissions it received."""
     original = subprocess.Popen
     program = ("import sys,json,time; p=json.load(sys.stdin); time.sleep(%r); "
                "print(json.dumps({'status':'issues','screenshots':[],'message':json.dumps(p['permissions']),"
-               "'requests_blocked':%r,'permission_candidates':%s}))"
-               % (delay, requests_blocked, json.dumps(list(candidates))))
+               "'websocket_requests_blocked':%r,'blocked':%r,'permission_candidates':%s}))"
+               % (delay, websocket_requests_blocked, list(blocked), json.dumps(list(candidates))))
 
     def launch(_args, **kwargs):
         """Run the stand-in controller with the worker's real stdin and output transport."""
@@ -427,14 +427,38 @@ class BrowserPermissionTests(unittest.TestCase):
         self.assertEqual(result["permission_candidates_omitted"], 1)
 
     def test_hard_blocks_without_candidates_explain_the_missing_approval(self):
-        """Report blocked requests even when bounded output omits the blocked list."""
+        """Explain missing approval in the UI even when the blocked list is omitted."""
         self.start_agent_check()
         sent = []
         with patch.object(self.engine, "core", return_value=self.session), \
-             patch("verification.subprocess.Popen", side_effect=echo_controller(sent, requests_blocked=True)):
+             patch("verification.subprocess.Popen", side_effect=echo_controller(sent, websocket_requests_blocked=True)):
             result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/home"})
         self.assertEqual(result["permission_candidates"], [])
-        self.assertIn("No blocked requests are available to approve", result["permission_review_unavailable"])
+        self.assertNotIn("browser_approval_empty", result)
+        self.assertIs(server.tasks["chat"]["verification"][-1]["browser_approval_empty"], True)
+
+    def test_resource_only_blocks_do_not_show_empty_approval(self):
+        """Routine resource failures already have findings and do not need a UI note."""
+        self.start_agent_check()
+        blocked = ["External resource example.test/font.woff2", "Redirect /local/redirect.js", "POST /api/services"]
+        sent = []
+        with patch.object(self.engine, "core", return_value=self.session), \
+             patch("verification.subprocess.Popen", side_effect=echo_controller(sent, blocked=blocked)):
+            result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/home"})
+        self.assertEqual(result["blocked"], blocked)
+        self.assertNotIn("browser_approval_empty", server.tasks["chat"]["verification"][-1])
+
+    def test_approval_retry_without_candidates_does_not_show_empty_approval(self):
+        """A retry may still have hard-block findings after the approvals took effect."""
+        with patch("verification.threading.Thread.start"):
+            self.engine.request_retry("chat", self.payload(candidate_ids=[self.rules[0]["id"]]))
+        sent = []
+        with patch.object(self.engine, "core", return_value=self.session), \
+             patch("verification.subprocess.Popen", side_effect=echo_controller(sent, websocket_requests_blocked=True)):
+            self.engine._retry_capture("chat", self.engine.ui_captures["chat"])
+        retry = server.tasks["chat"]["verification"][-1]
+        self.assertEqual(retry["permission_candidates"], [])
+        self.assertNotIn("browser_approval_empty", retry)
 
     def test_generic_request_review_is_independent_of_sandbox_mode(self):
         """Every sandbox offers the same request with the same installation scope."""
@@ -442,7 +466,7 @@ class BrowserPermissionTests(unittest.TestCase):
         self.start_agent_check()
         sent = []
         with patch.object(self.engine, "core", return_value=self.session), \
-             patch("verification.subprocess.Popen", side_effect=echo_controller(sent, candidates=[candidate], requests_blocked=True)):
+             patch("verification.subprocess.Popen", side_effect=echo_controller(sent, candidates=[candidate], websocket_requests_blocked=True)):
             for mode in ("read-only", "workspace-write", "danger-full-access"):
                 with self.subTest(mode=mode):
                     self.options["codex_sandbox"] = mode

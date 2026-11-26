@@ -147,8 +147,8 @@ comes first requires another approval.
 Request IDs and object-key order do not change a WebSocket permission. Requests
 with hidden credentials, malformed query encoding, WebSocket path traversal,
 absolute filenames or filesystem paths in WebSocket path fields, oversized
-details, or unsupported actions cannot be approved. If none of the blocked
-requests can be offered, the report explains why approval is unavailable. The
+details, or unsupported actions cannot be approved. The initial report explains
+when WebSocket blocks or omitted requests leave nothing to approve. The
 policy blocks known sensitive commands and write-like names. A WebSocket
 operation word that begins with a write verb is blocked, including joined names
 such as `turnon`. For HTTP paths, the policy checks words separated by `-`, `.`

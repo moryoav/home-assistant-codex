@@ -250,7 +250,7 @@ def main():
                         server.update_task(task_id, verification=[{
                             "operation": "dashboard", "status": "issues", "path": "/lovelace/home",
                             "permission_candidates": [], "blocked": ["WebSocket call_service"],
-                            "permission_review_unavailable": "No blocked requests are available to approve. See the findings for details.",
+                            "browser_approval_empty": True,
                         }])
                 server.finish_activity(task_id)
                 server.active_task_runners.discard(task_id)

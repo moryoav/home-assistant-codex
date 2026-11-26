@@ -35,7 +35,7 @@ INTEGRATION_UPDATE_NOTE = "Update the Codex integration in Home Assistant to app
 
 
 def public_check(entry):
-    """Return a check without exact blocked-request details, saved scopes or grants.
+    """Return a check with request labels and without private review details.
 
     Request parameters can carry values the denylists don't recognize, so only
     the human Ingress review sees them. The agent, Home Assistant events and
@@ -43,7 +43,8 @@ def public_check(entry):
     """
     if not isinstance(entry, dict):
         return entry
-    result = {key: value for key, value in entry.items() if key not in {"permission_scope", "permission_grants"}}
+    result = {key: value for key, value in entry.items()
+              if key not in {"permission_scope", "permission_grants", "browser_approval_empty"}}
 
     def labels(items):
         """Keep only the readable label of each described request."""
@@ -525,7 +526,7 @@ class Verification:
                     if len(output) > 65536:
                         raise ValueError("Browser output limit exceeded")
                     result = json.loads(output)
-                    requests_blocked = result.pop("requests_blocked", False) or bool(result.get("blocked"))
+                    websocket_requests_blocked = result.pop("websocket_requests_blocked", False)
                     # Only complete, inspectable rules from the controller are
                     # offered. Redacted/truncated requests remain blocked, and
                     # are counted so the review says some were left out.
@@ -544,10 +545,9 @@ class Verification:
                     elif raw:
                         # An older integration can't identify the installation approvals bind to.
                         result["permission_review_unavailable"] = INTEGRATION_UPDATE_NOTE
-                    if requests_blocked and not candidates and "permission_review_unavailable" not in result:
-                        result["permission_review_unavailable"] = (
-                            "No blocked requests are available to approve. See the findings for details."
-                        )
+                    if (not retry and not candidates and (websocket_requests_blocked or omitted)
+                        and "permission_review_unavailable" not in result):
+                        result["browser_approval_empty"] = True
                     result.update(permission_candidates=candidates, permission_scope=installation,
                                   permission_candidates_omitted=omitted)
                     if store_error:

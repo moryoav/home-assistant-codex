@@ -966,10 +966,12 @@ function renderVerification(turn, taskId) {
     const row = textNode("details", "", `verification-result is-${check.status}`);
     if (check.retry_of && check === checks[checks.length - 1]) row.open = true;
     const review = renderBrowserPermissions(check, turn, taskId);
-    const label = review?.classList.contains("browser-permission-review") ? "Approval needed" : ({
+    let label = {
       passed: "Passed", failed: "Failed", observed: "Readback", captured: "Screenshots captured",
       issues: "Needs review", disabled: "Disabled", unavailable: "Unverified",
-    }[check.status] || "Unverified");
+    }[check.status] || "Unverified";
+    if (review?.classList.contains("browser-permission-review"))
+      label = check.status === "issues" ? "Approval needed" : `${label} · approval available`;
     row.append(textNode("summary", `${label} · ${check.entity_id || check.path || check.target || check.operation}`));
     if (check.message) row.append(textNode("pre", check.message));
     if (check.state !== undefined) row.append(textNode("p", `State: ${check.state}${check.expected_state !== null ? ` · Expected: ${check.expected_state}` : ""}`));

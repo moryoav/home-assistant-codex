@@ -110,6 +110,13 @@ async function task(page) {
     await page.getByText('Needs review · /lovelace/home', {exact: true}).click();
     await page.getByText('No blocked requests are available to approve.', {exact: false}).waitFor();
     assert.equal(await page.getByRole('button', {name: 'Allow selected and retry', exact: true}).count(), 0);
+    // An incomplete capture may offer a retry without claiming verification finished.
+    await page.locator('#new-chat').click();
+    await page.locator('#message').fill('Inspect with incomplete browser capture');
+    await page.getByRole('button', {name: 'Send message', exact: true}).click();
+    const incomplete = page.getByText('Unverified · approval available · /lovelace/home', {exact: true});
+    await incomplete.click();
+    await page.getByRole('button', {name: 'Allow selected and retry', exact: true}).waitFor();
     assert.deepEqual(errors, []);
     console.log('PASS: batch selection, remembered/once decisions, fresh retry evidence, stale rejection, safe details, drafts, saved permissions after reload, revocation, mobile dark mode, and no page errors.');
   } finally { await browser.close(); }

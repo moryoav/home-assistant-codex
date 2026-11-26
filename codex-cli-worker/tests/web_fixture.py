@@ -241,6 +241,11 @@ def main():
                                        details="", question="", completed_at=server.utc_now())
                     if (reply or prompt).startswith("Inspect with blocked browser requests"):
                         server.update_task(task_id, verification=[permission_check()])
+                    elif (reply or prompt).startswith("Inspect with incomplete browser capture"):
+                        server.update_task(task_id, verification=[{
+                            **permission_check(), "status": "unavailable",
+                            "message": "Dashboard verification could not finish during dashboard capture.",
+                        }])
                     elif (reply or prompt).startswith("Inspect with hard policy blocks"):
                         server.update_task(task_id, verification=[{
                             "operation": "dashboard", "status": "issues", "path": "/lovelace/home",

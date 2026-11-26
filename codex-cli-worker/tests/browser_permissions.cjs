@@ -41,7 +41,7 @@ for (const message of [moduleRead, unrelated]) {
   assert.equal(approved.message({...message, id: 2}), true);
   assert.equal(approved.message({...message, extra: true}), false);
 }
-const unsafePaths = ['../config.yaml', 'modules/../config.yaml', '..\\config.yaml', '%2e.%2fconfig.yaml'];
+const unsafePaths = ['../config.yaml', 'modules/../config.yaml', '..\\config.yaml', '%2e.%2fconfig.yaml', '..\n', '..\r\n'];
 for (const name of unsafePaths)
   assert.equal(rule('websocket', {...moduleRead, name}), null, name);
 const approvedModule = new BrowserPermissions([rule('websocket', moduleRead)]);

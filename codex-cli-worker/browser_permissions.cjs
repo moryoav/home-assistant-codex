@@ -45,6 +45,13 @@ function canonical(value) {
 /** Order strings by code unit, so a rule's fingerprint never depends on the locale. */
 const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
+/** Recognize conventional path fields and joinings such as filepath and dirname. */
+function websocketPathField(key) {
+  const parts = words(key);
+  return PATH_FIELDS.has(parts.at(-1)) || parts.some(word => POLICY.websocket_path_field_affixes.some(
+    affix => word.startsWith(affix) || word.endsWith(affix)));
+}
+
 /** Check for unsafe filesystem syntax through bounded percent decoding. */
 function unsafeWebsocketPath(value, pathField) {
   if (value.length > LIMITS.request_bytes) return true;
@@ -64,7 +71,7 @@ function inspectable(value, websocket, depth = 0, pathField = false) {
   if (typeof value === 'string') return !CREDENTIAL.test(value) && !(websocket && unsafeWebsocketPath(value, pathField));
   if (!value || typeof value !== 'object') return true;
   return Object.entries(value).every(([key, item]) => !SENSITIVE.test(key) &&
-    inspectable(item, websocket, depth + 1, pathField || (websocket && PATH_FIELDS.has(words(key).at(-1)))));
+    inspectable(item, websocket, depth + 1, pathField || (websocket && websocketPathField(key))));
 }
 
 /** Accept only bounded raster coordinates and the map-specific token parameter. */

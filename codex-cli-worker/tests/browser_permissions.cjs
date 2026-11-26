@@ -52,10 +52,13 @@ for (const name of unsafePaths)
 const approvedModule = new BrowserPermissions([rule('websocket', moduleRead)]);
 assert.equal(approvedModule.message({...moduleRead, name: 'other.yaml'}), false);
 assert.ok(rule('websocket', {type: 'playback_card/dashboard_summary'}), 'the integration name is not a joined operation');
-const relativeValues = {type: 'custom/read', fileName: 'modules/settings.yaml', url: '/local/dashboard.js'};
+const relativeValues = {type: 'custom/read', filepath: 'modules/settings.yaml', source_url: '/local/dashboard.js'};
 const unsafeNestedPath = {type: 'custom/read', selection: {module_files: ['/tmp/fixture.yaml']}};
+const unsafePathFields = ['filename', 'file_path', 'filepath', 'pathname', 'dirname', 'dir', 'src',
+  'source', 'target', 'dest', 'module', 'cache_directory_id'].map(key => ({type: 'custom/read', [key]: '/tmp/fixture.yaml'}));
 assert.ok(rule('websocket', relativeValues));
 assert.equal(rule('websocket', unsafeNestedPath), null);
+for (const message of unsafePathFields) assert.equal(rule('websocket', message), null, JSON.stringify(message));
 assert.equal(rule('websocket', { type: 'custom/get', password: 'secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: 'Bearer secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: Infinity }), null);
@@ -215,6 +218,7 @@ const corpus = [
   ['websocket', {type: 'playback_card/dashboard_summary'}],
   ['websocket', relativeValues],
   ['websocket', unsafeNestedPath],
+  ...unsafePathFields.map(message => ['websocket', message]),
   ...unsafePaths.map(name => ['websocket', {...moduleRead, name}]),
   ...deniedTypes.map(type => ['websocket', {type}]),
   ['websocket', { type: 'subscribe_condition', condition: { condition: 'state', entity_id: 'light.x', state: 'on' } }],

@@ -40,6 +40,7 @@ CREDENTIAL = re.compile(
 PARENT_PATH = re.compile(POLICY["websocket_parent_path_pattern"], FLAGS)
 ABSOLUTE_PATH = re.compile(f"^{POLICY['whitespace']}*{POLICY['websocket_absolute_path_pattern']}", FLAGS)
 PATH_FIELDS = frozenset(POLICY["websocket_path_fields"])
+PATH_FIELD_AFFIXES = tuple(POLICY["websocket_path_field_affixes"])
 ESCAPED_BYTE = re.compile(r"%([0-9a-f]{2})", FLAGS)
 DENIED_TYPE = re.compile(f"^(?:{_any(POLICY['denied_websocket_prefixes'])})(?:/|$)")
 WRITE_PREFIXES = tuple(POLICY["write_words"])
@@ -72,6 +73,14 @@ def _entry_id(installation, path, rule_id):
     return hashlib.sha256(f"{installation}\n{path}\n{rule_id}".encode()).hexdigest()
 
 
+def _websocket_path_field(key):
+    """Recognize conventional path fields and joinings such as filepath and dirname."""
+    parts = words(key)
+    return not PATH_FIELDS.isdisjoint(parts[-1:]) or any(
+        word.startswith(PATH_FIELD_AFFIXES) or word.endswith(PATH_FIELD_AFFIXES) for word in parts
+    )
+
+
 def _unsafe_websocket_path(value, path_field):
     """Check for unsafe filesystem syntax through bounded percent decoding."""
     if len(value) > LIMITS["request_bytes"]:
@@ -94,7 +103,7 @@ def _inspectable(item, websocket, depth=0, path_field=False):
         return not CREDENTIAL.search(item) and not (websocket and _unsafe_websocket_path(item, path_field))
     if isinstance(item, dict):
         return all(not SENSITIVE.search(key) and _inspectable(
-            child, websocket, depth + 1, path_field or (websocket and not PATH_FIELDS.isdisjoint(words(key)[-1:]))
+            child, websocket, depth + 1, path_field or (websocket and _websocket_path_field(key))
         ) for key, child in item.items())
     if isinstance(item, list):
         return all(_inspectable(child, websocket, depth + 1, path_field) for child in item)

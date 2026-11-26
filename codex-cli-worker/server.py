@@ -37,7 +37,8 @@ from flask import Flask, Response, jsonify, request, send_file
 
 # Also support the existing importlib-based test harness.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verification import DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification, public_check
+from verification import (BROWSER_RETRY_LIMIT_NOTE, DEFAULT_BROWSER_MEMORY_LIMIT_MIB, Verification,
+                          browser_retry_limit_reached, public_check)
 from approvals import APPROVAL_GONE, AppServerSession
 from ha_data import HomeAssistantData
 
@@ -1923,6 +1924,9 @@ def task_payload(task: dict[str, Any], *, summary: bool = False, private: bool =
         result["turns"] = task_turns(task)
         result["history_incomplete"] = task.get("history_incomplete", "turns" not in task)
         result["browser_retry"] = verification.retry_status(task.get("task_id"))
+        entries = result.get("verification")
+        if private and isinstance(entries, list) and browser_retry_limit_reached(entries):
+            result["browser_retry_unavailable"] = BROWSER_RETRY_LIMIT_NOTE
         if not private:
             for record in [result, *result["turns"]]:
                 if isinstance(record.get("verification"), list):

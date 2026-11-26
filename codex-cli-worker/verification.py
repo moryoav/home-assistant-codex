@@ -32,6 +32,14 @@ ENTITY_RE = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
 # One dashboard path rule, shared with the permission store.
 PATH_RE = PATH
 INTEGRATION_UPDATE_NOTE = "Update the Codex integration in Home Assistant to approve blocked browser requests."
+BROWSER_RETRY_LIMIT_NOTE = "Inspection retry limit reached for this exchange. Start a new inspection."
+
+
+def browser_retry_limit_reached(entries):
+    """Check the per-exchange verification and retry limits used by the Ingress route."""
+    return len(entries) >= MAX_CHECKS or sum(
+        isinstance(item, dict) and bool(item.get("retry_of")) for item in entries
+    ) >= MAX_RETRIES
 
 
 def public_check(entry):
@@ -157,8 +165,8 @@ class Verification:
                     or source.get("permission_review")
                     or any(item.get("retry_of") == payload["check_id"] for item in entries)):
                     raise RuntimeError("This inspection is no longer available for approval. Refresh the conversation.")
-                if len(entries) >= MAX_CHECKS or sum(bool(item.get("retry_of")) for item in entries) >= MAX_RETRIES:
-                    raise RuntimeError("Inspection retry limit reached for this exchange. Start a new inspection.")
+                if browser_retry_limit_reached(entries):
+                    raise RuntimeError(BROWSER_RETRY_LIMIT_NOTE)
                 candidates = {rule["id"]: rule for rule in map(valid_rule, source.get("permission_candidates") or []) if rule}
                 if any(item not in candidates for item in payload["candidate_ids"]):
                     raise RuntimeError("The selected requests no longer match this inspection. Refresh and try again.")

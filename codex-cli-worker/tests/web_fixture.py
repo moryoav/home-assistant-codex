@@ -55,6 +55,7 @@ def main():
         server.notify = lambda *args, **kwargs: None
         server.refresh_usage_status_async = lambda **kwargs: None
         from browser_permissions import describe, scope
+        from verification import MAX_RETRIES
 
         permission_scope = scope({"installation_id": "a" * 32, "url": "http://fixture:8123"})
         permission_requests = [
@@ -245,6 +246,14 @@ def main():
                         server.update_task(task_id, verification=[{
                             **permission_check(), "status": "unavailable",
                             "message": "Dashboard verification could not finish during dashboard capture.",
+                        }])
+                    elif (reply or prompt).startswith("Inspect at the browser retry limit"):
+                        earlier = [{"operation": "dashboard", "status": "captured", "path": "/lovelace/home",
+                                    "check_id": f"capture-{index}"} for index in range(MAX_RETRIES)]
+                        for index, capture in enumerate(earlier[1:], 1):
+                            capture["retry_of"] = earlier[index - 1]["check_id"]
+                        server.update_task(task_id, verification=[*earlier, {
+                            **permission_check(), "retry_of": earlier[-1]["check_id"],
                         }])
                     elif (reply or prompt).startswith("Inspect with hard policy blocks"):
                         server.update_task(task_id, verification=[{

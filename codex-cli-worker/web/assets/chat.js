@@ -1036,6 +1036,8 @@ function renderBrowserPermissions(check, turn, taskId, busy) {
   if (turn.turn_id !== state.task?.current_turn_id) return null;
   if (state.task?.cancellation_requested)
     return textNode("p", "This exchange was stopped, so its requests can't be approved. Start a new inspection to review them.", "muted");
+  if (state.task?.browser_retry_unavailable)
+    return textNode("p", state.task.browser_retry_unavailable, "muted");
   const panel = textNode("div", "", "browser-permission-review");
   panel.append(textNode("h4", "Review blocked browser requests"));
   panel.append(textNode("p", "Review the exact parameters below. A custom command can change state or make Home Assistant contact an external service. Approve only requests from dashboard code you trust."));
@@ -1279,6 +1281,7 @@ function renderTask(force = false) {
     state.edit?.id,
     state.catalog?.backup_retention_days,
     task.browser_retry,
+    task.browser_retry_unavailable,
     // Approval panels depend on whether any chat is working.
     state.active,
   ]);

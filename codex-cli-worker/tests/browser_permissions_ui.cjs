@@ -133,6 +133,12 @@ async function task(page) {
     assert.equal(await incomplete.count(), 0);
     await page.request.post(new URL('fixture/release', base).href);
     await incomplete.waitFor();
+    await page.locator('#new-chat').click();
+    await page.locator('#message').fill('Inspect at the browser retry limit');
+    await page.getByRole('button', {name: 'Send message', exact: true}).click();
+    await page.getByText('Inspection retry limit reached for this exchange. Start a new inspection.', {exact: true}).waitFor();
+    assert.equal(await page.getByText('Approval needed · /lovelace/home', {exact: true}).count(), 0);
+    assert.equal(await page.getByRole('button', {name: 'Allow selected and retry', exact: true}).count(), 0);
     assert.deepEqual(errors, []);
     console.log('PASS: batch selection, remembered/once decisions, fresh retry evidence, stale rejection, safe details, drafts, saved permissions after reload, revocation, mobile dark mode, and no page errors.');
   } finally { await browser.close(); }

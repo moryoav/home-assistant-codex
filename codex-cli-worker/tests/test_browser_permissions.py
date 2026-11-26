@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from test_server import server
 from browser_permissions import BrowserPermissionStore, describe, scope, valid_rule
-from verification import Verification
+from verification import MAX_CHECKS, MAX_RETRIES, Verification
 
 
 def request_rule(kind="websocket", request=None):
@@ -102,6 +102,18 @@ class BrowserPermissionTests(unittest.TestCase):
         response = self.client.post("/tasks/chat/browser-permissions", json=self.payload(),
                                     headers={"X-Ingress-Path": "/preview"})
         self.assertEqual(response.status_code, 403, "a forged Ingress header is insufficient")
+
+    def test_ingress_reports_the_same_retry_limits_the_worker_enforces(self):
+        """The UI learns when approval is unavailable before the owner tries the route."""
+        for additional_checks in ([{"operation": "dashboard", "retry_of": "earlier"}] * MAX_RETRIES,
+                                  [{"operation": "entity"}] * (MAX_CHECKS - 1)):
+            with self.subTest(additional_checks=len(additional_checks)):
+                server.update_task_evidence("chat", verification=[*additional_checks, self.check])
+                payload = self.client.get("/tasks/chat", **self.ingress).get_json()["task"]
+                self.assertIn("Start a new inspection", payload["browser_retry_unavailable"])
+                response = self.client.post("/tasks/chat/browser-permissions", json=self.payload(), **self.ingress)
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.get_json()["error"], payload["browser_retry_unavailable"])
 
     def test_once_retries_only_capture_and_preserves_the_completed_exchange(self):
         """A one-off batch never reruns the model, changes its answer, moves the chat or persists grants."""

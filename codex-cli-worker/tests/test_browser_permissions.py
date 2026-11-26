@@ -20,12 +20,13 @@ def request_rule(kind="websocket", request=None):
     return {"id": hashlib.sha256(f"{kind}\n{snapshot}".encode()).hexdigest(), "kind": kind, "request": snapshot}
 
 
-def echo_controller(sent, candidates=(), delay=0):
+def echo_controller(sent, candidates=(), delay=0, *, requests_blocked=False):
     """Return a Popen stand-in whose controller reports the permissions it received."""
     original = subprocess.Popen
     program = ("import sys,json,time; p=json.load(sys.stdin); time.sleep(%r); "
                "print(json.dumps({'status':'issues','screenshots':[],'message':json.dumps(p['permissions']),"
-               "'permission_candidates':%s}))" % (delay, json.dumps(list(candidates))))
+               "'requests_blocked':%r,'permission_candidates':%s}))"
+               % (delay, requests_blocked, json.dumps(list(candidates))))
 
     def launch(_args, **kwargs):
         """Run the stand-in controller with the worker's real stdin and output transport."""
@@ -424,6 +425,33 @@ class BrowserPermissionTests(unittest.TestCase):
             result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/home"})
         self.assertEqual(len(result["permission_candidates"]), 2)
         self.assertEqual(result["permission_candidates_omitted"], 1)
+
+    def test_hard_blocks_without_candidates_explain_the_missing_approval(self):
+        """Report blocked requests even when bounded output omits the blocked list."""
+        self.start_agent_check()
+        sent = []
+        with patch.object(self.engine, "core", return_value=self.session), \
+             patch("verification.subprocess.Popen", side_effect=echo_controller(sent, requests_blocked=True)):
+            result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/home"})
+        self.assertEqual(result["permission_candidates"], [])
+        self.assertIn("No blocked requests are available to approve", result["permission_review_unavailable"])
+
+    def test_generic_request_review_is_independent_of_sandbox_mode(self):
+        """Every sandbox offers the same request with the same installation scope."""
+        candidate = request_rule(request={"type": "bubble_card_tools/read_module", "name": "config.yaml"})
+        self.start_agent_check()
+        sent = []
+        with patch.object(self.engine, "core", return_value=self.session), \
+             patch("verification.subprocess.Popen", side_effect=echo_controller(sent, candidates=[candidate], requests_blocked=True)):
+            for mode in ("read-only", "workspace-write", "danger-full-access"):
+                with self.subTest(mode=mode):
+                    self.options["codex_sandbox"] = mode
+                    result = self.engine.run("chat", {"operation": "dashboard", "path": "/lovelace/home"})
+                    stored = server.tasks["chat"]["verification"][-1]
+                    self.assertEqual(stored["permission_scope"], self.scope)
+                    self.assertEqual(stored["permission_candidates"], [{**candidate, **describe(candidate)}])
+                    self.assertNotIn("request", result["permission_candidates"][0])
+                    self.assertNotIn("permission_review_unavailable", result)
 
     def test_one_off_grants_carry_into_later_retries(self):
         """Approving a request revealed by a retry keeps the requests approved before it."""

@@ -12,7 +12,7 @@ const TYPE = new RegExp(`^(?:${POLICY.type_pattern})$`);
 const HTTP_PATH = new RegExp(`^(?:${POLICY.http_path_pattern})$`);
 const SENSITIVE = new RegExp(any(POLICY.sensitive_names), 'i');
 const CREDENTIAL = new RegExp(`bearer${POLICY.whitespace}|(?:${any(POLICY.credential_value_names)})${POLICY.whitespace}*[=:]`, 'i');
-const READ = new RegExp(`(?:^|/)(?:${any(POLICY.read_prefixes)})(?:_|$)|/(?:${any(POLICY.read_suffixes)})$`);
+const PARENT_PATH = new RegExp(POLICY.websocket_parent_path_pattern, 'i');
 const DENIED_TYPE = new RegExp(`^(?:${any(POLICY.denied_websocket_prefixes)})(?:/|$)`);
 const WRITE_WORDS = new Set(POLICY.write_words);
 
@@ -37,13 +37,13 @@ function canonical(value) {
 /** Order strings by code unit, so a rule's fingerprint never depends on the locale. */
 const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** Refuse credentials and excessive nesting rather than hiding approval details. */
-function inspectable(value, depth = 0) {
+/** Refuse credential-like data, WebSocket path traversal, and excessive nesting. */
+function inspectable(value, websocket, depth = 0) {
   if (depth > LIMITS.depth) return false;
   if (typeof value === 'number') return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
-  if (typeof value === 'string') return !CREDENTIAL.test(value);
+  if (typeof value === 'string') return !CREDENTIAL.test(value) && !(websocket && PARENT_PATH.test(value));
   if (!value || typeof value !== 'object') return true;
-  return Object.entries(value).every(([key, item]) => !SENSITIVE.test(key) && inspectable(item, depth + 1));
+  return Object.entries(value).every(([key, item]) => !SENSITIVE.test(key) && inspectable(item, websocket, depth + 1));
 }
 
 /** Accept only bounded raster coordinates and the map-specific token parameter. */
@@ -55,8 +55,8 @@ function raster(url) {
 }
 
 /**
- * Build a rule only for eligible reads; an unknown handler is still a trust
- * decision. Commands the controller restricts by name or parameters (knob
+ * Build an exact rule for an inspectable request the owner may choose to trust.
+ * Commands the controller restricts by name or parameters (knob
  * handlers, icon sets, event subscriptions, Browser Mod) are never eligible, so
  * an approval cannot widen those restrictions.
  */
@@ -67,7 +67,7 @@ function rule(kind, value) {
   } else if (kind === 'websocket') {
     if (!value || typeof value.type !== 'string' || value.type.length > LIMITS.type_length || !TYPE.test(value.type) ||
         writes(value.type) || DENIED_TYPE.test(value.type) || POLICY.denied_websocket_types.includes(value.type) ||
-        SENSITIVE.test(value.type) || !READ.test(value.type)) return null;
+        SENSITIVE.test(value.type)) return null;
     request = Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'id'));
   } else if (kind === 'http') {
     if (!value || !['GET', 'HEAD'].includes(value.method) || typeof value.path !== 'string' ||
@@ -78,7 +78,7 @@ function rule(kind, value) {
         value.query.some(pair => !Array.isArray(pair) || pair.length !== 2 || pair.some(item => typeof item !== 'string') || SENSITIVE.test(pair[0]))) return null;
     request = { method: value.method, path: value.path, query: value.query };
   } else return null;
-  if (!inspectable(request)) return null;
+  if (!inspectable(request, kind === 'websocket')) return null;
   const snapshot = canonical(request);
   if (Buffer.byteLength(snapshot) > LIMITS.request_bytes) return null;
   const id = createHash('sha256').update(`${kind}\n${snapshot}`).digest('hex');
@@ -88,7 +88,8 @@ function rule(kind, value) {
 /** Explain a controller refusal without treating every unrecognized read as a write. */
 function websocketBlockReason(message) {
   const type = message.type;
-  if (typeof type !== 'string') return 'Invalid request type. Approval is unavailable.';
+  if (typeof type !== 'string' || type.length > LIMITS.type_length || !TYPE.test(type))
+    return 'Invalid request type. Approval is unavailable.';
   if (type === 'browser_mod/connect')
     return 'Browser Mod can update stored browser details and attach a command channel. It needs separate support; approval is unavailable.';
   if (type === 'browser_mod' || type.startsWith('browser_mod/'))
@@ -100,7 +101,7 @@ function websocketBlockReason(message) {
   if (rule('websocket', message))
     return type === 'subscribe_condition'
       ? 'This condition is outside the automatic built-in read checks. Review this exact request for approval.'
-      : 'This request is outside the automatic read allowlist. Review this exact request for approval.';
+      : 'This request needs your permission. Review this exact request for approval.';
   if (type === 'knob_swipe_navigation/navigation_result')
     return 'Reporting navigation results updates integration state. Approval is unavailable in this observational browser.';
   if (type === 'knob_swipe_navigation/subscribe_rotations' || type === 'knob_swipe_navigation/config')
@@ -109,8 +110,12 @@ function websocketBlockReason(message) {
     return 'Authentication changes and URL signing need separate support. Approval is unavailable.';
   if (type === 'camera/stream' || type === 'camera/webrtc' || type.startsWith('camera/webrtc/'))
     return 'Camera streaming and signaling need separate support. Approval is unavailable.';
+  if (type === 'media_source/resolve_media')
+    return 'This command can return a signed URL. Approval is unavailable.';
   if (writes(type)) return 'Device actions and write-like commands are not supported by this observational browser. Approval is unavailable.';
-  return 'This request is outside the supported read policy or cannot be safely reviewed. Approval is unavailable; this does not establish that it is a write.';
+  if (DENIED_TYPE.test(type) || POLICY.denied_websocket_types.includes(type))
+    return 'This command is restricted during dashboard verification. Approval is unavailable.';
+  return 'This request may contain credentials, an unsafe path, or details that exceed the review limits. Approval is unavailable.';
 }
 
 /** Revalidate saved rules, including their fingerprint, at the enforcement boundary. */
@@ -230,7 +235,7 @@ class BrowserPermissions {
     return false;
   }
 
-  /** Authorize one exact WebSocket read or the bounded map capability. */
+  /** Authorize one exact WebSocket request or the bounded map capability. */
   message(message, viewport) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
     const map = message.type === 'map_tiles/access_token' && Object.keys(message).every(key => ['id', 'type'].includes(key));

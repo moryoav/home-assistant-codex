@@ -13,6 +13,7 @@
   },
   "type_pattern": "[a-z][a-z0-9_]*(?:/[a-z][a-z0-9_]*){0,5}",
   "http_path_pattern": "/[a-zA-Z0-9_./-]+",
+  "websocket_parent_path_pattern": "(?:^|[/\\\\]|%2f|%5c)(?:\\.|%2e){2}(?=$|[/\\\\]|%2f|%5c)",
   "dashboard_path_pattern": "/[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?/?",
   "whitespace": "[\\t\\n\\u000b\\f\\r \\u001c-\\u001f\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]",
   "sensitive_names": ["token", "secret", "password", "credential", "authorization", "signature", "apikey", "api_key", "authsig"],
@@ -23,15 +24,20 @@
     "trigger", "toggle", "turn", "send", "offer", "candidate", "publish", "write", "reset", "clear", "purge", "wipe",
     "flash", "upgrade", "apply", "enable", "disable", "arm", "disarm", "unlock", "rename", "import", "migrate",
     "upload", "edit", "modify", "patch", "put", "post", "insert", "replace", "reconfigure", "activate", "deactivate",
-    "approve", "dismiss", "revoke"
+    "approve", "dismiss", "revoke", "configure", "promote", "reorder", "restore", "sign", "uninstall"
   ],
-  "read_prefixes": ["get", "list", "subscribe"],
-  "read_suffixes": ["config", "info", "capabilities"],
   "denied_websocket_prefixes": [
     "auth", "config", "hassio", "cloud", "stream", "backup", "person", "automation", "script",
-    "camera/webrtc", "camera/stream", "knob_swipe_navigation", "custom_icons", "browser_mod"
+    "camera/webrtc", "camera/stream", "knob_swipe_navigation", "custom_icons", "browser_mod",
+    "debug_console", "trace/debug", "webhook", "marketplace"
   ],
-  "denied_websocket_types": ["subscribe_events"],
+  "denied_websocket_types": [
+    "subscribe_events", "analytics/preferences", "assist_pipeline/device/capture", "assist_satellite/test_connection",
+    "assist_satellite/intercept_wake_word", "conversation/process", "homeassistant/expose_entity",
+    "lcn/devices/scan", "logger/integration_log_level", "logger/log_level", "media_source/resolve_media",
+    "mobile_app/push_notification_channel", "mobile_app/push_notification_confirm", "repairs/ignore_issue",
+    "todo/item/move", "usb/scan", "zha/devices/permit"
+  ],
   "denied_http_prefixes": [
     "/auth", "/api/auth", "/api/services", "/api/events", "/api/config", "/api/hassio", "/api/webhook",
     "/api/camera", "/api/codex_cli", "/api/stream", "/api/backup", "/api/map_tiles"

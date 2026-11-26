@@ -98,6 +98,19 @@ function allowRequest(url, origin, method, dashboardPath) {
     || url.pathname === '/';
 }
 
+/** Add a bounded source pathname and one-based position to generic console errors. */
+function scriptError(text, location) {
+  if (text.length > 3 && text !== 'Object') return text;
+  const message = `Unspecified dashboard script error (${text})`;
+  if (!location?.url || !URL.canParse(location.url)) return message;
+  const { protocol, pathname } = new URL(location.url);
+  const { line, column } = location;
+  if (!['http:', 'https:'].includes(protocol) || !/^\/[a-zA-Z0-9_./@+~-]{1,220}$/.test(pathname) ||
+      !Number.isSafeInteger(line) || line < 0 || !Number.isSafeInteger(column) || column < 0)
+    return message;
+  return `${message} at ${pathname}:${line + 1}:${column + 1}`;
+}
+
 /**
  * Load a Home Assistant dashboard in headless Chromium at a desktop and a
  * mobile size and save a screenshot of each. Requests and WebSocket messages
@@ -121,6 +134,7 @@ async function inspect(input) {
   // Share the condition limit across sockets so opening another cannot bypass it.
   const conditionBudget = {active: 0, limit: LIMITS.condition_subscriptions};
   let omitted = 0;
+  let requestsBlocked = false;
   const policy = new ResourcePolicy(origin, input.resources);
   const permissions = new BrowserPermissions(input.permissions);
   let mapToken;
@@ -134,8 +148,6 @@ async function inspect(input) {
   const blockedURLs = new Set();
   /** Name a resource by its path, preceded by the host when it is external. */
   const resourceLabel = url => `${url.origin === origin ? '' : url.host}${url.pathname}`;
-  /** Turn an error text that says nothing by itself into a readable message. */
-  const scriptError = text => text.length <= 3 || text === 'Object' ? `Unspecified dashboard script error (${text})` : text;
   let stage = 'launch';
   let browser, activePage, activeViewport;
   /**
@@ -145,6 +157,7 @@ async function inspect(input) {
    * counted as omitted.
    */
   const add = (list, value, kind = list === errors ? 'dashboard' : 'policy') => {
+    if (list === blocked) requestsBlocked = true;
     const message = String(value).slice(0, 300), key = `${kind}:${message}`;
     let finding = findings.get(key);
     if (!finding) {
@@ -156,8 +169,9 @@ async function inspect(input) {
     if (activeViewport && !finding.viewports.includes(activeViewport.name)) finding.viewports.push(activeViewport.name);
   };
   /** Return the errors, blocked items, and findings gathered so far. */
-  const evidence = () => ({errors, blocked, findings: [...findings.values()], findings_omitted: omitted, ...permissions.evidence()});
-  const policyNote = () => blocked.length
+  const evidence = () => ({errors, blocked, requests_blocked: requestsBlocked, findings: [...findings.values()],
+    findings_omitted: omitted, ...permissions.evidence()});
+  const policyNote = () => requestsBlocked
     ? ' Inspection policy blocks limit this capture. A blocked request is not necessarily a write or a fault on another device. Each WebSocket block explains whether approval is available.' : '';
   try {
     browser = await chromium.launch({
@@ -324,15 +338,17 @@ async function inspect(input) {
         try { message = JSON.parse(String(raw)); } catch (_) { return closeBoth('the dashboard sent an invalid message', 'dashboard'); }
         if (!message || typeof message !== 'object' || Array.isArray(message))
           return closeBoth('the dashboard sent an invalid message', 'dashboard');
+        const automatic = authenticated && allowMessage(message);
         if (message.type === 'auth' && !authenticated) {
           authenticated = true;
           toCore(JSON.stringify({ type: 'auth', access_token: input.access_token }));
-        } else if (authenticated && (allowMessage(message) || permissions.message(message, activeViewport?.name))) {
+        } else if (authenticated && (automatic || permissions.message(message, activeViewport?.name))) {
           // Core requires increasing request IDs, so each response correlates
           // with exactly one request, including map token responses.
           const refused = commands.accept(message);
           if (refused) return refuse(message, refused, refused.includes('ID') ? 'id_reuse' : 'unauthorized');
-          toCore(String(raw));
+          // Send the same parsed fields that were reviewed for an owner grant.
+          toCore(automatic ? String(raw) : JSON.stringify(message));
         } else {
           const service = message.type === 'call_service' && /^[a-z_]+$/.test(message.domain) && /^[a-z_]+$/.test(message.service)
             ? `${message.domain}.${message.service}` : '';
@@ -373,7 +389,7 @@ async function inspect(input) {
         if (text.startsWith('Failed to load resource:')) return;
         if (/Blocked by dashboard verification/.test(text) && /system log|notification/i.test(text))
           add(null, 'Dashboard diagnostic logging or notification was blocked', 'diagnostic');
-        else add(errors, scriptError(text));
+        else add(errors, scriptError(text, msg.location()));
       });
       page.on('pageerror', error => add(errors, scriptError(error.message)));
       page.on('requestfailed', req => {

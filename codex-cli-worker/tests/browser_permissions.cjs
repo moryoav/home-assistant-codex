@@ -6,6 +6,8 @@ const { execFileSync } = require('node:child_process');
 const { BrowserPermissions, CommandTracker, LIMITS, canonical, rule, validate, boundedResult, websocketBlockReason } = require('../browser_permissions.cjs');
 
 const moduleList = { id: 1, type: 'bubble_card_tools/list_modules' };
+const moduleRead = { id: 1, type: 'bubble_card_tools/read_module', name: 'config.yaml' };
+const unrelated = { id: 1, type: 'custom/dashboard_summary', area: 'kitchen' };
 const first = new BrowserPermissions();
 assert.equal(first.message(moduleList, 'desktop'), false);
 assert.equal(first.message({ type: moduleList.type, id: 77 }, 'mobile'), false);
@@ -19,10 +21,27 @@ assert.equal(allowed.message({ ...moduleList, id: 2 }), true);
 assert.equal(allowed.message({ ...moduleList, query: 'different parameters' }), false);
 assert.equal(allowed.message({ ...moduleList, type: 'bubble_card_tools/delete_modules' }), false);
 assert.equal(validate({ ...candidates[0], id: 'f'.repeat(64) }), null);
-for (const type of ['call_service', 'auth/sign_path', 'camera/webrtc/offer', 'camera/webrtc/candidate',
-  'execute_script', 'subscribe_trigger', 'custom/get_and_update', 'custom/read', 'auth/list', 'config/list']) {
+const deniedTypes = ['call_service', 'auth/sign_path', 'camera/webrtc/offer', 'camera/webrtc/candidate',
+  'execute_script', 'subscribe_trigger', 'custom/get_and_update', 'auth/list', 'config/list', 'lovelace/config/save',
+  'conversation/process', 'media_source/resolve_media', 'homeassistant/expose_entity', 'trace/debug/continue',
+  'analytics/preferences', 'shopping_list/items/reorder', 'todo/item/move', 'zha/devices/permit'];
+for (const type of deniedTypes) {
   assert.equal(rule('websocket', { type }), null, type);
 }
+for (const message of [moduleRead, unrelated]) {
+  const permissions = new BrowserPermissions();
+  assert.equal(permissions.message(message), false);
+  const [candidate] = permissions.evidence().permission_candidates;
+  assert.ok(candidate);
+  const approved = new BrowserPermissions([candidate]);
+  assert.equal(approved.message({...message, id: 2}), true);
+  assert.equal(approved.message({...message, extra: true}), false);
+}
+const unsafePaths = ['../config.yaml', 'modules/../config.yaml', '..\\config.yaml', '%2e.%2fconfig.yaml'];
+for (const name of unsafePaths)
+  assert.equal(rule('websocket', {...moduleRead, name}), null, name);
+const approvedModule = new BrowserPermissions([rule('websocket', moduleRead)]);
+assert.equal(approvedModule.message({...moduleRead, name: 'other.yaml'}), false);
 assert.equal(rule('websocket', { type: 'custom/get', password: 'secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: 'Bearer secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: Infinity }), null);
@@ -171,6 +190,11 @@ for (const candidate of result.permission_candidates) assert.ok(validate(candida
 // The worker's Python validator must reach the same decision on the same requests.
 const corpus = [
   ['websocket', { type: 'bubble_card_tools/list_modules' }],
+  ['websocket', moduleRead],
+  ['websocket', {...moduleRead, name: 'other.yaml'}],
+  ['websocket', unrelated],
+  ...unsafePaths.map(name => ['websocket', {...moduleRead, name}]),
+  ...deniedTypes.map(type => ['websocket', {type}]),
   ['websocket', { type: 'subscribe_condition', condition: { condition: 'state', entity_id: 'light.x', state: 'on' } }],
   ['websocket', { type: 'system_health/info' }],
   ['websocket', { type: 'custom/get', value: 1.5, list: [1, 2, { deep: true }], text: 'Grüße ☃' }],

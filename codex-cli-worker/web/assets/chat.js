@@ -965,10 +965,11 @@ function renderVerification(turn, taskId) {
   for (const check of checks) {
     const row = textNode("details", "", `verification-result is-${check.status}`);
     if (check.retry_of && check === checks[checks.length - 1]) row.open = true;
-    const label = {
+    const review = renderBrowserPermissions(check, turn, taskId);
+    const label = review?.classList.contains("browser-permission-review") ? "Approval needed" : ({
       passed: "Passed", failed: "Failed", observed: "Readback", captured: "Screenshots captured",
       issues: "Needs review", disabled: "Disabled", unavailable: "Unverified",
-    }[check.status] || "Unverified";
+    }[check.status] || "Unverified");
     row.append(textNode("summary", `${label} · ${check.entity_id || check.path || check.target || check.operation}`));
     if (check.message) row.append(textNode("pre", check.message));
     if (check.state !== undefined) row.append(textNode("p", `State: ${check.state}${check.expected_state !== null ? ` · Expected: ${check.expected_state}` : ""}`));
@@ -1005,8 +1006,7 @@ function renderVerification(turn, taskId) {
     if (check.permission_review_unavailable) row.append(textNode("p", check.permission_review_unavailable));
     if (check.permission_store_error) row.append(textNode("p", check.permission_store_error));
     if (check.permission_candidates_omitted)
-      row.append(textNode("p", "Some blocked requests can't be offered for approval: they were incomplete, looked like credentials, or exceeded the review limit."));
-    const review = renderBrowserPermissions(check, turn, taskId);
+      row.append(textNode("p", "The approval list may omit requests with incomplete details, credentials, or details that exceed review limits."));
     if (review) row.append(review);
     section.append(row);
   }
@@ -1031,7 +1031,7 @@ function renderBrowserPermissions(check, turn, taskId) {
     return textNode("p", "This exchange was stopped, so its requests can't be approved. Start a new inspection to review them.", "muted");
   const panel = textNode("div", "", "browser-permission-review");
   panel.append(textNode("h4", "Review blocked browser requests"));
-  panel.append(textNode("p", "Select requests you trust. Unreviewed handlers may have side effects. Known device controls, writes, sign-in changes, URL signing and camera signaling stay blocked."));
+  panel.append(textNode("p", "Review the exact parameters before approving requests. Custom commands can have side effects even during verification. Approve only commands you trust."));
   const fields = document.createElement("fieldset");
   fields.append(textNode("legend", `Additional access for ${check.path}`));
   const boxes = [];

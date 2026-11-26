@@ -58,7 +58,7 @@ def main():
 
         permission_scope = scope({"installation_id": "a" * 32, "url": "http://fixture:8123"})
         permission_requests = [
-            ("websocket", {"type": "bubble_card_tools/list_modules"}),
+            ("websocket", {"type": "bubble_card_tools/read_module", "name": "config.yaml"}),
             ("websocket", {"type": "subscribe_condition", "condition": {"condition": "state", "entity_id": "light.kitchen", "state": "on"}}),
             ("map_tiles", {"type": "map_tiles/raster"}),
             ("websocket", {"type": "custom/get", "query": "<img src=x onerror=alert(1)>"}),
@@ -241,6 +241,12 @@ def main():
                                        details="", question="", completed_at=server.utc_now())
                     if (reply or prompt).startswith("Inspect with blocked browser requests"):
                         server.update_task(task_id, verification=[permission_check()])
+                    elif (reply or prompt).startswith("Inspect with hard policy blocks"):
+                        server.update_task(task_id, verification=[{
+                            "operation": "dashboard", "status": "issues", "path": "/lovelace/home",
+                            "permission_candidates": [], "blocked": ["WebSocket call_service"],
+                            "permission_review_unavailable": "No blocked requests are available to approve. See the findings for details.",
+                        }])
                 server.finish_activity(task_id)
                 server.active_task_runners.discard(task_id)
                 # The real runner starts the next queued message when it ends.

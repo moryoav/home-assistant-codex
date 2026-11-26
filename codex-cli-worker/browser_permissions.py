@@ -37,7 +37,7 @@ def _any(words):
 SENSITIVE = re.compile(_any(POLICY["sensitive_names"]), FLAGS)
 CREDENTIAL = re.compile(
     f"bearer{POLICY['whitespace']}|(?:{_any(POLICY['credential_value_names'])}){POLICY['whitespace']}*[=:]", FLAGS)
-READ = re.compile(f"(?:^|/)(?:{_any(POLICY['read_prefixes'])})(?:_|$)|/(?:{_any(POLICY['read_suffixes'])})$")
+PARENT_PATH = re.compile(POLICY["websocket_parent_path_pattern"], FLAGS)
 DENIED_TYPE = re.compile(f"^(?:{_any(POLICY['denied_websocket_prefixes'])})(?:/|$)")
 WRITE_WORDS = frozenset(POLICY["write_words"])
 
@@ -62,16 +62,16 @@ def _entry_id(installation, path, rule_id):
     return hashlib.sha256(f"{installation}\n{path}\n{rule_id}".encode()).hexdigest()
 
 
-def _inspectable(item, depth=0):
-    """Reject credential-like fields and excessive nesting, without redacting them."""
+def _inspectable(item, websocket, depth=0):
+    """Reject credential-like data, WebSocket path traversal, and excessive nesting."""
     if depth > LIMITS["depth"]:
         return False
     if isinstance(item, str):
-        return not CREDENTIAL.search(item)
+        return not CREDENTIAL.search(item) and not (websocket and PARENT_PATH.search(item))
     if isinstance(item, dict):
-        return all(not SENSITIVE.search(key) and _inspectable(child, depth + 1) for key, child in item.items())
+        return all(not SENSITIVE.search(key) and _inspectable(child, websocket, depth + 1) for key, child in item.items())
     if isinstance(item, list):
-        return all(_inspectable(child, depth + 1) for child in item)
+        return all(_inspectable(child, websocket, depth + 1) for child in item)
     if type(item) is int:
         return abs(item) <= 2 ** 53 - 1
     if type(item) is float:
@@ -103,7 +103,7 @@ def valid_rule(value):
         name = request.get("type")
         if (not isinstance(name, str) or len(name) > LIMITS["type_length"] or "id" in request
             or not TYPE.fullmatch(name) or writes(name) or DENIED_TYPE.match(name)
-            or name in POLICY["denied_websocket_types"] or SENSITIVE.search(name) or not READ.search(name)):
+            or name in POLICY["denied_websocket_types"] or SENSITIVE.search(name)):
             return None
     else:
         path, query = request.get("path"), request.get("query")
@@ -116,7 +116,7 @@ def valid_rule(value):
             or any(not isinstance(pair, list) or len(pair) != 2 or any(not isinstance(item, str) for item in pair)
                    or SENSITIVE.search(pair[0]) for pair in query)):
             return None
-    if not _inspectable(request):
+    if not _inspectable(request, kind == "websocket"):
         return None
     return {"id": identifier, "kind": kind, "request": snapshot}
 

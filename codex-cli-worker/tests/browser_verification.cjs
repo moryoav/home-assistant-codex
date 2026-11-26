@@ -155,9 +155,10 @@ async function main() {
             send({type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']});
             send({type:'camera/capabilities',entity_id:'camera.fixture'});
             ${permissionRequests ? `
-            send({type:'bubble_card_tools/list_modules'});
+            send({type:'bubble_card_tools/read_module',name:'config.yaml'});
             ids.map = send({type:'map_tiles/access_token'});
             send({type:'auth/sign_path',path:'/api/camera_proxy/camera.fixture'});
+            send({type:'media_source/resolve_media',media_content_id:'media-source://fixture'});
             send({type:'call_service',domain:'light',service:'turn_on'});
             fetch('/api/custom/data?entity_id=sensor.fixture').catch(()=>{});
             ` : ''}
@@ -182,6 +183,9 @@ async function main() {
               const script=document.createElement('script');script.src=url;document.body.append(script);
             }
             ha.shadowRoot.querySelector('hui-view').innerHTML+='<hui-error-card>Custom element does not exist: missing-card</hui-error-card>';
+            const log=document.createElement('script');
+            log.textContent='console.error("Object");\\n//# sourceURL=http://fixture-user:fixture-pass@fixture.test/hacsfiles/card.js?source-secret=value#private-fragment';
+            document.body.append(log);
             console.error('Fixture custom card error');` : ''}
           }
           if (msg.id === ids.resources && msg.success) {
@@ -332,16 +336,19 @@ async function main() {
     const pending = await inspect(input);
     assert.equal(pending.permission_candidates.length, 3, JSON.stringify(pending));
     assert(!pending.permission_candidates.some(item => item.request.includes('subscribe_condition')));
-    assert(pending.blocked.some(item => item.includes('bubble_card_tools/list_modules:') && item.includes('Review this exact request for approval')));
+    const moduleCandidate = pending.permission_candidates.find(item => item.kind === 'websocket');
+    assert.deepEqual(JSON.parse(moduleCandidate.request), {type: 'bubble_card_tools/read_module', name: 'config.yaml'});
+    assert(pending.blocked.some(item => item.includes('bubble_card_tools/read_module:') && item.includes('Review this exact request for approval')));
     assert(!JSON.stringify(pending).includes('private-map-access'));
-    assert(!upstream.includes('bubble_card_tools/list_modules'));
+    assert(!upstream.includes('bubble_card_tools/read_module'));
     const granted = await inspect({...input, permissions: pending.permission_candidates});
     assert.equal(granted.permission_candidates.length, 0, JSON.stringify(granted));
     assert.equal(granted.permissions_used.length, 3);
-    assert(upstream.includes('bubble_card_tools/list_modules'));
+    assert(upstream.includes('bubble_card_tools/read_module'));
     assert(upstream.includes('subscribe_condition'));
     assert(upstream.includes('map_tiles/access_token'));
     assert(!upstream.includes('auth/sign_path'));
+    assert(!upstream.includes('media_source/resolve_media'));
     assert(!upstream.includes('call_service'));
     assert.equal(requests.filter(url => url.startsWith('/api/map_tiles/raster/')).length, 2);
     assert.equal(requests.filter(url => url.startsWith('/api/custom/data')).length, 2);
@@ -380,6 +387,10 @@ async function main() {
     assert(!requests.includes('/integration-b/other.mjs'));
     assert(!requests.includes('/integration-b/panel.mjs?version=other'));
     assert.equal(second.findings.find(item => item.message === 'Fixture custom card error').count, 2);
+    const objectError = second.findings.find(item => item.message.startsWith('Unspecified dashboard script error (Object)'));
+    assert.match(objectError?.message || '', / at \/hacsfiles\/card\.js:1:\d+$/);
+    assert.equal(objectError.count, 2);
+    assert.doesNotMatch(JSON.stringify(second), /fixture-user|fixture-pass|source-secret|private-fragment/);
     assert(second.blocked.includes('Redirect /local/redirect.js'));
     assert.equal(redirectedRequests, 0);
     assert(!upstream.includes('call_service'));

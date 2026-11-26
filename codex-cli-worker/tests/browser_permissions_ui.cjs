@@ -12,7 +12,7 @@ async function inspection(page) {
   await page.locator('#message').fill('Inspect with blocked browser requests');
   await page.getByRole('button', {name: 'Send message', exact: true}).click();
   const panel = page.locator('.browser-permission-review').last();
-  await panel.locator('..').locator('summary').first().click();
+  await page.getByText('Approval needed · /lovelace/home', {exact: true}).click();
   await panel.getByRole('checkbox', {name: 'Select all requests', exact: true}).waitFor();
   return panel;
 }
@@ -97,12 +97,19 @@ async function task(page) {
     await page.getByRole('button', {name: 'Close settings', exact: true}).click();
     // An unselected request stays blocked and one-off approval creates no saved rule.
     const once = await inspection(page);
-    await once.getByRole('checkbox', {name: 'WebSocket bubble_card_tools/list_modules', exact: true}).check();
+    await once.getByRole('checkbox', {name: 'WebSocket bubble_card_tools/read_module', exact: true}).check();
     await once.getByRole('button', {name: 'Allow selected and retry', exact: true}).click();
     await page.getByText('Allowed for this retry:', {exact: false}).waitFor();
     const single = await task(page);
     assert.equal(single.verification.at(-1).permission_candidates.length, 3);
     assert.equal((await (await page.request.get(new URL('browser-permissions', base).href)).json()).permissions.length, 0);
+    // A capture with hard policy blocks explains why it has no approval button.
+    await page.locator('#new-chat').click();
+    await page.locator('#message').fill('Inspect with hard policy blocks');
+    await page.getByRole('button', {name: 'Send message', exact: true}).click();
+    await page.getByText('Needs review · /lovelace/home', {exact: true}).click();
+    await page.getByText('No blocked requests are available to approve.', {exact: false}).waitFor();
+    assert.equal(await page.getByRole('button', {name: 'Allow selected and retry', exact: true}).count(), 0);
     assert.deepEqual(errors, []);
     console.log('PASS: batch selection, remembered/once decisions, fresh retry evidence, stale rejection, safe details, drafts, saved permissions after reload, revocation, mobile dark mode, and no page errors.');
   } finally { await browser.close(); }

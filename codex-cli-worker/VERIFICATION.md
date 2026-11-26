@@ -134,17 +134,20 @@ get each request's label. Update both the worker and integration for approval
 support. With an older integration, screenshots still work and the result asks
 you to update the integration before requests can be approved.
 
-User approval is a trust decision, not certification that an unfamiliar custom
-handler has no side effects. Generic exceptions cover bounded read-like WebSocket
-operations with their exact parameters, or exact same-origin GET/HEAD resources
+The same browser approval policy applies in every sandbox mode. The inspector
+offers unfamiliar WebSocket commands for review if they pass the policy below and
+their complete parameters can be shown. A custom handler may have side effects
+under the browser's read-only account. Review the parameters and approve only
+commands you trust. Exceptions also cover exact same-origin GET/HEAD resources
 and query parameters. Changing the request parameters requires another approval.
 Repeated query parameters retain their value order, so changing which value
 comes first requires another approval.
 Request IDs and object-key order do not change a WebSocket permission. Requests
-with hidden credentials, malformed query encoding, oversized details, or
-unsupported actions cannot be approved. Known device controls, writes (also when
-the write word is separated by `-` or `.` or written in camelCase), sign-in
-changes, URL signing, camera WebRTC setup/signaling, redirects and arbitrary
+with hidden credentials, malformed query encoding, WebSocket path traversal,
+oversized details, or unsupported actions cannot be approved. If none of the blocked
+requests can be offered, the report explains why approval is unavailable. Known
+device controls, writes (including names with `-`, `.` or camelCase), sign-in
+changes, URL signing, camera WebRTC setup and signaling, redirects and arbitrary
 external access stay blocked. Commands the controller restricts by name or
 parameters (Knob Swipe Navigation, Custom Icons, Browser Mod and event
 subscriptions) cannot be widened by an approval. `browser_permission_policy.json`

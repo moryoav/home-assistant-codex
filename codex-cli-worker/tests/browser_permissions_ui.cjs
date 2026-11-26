@@ -121,6 +121,18 @@ async function task(page) {
     const incomplete = page.getByText('Unverified · approval available · /lovelace/home', {exact: true});
     await incomplete.click();
     await page.getByRole('button', {name: 'Allow selected and retry', exact: true}).waitFor();
+    const incompleteTask = await task(page);
+    await page.locator('#new-chat').click();
+    await page.locator('#message').fill('Take your time with another chat');
+    await page.getByRole('button', {name: 'Send message', exact: true}).click();
+    await page.getByRole('button', {name: 'Stop task', exact: true}).waitFor();
+    await page.locator(`[data-task-id="${incompleteTask.task_id}"]`).click();
+    await page.getByText('Unverified · /lovelace/home', {exact: true}).click();
+    await page.getByText('Wait for running tasks and inspections to finish before approving this batch.', {exact: true}).waitFor();
+    assert.equal(await page.getByRole('button', {name: 'Allow selected and retry', exact: true}).isDisabled(), true);
+    assert.equal(await incomplete.count(), 0);
+    await page.request.post(new URL('fixture/release', base).href);
+    await incomplete.waitFor();
     assert.deepEqual(errors, []);
     console.log('PASS: batch selection, remembered/once decisions, fresh retry evidence, stale rejection, safe details, drafts, saved permissions after reload, revocation, mobile dark mode, and no page errors.');
   } finally { await browser.close(); }

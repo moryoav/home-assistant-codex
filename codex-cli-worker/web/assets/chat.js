@@ -962,15 +962,18 @@ function renderVerification(turn, taskId) {
     progress.setAttribute("role", "status");
     section.append(progress);
   }
+  // The worker accepts a batch only while no task or inspection runs in any chat.
+  const approvalBusy = Boolean(state.task?.browser_retry) || Boolean(state.active) ||
+    ["queued", "running", "in_queue"].includes(state.task?.status);
   for (const check of checks) {
     const row = textNode("details", "", `verification-result is-${check.status}`);
     if (check.retry_of && check === checks[checks.length - 1]) row.open = true;
-    const review = renderBrowserPermissions(check, turn, taskId);
+    const review = renderBrowserPermissions(check, turn, taskId, approvalBusy);
     let label = {
       passed: "Passed", failed: "Failed", observed: "Readback", captured: "Screenshots captured",
       issues: "Needs review", disabled: "Disabled", unavailable: "Unverified",
     }[check.status] || "Unverified";
-    if (review?.classList.contains("browser-permission-review"))
+    if (!approvalBusy && review?.classList.contains("browser-permission-review"))
       label = check.status === "issues" ? "Approval needed" : `${label} · approval available`;
     row.append(textNode("summary", `${label} · ${check.entity_id || check.path || check.target || check.operation}`));
     if (check.message) row.append(textNode("pre", check.message));
@@ -1020,7 +1023,7 @@ function renderVerification(turn, taskId) {
   return section;
 }
 /** Let the owner review a batch of complete requests without interrupting capture. */
-function renderBrowserPermissions(check, turn, taskId) {
+function renderBrowserPermissions(check, turn, taskId, busy) {
   const candidates = check.permission_candidates || [];
   if (!candidates.length || !check.check_id) return null;
   if ((turn.verification || []).some(item => item.retry_of === check.check_id))
@@ -1073,9 +1076,6 @@ function renderBrowserPermissions(check, turn, taskId) {
   actions.append(allow, keep);
   const feedback = textNode("p", "", "browser-permission-feedback");
   feedback.setAttribute("role", "status");
-  // The worker accepts a batch only while no task or inspection runs in any chat.
-  const busy = Boolean(state.task?.browser_retry) || Boolean(state.active) ||
-    ["queued", "running", "in_queue"].includes(state.task?.status);
   fields.disabled = busy;
   const update = () => {
     const selected = boxes.filter(box => box.checked).length;

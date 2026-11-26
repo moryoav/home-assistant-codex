@@ -38,8 +38,10 @@ Dashboard captures load integrations' registered static assets and supported
 public HTTPS scripts, styles, fonts, and images. Update **both** the app and
 integration together, then restart Home Assistant, to use the current resource
 and permission support. Repeated findings are grouped by cause and viewport.
-The browser blocks service calls and writes. See
-[resource compatibility and privacy](VERIFICATION.md#dashboard-resources).
+The browser blocks direct service calls and known write-like requests. An approved
+custom handler can still change state or contact an external service. See the
+[browser approval rules](VERIFICATION.md#approving-additional-browser-requests)
+and [resource compatibility and privacy](VERIFICATION.md#dashboard-resources).
 
 With the app and integration at **0.1.79** or newer, inspections also collect
 fresh screenshots from matching Fully Kiosk devices. See

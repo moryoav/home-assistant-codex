@@ -37,7 +37,7 @@ def _any(words):
 SENSITIVE = re.compile(_any(POLICY["sensitive_names"]), FLAGS)
 CREDENTIAL = re.compile(
     f"bearer{POLICY['whitespace']}|(?:{_any(POLICY['credential_value_names'])}){POLICY['whitespace']}*[=:]", FLAGS)
-PARENT_PATH = re.compile(POLICY["websocket_parent_path_pattern"], FLAGS)
+PARENT_PATH = re.compile(POLICY["websocket_parent_path_pattern"].replace("{whitespace}", POLICY["whitespace"]), FLAGS)
 ABSOLUTE_PATH = re.compile(f"^{POLICY['whitespace']}*{POLICY['websocket_absolute_path_pattern']}", FLAGS)
 PATH_FIELDS = frozenset(POLICY["websocket_path_fields"])
 PATH_FIELD_AFFIXES = tuple(POLICY["websocket_path_field_affixes"])

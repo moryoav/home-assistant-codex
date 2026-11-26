@@ -45,6 +45,7 @@ for (const message of [moduleRead, unrelated]) {
   assert.equal(approved.message({...message, extra: true}), false);
 }
 const unsafePaths = ['../config.yaml', 'modules/../config.yaml', '..\\config.yaml', '%2e.%2fconfig.yaml', '..\n', '..\r\n',
+  '\u00a0../config.yaml', '\f../config.yaml', '..\f', '\u2003..\u000b',
   '/tmp/fixture.yaml', 'C:\\fixture\\settings.yaml', '~/.fixture/settings.yaml', '\\\\fixture\\share\\settings.yaml',
   '%252e%252e%252fsettings.yaml', '%25%32%65%25%32%65%25%32%66settings.yaml', '%252ftmp%252fsettings.yaml'];
 for (const name of unsafePaths)

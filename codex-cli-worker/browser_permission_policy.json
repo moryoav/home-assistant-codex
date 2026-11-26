@@ -13,7 +13,7 @@
   },
   "type_pattern": "[a-z][a-z0-9_]*(?:/[a-z][a-z0-9_]*){0,5}",
   "http_path_pattern": "/[a-zA-Z0-9_./-]+",
-  "websocket_parent_path_pattern": "(?:^[\\t\\r\\n ]*|[/\\\\])\\.\\.(?=[\\t\\r\\n ]*(?![\\s\\S])|[/\\\\])",
+  "websocket_parent_path_pattern": "(?:^{whitespace}*|[/\\\\])\\.\\.(?={whitespace}*(?![\\s\\S])|[/\\\\])",
   "websocket_absolute_path_pattern": "(?:[/\\\\]|[a-z]:|~|file:)",
   "websocket_path_fields": [
     "name", "names", "dir", "src", "source", "target", "dest", "module", "modules"

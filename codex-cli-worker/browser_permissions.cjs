@@ -12,7 +12,7 @@ const TYPE = new RegExp(`^(?:${POLICY.type_pattern})$`);
 const HTTP_PATH = new RegExp(`^(?:${POLICY.http_path_pattern})$`);
 const SENSITIVE = new RegExp(any(POLICY.sensitive_names), 'i');
 const CREDENTIAL = new RegExp(`bearer${POLICY.whitespace}|(?:${any(POLICY.credential_value_names)})${POLICY.whitespace}*[=:]`, 'i');
-const PARENT_PATH = new RegExp(POLICY.websocket_parent_path_pattern, 'i');
+const PARENT_PATH = new RegExp(POLICY.websocket_parent_path_pattern.replaceAll('{whitespace}', POLICY.whitespace), 'i');
 const ABSOLUTE_PATH = new RegExp(`^${POLICY.whitespace}*${POLICY.websocket_absolute_path_pattern}`, 'i');
 const PATH_FIELDS = new Set(POLICY.websocket_path_fields);
 const DENIED_TYPE = new RegExp(`^(?:${any(POLICY.denied_websocket_prefixes)})(?:/|$)`);

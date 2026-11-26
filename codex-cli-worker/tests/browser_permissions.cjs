@@ -25,7 +25,9 @@ const deniedTypes = ['call_service', 'auth/sign_path', 'camera/webrtc/offer', 'c
   'web_rtc/ice_servers', 'bubble_card_tools/ma_queue_command', 'custom/device_command',
   'execute_script', 'subscribe_trigger', 'custom/get_and_update', 'auth/list', 'config/list', 'lovelace/config/save',
   'conversation/process', 'media_source/resolve_media', 'homeassistant/expose_entity', 'trace/debug/continue',
-  'analytics/preferences', 'shopping_list/items/reorder', 'todo/item/move', 'zha/devices/permit'];
+  'analytics/preferences', 'shopping_list/items/reorder', 'todo/item/move', 'zha/devices/permit',
+  'custom/lock', 'custom/open', 'media/play', 'media/pause', 'custom/volume_mute', 'zha/devices/bind',
+  'hacs/repository/refresh', 'hacs/critical/acknowledge', 'custom/cancel', 'custom/change_unit', 'custom/turnon', 'custom/setvalue'];
 for (const type of deniedTypes) {
   assert.equal(rule('websocket', { type }), null, type);
 }
@@ -43,6 +45,7 @@ for (const name of unsafePaths)
   assert.equal(rule('websocket', {...moduleRead, name}), null, name);
 const approvedModule = new BrowserPermissions([rule('websocket', moduleRead)]);
 assert.equal(approvedModule.message({...moduleRead, name: 'other.yaml'}), false);
+assert.ok(rule('websocket', {type: 'playback_card/dashboard_summary'}), 'the integration name is not a joined operation');
 assert.equal(rule('websocket', { type: 'custom/get', password: 'secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: 'Bearer secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: Infinity }), null);
@@ -194,6 +197,7 @@ const corpus = [
   ['websocket', moduleRead],
   ['websocket', {...moduleRead, name: 'other.yaml'}],
   ['websocket', unrelated],
+  ['websocket', {type: 'playback_card/dashboard_summary'}],
   ...unsafePaths.map(name => ['websocket', {...moduleRead, name}]),
   ...deniedTypes.map(type => ['websocket', {type}]),
   ['websocket', { type: 'subscribe_condition', condition: { condition: 'state', entity_id: 'light.x', state: 'on' } }],

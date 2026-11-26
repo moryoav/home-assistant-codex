@@ -145,10 +145,13 @@ comes first requires another approval.
 Request IDs and object-key order do not change a WebSocket permission. Requests
 with hidden credentials, malformed query encoding, WebSocket path traversal,
 oversized details, or unsupported actions cannot be approved. If none of the blocked
-requests can be offered, the report explains why approval is unavailable. Known
-device controls, command dispatchers, writes (including names with `-`, `.` or
-camelCase), sign-in changes, URL signing, camera and ICE server setup, WebRTC
-signaling, redirects and arbitrary external access stay blocked. Approval cannot
+requests can be offered, the report explains why approval is unavailable. The
+policy blocks known sensitive commands and write-like names. A WebSocket
+operation word that begins with a write verb is blocked, including joined names
+such as `turnon`. For HTTP paths, the policy checks words separated by `-`, `.`
+or camelCase. Some reads can match those patterns. Sign-in changes, URL signing,
+camera and ICE server setup, WebRTC signaling, redirects and arbitrary external
+access stay blocked. Approval cannot
 widen the controller's name or parameter restrictions for Knob Swipe Navigation,
 Custom Icons, Browser Mod and event subscriptions. The controller and worker
 share these rules in `browser_permission_policy.json`.

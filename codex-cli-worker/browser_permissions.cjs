@@ -26,6 +26,12 @@ function writes(text) {
   return words(text).some(word => WRITE_WORDS.has(word));
 }
 
+/** WebSocket operation words can join the verb and its object with no separator. */
+function websocketWrites(type) {
+  const operation = type.slice(type.indexOf('/') + 1);
+  return writes(type) || words(operation).some(word => POLICY.write_words.some(verb => word.startsWith(verb)));
+}
+
 /** Serialize JSON with stable object-key order, preserving arrays and values. */
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -66,7 +72,7 @@ function rule(kind, value) {
     request = { type: 'map_tiles/raster' };
   } else if (kind === 'websocket') {
     if (!value || typeof value.type !== 'string' || value.type.length > LIMITS.type_length || !TYPE.test(value.type) ||
-        writes(value.type) || DENIED_TYPE.test(value.type) || POLICY.denied_websocket_types.includes(value.type) ||
+        websocketWrites(value.type) || DENIED_TYPE.test(value.type) || POLICY.denied_websocket_types.includes(value.type) ||
         SENSITIVE.test(value.type)) return null;
     request = Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'id'));
   } else if (kind === 'http') {
@@ -114,7 +120,7 @@ function websocketBlockReason(message) {
     return 'WebRTC server setup can return TURN credentials. Approval is unavailable.';
   if (type === 'media_source/resolve_media')
     return 'This command can return a signed URL. Approval is unavailable.';
-  if (writes(type)) return 'Device actions and write-like commands are not supported by this observational browser. Approval is unavailable.';
+  if (websocketWrites(type)) return 'Device actions and write-like commands are not supported by this observational browser. Approval is unavailable.';
   if (DENIED_TYPE.test(type) || POLICY.denied_websocket_types.includes(type))
     return 'This command is restricted during dashboard verification. Approval is unavailable.';
   return 'This request may contain credentials, an unsafe path, or details that exceed the review limits. Approval is unavailable.';

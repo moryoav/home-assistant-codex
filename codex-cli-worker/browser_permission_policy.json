@@ -24,7 +24,9 @@
     "trigger", "toggle", "turn", "send", "offer", "candidate", "publish", "write", "reset", "clear", "purge", "wipe",
     "flash", "upgrade", "apply", "enable", "disable", "arm", "disarm", "unlock", "rename", "import", "migrate",
     "upload", "edit", "modify", "patch", "put", "post", "insert", "replace", "reconfigure", "activate", "deactivate",
-    "approve", "dismiss", "revoke", "configure", "promote", "reorder", "restore", "sign", "uninstall"
+    "approve", "dismiss", "revoke", "configure", "promote", "reorder", "restore", "sign", "uninstall",
+    "acknowledge", "bind", "cancel", "change", "close", "lock", "move", "mute", "open", "pair", "pause", "play",
+    "refresh", "resume", "seek", "select", "unbind", "unmute", "unpair", "volume"
   ],
   "denied_websocket_prefixes": [
     "auth", "config", "hassio", "cloud", "stream", "backup", "person", "automation", "script",

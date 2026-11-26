@@ -39,7 +39,8 @@ CREDENTIAL = re.compile(
     f"bearer{POLICY['whitespace']}|(?:{_any(POLICY['credential_value_names'])}){POLICY['whitespace']}*[=:]", FLAGS)
 PARENT_PATH = re.compile(POLICY["websocket_parent_path_pattern"], FLAGS)
 DENIED_TYPE = re.compile(f"^(?:{_any(POLICY['denied_websocket_prefixes'])})(?:/|$)")
-WRITE_WORDS = frozenset(POLICY["write_words"])
+WRITE_PREFIXES = tuple(POLICY["write_words"])
+WRITE_WORDS = frozenset(WRITE_PREFIXES)
 
 
 def words(text):
@@ -50,6 +51,12 @@ def words(text):
 def writes(text):
     """Return whether any word of a command or path names a known write."""
     return any(word in WRITE_WORDS for word in words(text))
+
+
+def _websocket_writes(name):
+    """Match joined write verbs in the operation, excluding the integration prefix."""
+    operation = name.split("/", 1)[-1]
+    return writes(name) or any(word.startswith(WRITE_PREFIXES) for word in words(operation))
 
 
 def dashboard_key(path):
@@ -102,7 +109,7 @@ def valid_rule(value):
     elif kind == "websocket":
         name = request.get("type")
         if (not isinstance(name, str) or len(name) > LIMITS["type_length"] or "id" in request
-            or not TYPE.fullmatch(name) or writes(name) or DENIED_TYPE.match(name)
+            or not TYPE.fullmatch(name) or _websocket_writes(name) or DENIED_TYPE.match(name)
             or name in POLICY["denied_websocket_types"] or SENSITIVE.search(name)):
             return None
     else:

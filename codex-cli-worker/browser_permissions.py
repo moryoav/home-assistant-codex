@@ -38,6 +38,9 @@ SENSITIVE = re.compile(_any(POLICY["sensitive_names"]), FLAGS)
 CREDENTIAL = re.compile(
     f"bearer{POLICY['whitespace']}|(?:{_any(POLICY['credential_value_names'])}){POLICY['whitespace']}*[=:]", FLAGS)
 PARENT_PATH = re.compile(POLICY["websocket_parent_path_pattern"], FLAGS)
+ABSOLUTE_PATH = re.compile(f"^{POLICY['whitespace']}*{POLICY['websocket_absolute_path_pattern']}", FLAGS)
+PATH_FIELDS = frozenset(POLICY["websocket_path_fields"])
+ESCAPED_BYTE = re.compile(r"%([0-9a-f]{2})", FLAGS)
 DENIED_TYPE = re.compile(f"^(?:{_any(POLICY['denied_websocket_prefixes'])})(?:/|$)")
 WRITE_PREFIXES = tuple(POLICY["write_words"])
 WRITE_WORDS = frozenset(WRITE_PREFIXES)
@@ -69,16 +72,32 @@ def _entry_id(installation, path, rule_id):
     return hashlib.sha256(f"{installation}\n{path}\n{rule_id}".encode()).hexdigest()
 
 
-def _inspectable(item, websocket, depth=0):
-    """Reject credential-like data, WebSocket path traversal, and excessive nesting."""
+def _unsafe_websocket_path(value, path_field):
+    """Check for unsafe filesystem syntax through bounded percent decoding."""
+    if len(value) > LIMITS["request_bytes"]:
+        return True
+    for _ in range(POLICY["websocket_path_decodings"] + 1):
+        if PARENT_PATH.search(value) or (path_field and ABSOLUTE_PATH.match(value)):
+            return True
+        decoded = ESCAPED_BYTE.sub(lambda match: chr(int(match[1], 16)), value)
+        if decoded == value:
+            return False
+        value = decoded
+    return True
+
+
+def _inspectable(item, websocket, depth=0, path_field=False):
+    """Reject credential-like data, unsafe WebSocket paths, and excessive nesting."""
     if depth > LIMITS["depth"]:
         return False
     if isinstance(item, str):
-        return not CREDENTIAL.search(item) and not (websocket and PARENT_PATH.search(item))
+        return not CREDENTIAL.search(item) and not (websocket and _unsafe_websocket_path(item, path_field))
     if isinstance(item, dict):
-        return all(not SENSITIVE.search(key) and _inspectable(child, websocket, depth + 1) for key, child in item.items())
+        return all(not SENSITIVE.search(key) and _inspectable(
+            child, websocket, depth + 1, path_field or (websocket and not PATH_FIELDS.isdisjoint(words(key)[-1:]))
+        ) for key, child in item.items())
     if isinstance(item, list):
-        return all(_inspectable(child, websocket, depth + 1) for child in item)
+        return all(_inspectable(child, websocket, depth + 1, path_field) for child in item)
     if type(item) is int:
         return abs(item) <= 2 ** 53 - 1
     if type(item) is float:

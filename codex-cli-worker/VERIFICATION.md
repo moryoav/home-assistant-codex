@@ -144,7 +144,8 @@ Repeated query parameters retain their value order, so changing which value
 comes first requires another approval.
 Request IDs and object-key order do not change a WebSocket permission. Requests
 with hidden credentials, malformed query encoding, WebSocket path traversal,
-oversized details, or unsupported actions cannot be approved. If none of the blocked
+absolute filenames or filesystem paths in WebSocket path fields, oversized
+details, or unsupported actions cannot be approved. If none of the blocked
 requests can be offered, the report explains why approval is unavailable. The
 policy blocks known sensitive commands and write-like names. A WebSocket
 operation word that begins with a write verb is blocked, including joined names

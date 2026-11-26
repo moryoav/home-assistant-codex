@@ -13,6 +13,8 @@ const HTTP_PATH = new RegExp(`^(?:${POLICY.http_path_pattern})$`);
 const SENSITIVE = new RegExp(any(POLICY.sensitive_names), 'i');
 const CREDENTIAL = new RegExp(`bearer${POLICY.whitespace}|(?:${any(POLICY.credential_value_names)})${POLICY.whitespace}*[=:]`, 'i');
 const PARENT_PATH = new RegExp(POLICY.websocket_parent_path_pattern, 'i');
+const ABSOLUTE_PATH = new RegExp(`^${POLICY.whitespace}*${POLICY.websocket_absolute_path_pattern}`, 'i');
+const PATH_FIELDS = new Set(POLICY.websocket_path_fields);
 const DENIED_TYPE = new RegExp(`^(?:${any(POLICY.denied_websocket_prefixes)})(?:/|$)`);
 const WRITE_WORDS = new Set(POLICY.write_words);
 
@@ -43,13 +45,26 @@ function canonical(value) {
 /** Order strings by code unit, so a rule's fingerprint never depends on the locale. */
 const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** Refuse credential-like data, WebSocket path traversal, and excessive nesting. */
-function inspectable(value, websocket, depth = 0) {
+/** Check for unsafe filesystem syntax through bounded percent decoding. */
+function unsafeWebsocketPath(value, pathField) {
+  if (value.length > LIMITS.request_bytes) return true;
+  for (let pass = 0; pass <= POLICY.websocket_path_decodings; pass++) {
+    if (PARENT_PATH.test(value) || (pathField && ABSOLUTE_PATH.test(value))) return true;
+    const decoded = value.replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    if (decoded === value) return false;
+    value = decoded;
+  }
+  return true;
+}
+
+/** Refuse credential-like data, unsafe WebSocket paths, and excessive nesting. */
+function inspectable(value, websocket, depth = 0, pathField = false) {
   if (depth > LIMITS.depth) return false;
   if (typeof value === 'number') return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
-  if (typeof value === 'string') return !CREDENTIAL.test(value) && !(websocket && PARENT_PATH.test(value));
+  if (typeof value === 'string') return !CREDENTIAL.test(value) && !(websocket && unsafeWebsocketPath(value, pathField));
   if (!value || typeof value !== 'object') return true;
-  return Object.entries(value).every(([key, item]) => !SENSITIVE.test(key) && inspectable(item, websocket, depth + 1));
+  return Object.entries(value).every(([key, item]) => !SENSITIVE.test(key) &&
+    inspectable(item, websocket, depth + 1, pathField || (websocket && PATH_FIELDS.has(words(key).at(-1)))));
 }
 
 /** Accept only bounded raster coordinates and the map-specific token parameter. */

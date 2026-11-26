@@ -41,12 +41,18 @@ for (const message of [moduleRead, unrelated]) {
   assert.equal(approved.message({...message, id: 2}), true);
   assert.equal(approved.message({...message, extra: true}), false);
 }
-const unsafePaths = ['../config.yaml', 'modules/../config.yaml', '..\\config.yaml', '%2e.%2fconfig.yaml', '..\n', '..\r\n'];
+const unsafePaths = ['../config.yaml', 'modules/../config.yaml', '..\\config.yaml', '%2e.%2fconfig.yaml', '..\n', '..\r\n',
+  '/tmp/fixture.yaml', 'C:\\fixture\\settings.yaml', '~/.fixture/settings.yaml', '\\\\fixture\\share\\settings.yaml',
+  '%252e%252e%252fsettings.yaml', '%25%32%65%25%32%65%25%32%66settings.yaml', '%252ftmp%252fsettings.yaml'];
 for (const name of unsafePaths)
   assert.equal(rule('websocket', {...moduleRead, name}), null, name);
 const approvedModule = new BrowserPermissions([rule('websocket', moduleRead)]);
 assert.equal(approvedModule.message({...moduleRead, name: 'other.yaml'}), false);
 assert.ok(rule('websocket', {type: 'playback_card/dashboard_summary'}), 'the integration name is not a joined operation');
+const relativeValues = {type: 'custom/read', fileName: 'modules/settings.yaml', url: '/local/dashboard.js'};
+const unsafeNestedPath = {type: 'custom/read', selection: {module_files: ['/tmp/fixture.yaml']}};
+assert.ok(rule('websocket', relativeValues));
+assert.equal(rule('websocket', unsafeNestedPath), null);
 assert.equal(rule('websocket', { type: 'custom/get', password: 'secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: 'Bearer secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: Infinity }), null);
@@ -200,6 +206,8 @@ const corpus = [
   ['websocket', {...moduleRead, name: 'other.yaml'}],
   ['websocket', unrelated],
   ['websocket', {type: 'playback_card/dashboard_summary'}],
+  ['websocket', relativeValues],
+  ['websocket', unsafeNestedPath],
   ...unsafePaths.map(name => ['websocket', {...moduleRead, name}]),
   ...deniedTypes.map(type => ['websocket', {type}]),
   ['websocket', { type: 'subscribe_condition', condition: { condition: 'state', entity_id: 'light.x', state: 'on' } }],

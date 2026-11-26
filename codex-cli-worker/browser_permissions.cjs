@@ -82,6 +82,11 @@ function raster(url) {
     url.searchParams.getAll('token').length <= 1;
 }
 
+/** Check API paths that require more authority than a browser grant. */
+function restrictedHttpPath(path) {
+  return POLICY.denied_http_prefixes.some(prefix => path === prefix || path.startsWith(`${prefix}/`));
+}
+
 /**
  * Build an exact rule for an inspectable request the owner may choose to trust.
  * Commands the controller restricts by name or parameters (knob
@@ -101,7 +106,7 @@ function rule(kind, value) {
     if (!value || !['GET', 'HEAD'].includes(value.method) || typeof value.path !== 'string' ||
         value.path.length > LIMITS.path_length || !HTTP_PATH.test(value.path) || /(?:^|\/)\.{1,2}(?:\/|$)/.test(value.path) ||
         value.path.includes('//') || writes(value.path) || SENSITIVE.test(value.path) ||
-        POLICY.denied_http_prefixes.some(prefix => value.path === prefix || value.path.startsWith(`${prefix}/`)) ||
+        restrictedHttpPath(value.path) ||
         !Array.isArray(value.query) || value.query.length > LIMITS.query_pairs ||
         value.query.some(pair => !Array.isArray(pair) || pair.length !== 2 || pair.some(item => typeof item !== 'string') || SENSITIVE.test(pair[0]))) return null;
     request = { method: value.method, path: value.path, query: value.query };
@@ -111,6 +116,28 @@ function rule(kind, value) {
   if (Buffer.byteLength(snapshot) > LIMITS.request_bytes) return null;
   const id = createHash('sha256').update(`${kind}\n${snapshot}`).digest('hex');
   return { id, kind, request: snapshot };
+}
+
+/** Normalize an eligible same-origin HTTP request without reporting its query. */
+function httpRule(url, origin, method) {
+  if (url.origin !== origin || !['GET', 'HEAD'].includes(method) || /%|\\/.test(url.pathname)) return null;
+  if (raster(url)) return rule('map_tiles');
+  if (url.pathname.startsWith('/api/map_tiles/')) return null;
+  const query = [...url.searchParams.entries()];
+  // Malformed escapes decode to U+FFFD, so one grant would match several raw queries.
+  if (query.some(pair => pair.some(item => item.includes('�')))) return null;
+  // Stable key sorting preserves which repeated value a handler reads first.
+  query.sort((a, b) => byCodeUnit(a[0], b[0]));
+  return rule('http', { method, path: url.pathname, query });
+}
+
+/** Explain a refused Core API read without disclosing its query string. */
+function httpBlockReason(url, origin, method) {
+  if (httpRule(url, origin, method)) return 'Review this exact request for approval.';
+  if ([...url.searchParams.keys()].some(key => SENSITIVE.test(key)))
+    return 'This request contains a sensitive query parameter. Approval is unavailable.';
+  if (restrictedHttpPath(url.pathname)) return 'This API path is restricted during dashboard verification. Approval is unavailable.';
+  return 'This API read cannot be safely offered for approval.';
 }
 
 /** Explain a controller refusal without treating every unrecognized read as a write. */
@@ -278,15 +305,7 @@ class BrowserPermissions {
 
   /** Authorize same-origin GET/HEAD requests only; external and signed URLs stay blocked. */
   http(url, origin, method, viewport) {
-    if (url.origin !== origin || !['GET', 'HEAD'].includes(method) || /%|\\/.test(url.pathname)) return false;
-    if (raster(url)) return this.check(rule('map_tiles'), viewport);
-    if (url.pathname.startsWith('/api/map_tiles/')) return false;
-    const query = [...url.searchParams.entries()];
-    // Malformed escapes decode to U+FFFD, so one grant would match several raw queries.
-    if (query.some(pair => pair.some(item => item.includes('�')))) return false;
-    // Stable key sorting preserves which repeated value a handler reads first.
-    query.sort((a, b) => byCodeUnit(a[0], b[0]));
-    return this.check(rule('http', { method, path: url.pathname, query }), viewport);
+    return this.check(httpRule(url, origin, method), viewport);
   }
 
   /** Return bounded evidence without including grants or any token values. */
@@ -295,4 +314,5 @@ class BrowserPermissions {
   }
 }
 
-module.exports = { BrowserPermissions, CommandTracker, LIMITS, POLICY, canonical, rule, validate, raster, writes, boundedResult, websocketBlockReason };
+module.exports = { BrowserPermissions, CommandTracker, LIMITS, POLICY, canonical, rule, validate, raster, writes, boundedResult,
+  httpBlockReason, websocketBlockReason };

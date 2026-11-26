@@ -1,7 +1,7 @@
 // A bounded, observational HA browser. No click, evaluate, or arbitrary URL tool.
 const { chromium } = require('playwright-core');
 const { ResourcePolicy, createExternalFetcher } = require('./browser_resources.cjs');
-const { BrowserPermissions, CommandTracker, LIMITS, raster, boundedResult, websocketBlockReason } = require('./browser_permissions.cjs');
+const { BrowserPermissions, CommandTracker, LIMITS, raster, boundedResult, httpBlockReason, websocketBlockReason } = require('./browser_permissions.cjs');
 
 const READ_MESSAGES = new Set([
   'get_config', 'get_states', 'get_services', 'auth/current_user', 'supported_features',
@@ -135,7 +135,7 @@ async function inspect(input) {
   const conditionBudget = {active: 0, limit: LIMITS.condition_subscriptions};
   let omitted = 0;
   let requestsBlocked = false;
-  let websocketRequestsBlocked = false;
+  let approvalRequestsBlocked = false;
   const policy = new ResourcePolicy(origin, input.resources);
   const permissions = new BrowserPermissions(input.permissions);
   let mapToken;
@@ -160,7 +160,7 @@ async function inspect(input) {
   const add = (list, value, kind = list === errors ? 'dashboard' : 'policy') => {
     if (list === blocked) {
       requestsBlocked = true;
-      if (kind === 'policy') websocketRequestsBlocked = true;
+      if (kind === 'policy') approvalRequestsBlocked = true;
     }
     const message = String(value).slice(0, 300), key = `${kind}:${message}`;
     let finding = findings.get(key);
@@ -173,7 +173,7 @@ async function inspect(input) {
     if (activeViewport && !finding.viewports.includes(activeViewport.name)) finding.viewports.push(activeViewport.name);
   };
   /** Return the errors, blocked items, and findings gathered so far. */
-  const evidence = () => ({errors, blocked, websocket_requests_blocked: websocketRequestsBlocked, findings: [...findings.values()],
+  const evidence = () => ({errors, blocked, approval_requests_blocked: approvalRequestsBlocked, findings: [...findings.values()],
     findings_omitted: omitted, ...permissions.evidence()});
   const policyNote = () => requestsBlocked
     ? ' Inspection policy blocks limit this capture. A blocked request is not necessarily a write or a fault on another device. Each WebSocket block explains whether approval is available.' : '';
@@ -210,7 +210,10 @@ async function inspect(input) {
       }
       if (!allowRequest(url, origin, req.method(), input.path) && !policy.local(url, req.method(), req.resourceType()) &&
           !permissions.http(url, origin, req.method(), activeViewport?.name)) {
-        add(blocked, `${req.method()} ${resourceLabel(url)}`, 'resource');
+        const apiRead = url.origin === origin && ['GET', 'HEAD'].includes(req.method()) && url.pathname.startsWith('/api/');
+        const reason = apiRead ? `: ${httpBlockReason(url, origin, req.method())}` : '';
+        if (apiRead) approvalRequestsBlocked = true;
+        add(blocked, `${req.method()} ${resourceLabel(url)}${reason}`, 'resource');
         if (blockedURLs.size < 256) blockedURLs.add(url.href);
         return route.abort('blockedbyclient').catch(() => {});
       }

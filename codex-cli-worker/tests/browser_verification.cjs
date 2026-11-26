@@ -84,6 +84,7 @@ async function main() {
   const redirectTarget = http.createServer((_request, response) => { redirectedRequests++; response.end('external'); });
   await new Promise(resolve => redirectTarget.listen(0, '127.0.0.1', resolve));
   let bad = false, reject = false, external = false, permissionRequests = false, malformedMap = false, busyReads = true, deniedRead = false, fillConditions = false;
+  let restrictedApiReads = false;
   const server = http.createServer((request, response) => {
     requests.push(request.url);
     if (request.url.startsWith('/api/map_tiles/raster/')) {
@@ -173,6 +174,8 @@ async function main() {
             ${busyReads ? `for (let index = 0; index < 650; index++) ids.lastPing = send({type:'ping'});` : ''}
             await fetch('/api/states/light.kitchen', {headers:{Authorization:'Bearer '+token.access_token}});
             await fetch('/api/calendars/calendar.fixture?start=2026-01-01&end=2026-01-02', {headers:{Authorization:'Bearer '+token.access_token}});
+            ${restrictedApiReads ? `fetch('/api/config/fixture').catch(()=>{});
+            fetch('/api/custom/data?token=fixture-sensitive-query').catch(()=>{});` : ''}
             ${bad ? `send({type:'call_service',domain:'light',service:'turn_on'});
             // A reused ID is refused, as Core would, and the connection keeps working.
             ws.send(JSON.stringify({id:1,type:'get_states'}));
@@ -337,6 +340,7 @@ async function main() {
     permissionRequests = true;
     const pending = await inspect(input);
     assert.equal(pending.permission_candidates.length, 3, JSON.stringify(pending));
+    assert(pending.blocked.some(item => item.startsWith('GET /api/custom/data:') && item.includes('Review this exact request')));
     assert(!pending.permission_candidates.some(item => item.request.includes('subscribe_condition')));
     const moduleCandidate = pending.permission_candidates.find(item => item.kind === 'websocket');
     assert.deepEqual(JSON.parse(moduleCandidate.request), {type: 'bubble_card_tools/read_module', name: 'config.yaml'});
@@ -407,6 +411,14 @@ async function main() {
     assert(!requests.some(url => url.startsWith('/api/services')));
     assert(!second.permission_candidates.some(item => item.kind === 'websocket'), 'unsupported WebSocket operations must not be offered for approval');
     bad = false;
+    restrictedApiReads = true;
+    const apiOnly = await inspect(input);
+    assert.equal(apiOnly.approval_requests_blocked, true);
+    assert.deepEqual(apiOnly.permission_candidates, []);
+    assert(apiOnly.blocked.some(item => item.startsWith('GET /api/config/fixture:') && item.includes('API path is restricted')));
+    assert(apiOnly.blocked.some(item => item.startsWith('GET /api/custom/data:') && item.includes('sensitive query parameter')));
+    assert(!JSON.stringify(apiOnly).includes('fixture-sensitive-query'));
+    restrictedApiReads = false;
     fillConditions = true;
     const beforeConditions = upstream.filter(type => type === 'subscribe_condition').length;
     const limited = await inspect(input);

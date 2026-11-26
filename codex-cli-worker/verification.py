@@ -526,7 +526,7 @@ class Verification:
                     if len(output) > 65536:
                         raise ValueError("Browser output limit exceeded")
                     result = json.loads(output)
-                    websocket_requests_blocked = result.pop("websocket_requests_blocked", False)
+                    approval_requests_blocked = result.pop("approval_requests_blocked", False)
                     # Only complete, inspectable rules from the controller are
                     # offered. Redacted/truncated requests remain blocked, and
                     # are counted so the review says some were left out.
@@ -545,7 +545,7 @@ class Verification:
                     elif raw:
                         # An older integration can't identify the installation approvals bind to.
                         result["permission_review_unavailable"] = INTEGRATION_UPDATE_NOTE
-                    if (not retry and not candidates and (websocket_requests_blocked or omitted)
+                    if (not retry and not candidates and (approval_requests_blocked or omitted)
                         and "permission_review_unavailable" not in result):
                         result["browser_approval_empty"] = True
                     result.update(permission_candidates=candidates, permission_scope=installation,

@@ -996,7 +996,7 @@ function renderVerification(turn, taskId) {
     if (check.checked_at) row.append(textNode("small", dateLabel(check.checked_at, true)));
     if (check.permission_decision) {
       const names = (check.permission_decision.approved || []).map(item => item.label).join(", ");
-      row.append(textNode("p", `${check.permission_decision.remember ? "Remembered for this dashboard" : "Allowed for this retry"}: ${names}`));
+      row.append(textNode("p", `${check.permission_decision.remember ? "Remembered for this dashboard" : "Allowed for this inspection and its retries"}: ${names}`));
       const kept = (check.permission_decision.carried || []).map(item => item.label).join(", ");
       if (kept) row.append(textNode("p", `Still allowed from earlier in this exchange: ${kept}`));
     }
@@ -1033,7 +1033,7 @@ function renderBrowserPermissions(check, turn, taskId) {
   const panel = textNode(onlyDiagnostics ? "details" : "div", "", "browser-permission-review");
   panel.append(onlyDiagnostics ? textNode("summary", "Optional diagnostic requests")
     : textNode("h4", "Review blocked browser requests"));
-  panel.append(textNode("p", "Review the exact requests before approving. Any approved command can have side effects even with the inspection account."));
+  panel.append(textNode("p", "Any approved command can have side effects. Approval covers every matching request on desktop and mobile, including later retries of this inspection."));
   const fields = document.createElement("fieldset");
   fields.append(textNode("legend", `Additional access for ${check.path}`));
   const diagnostics = textNode("details", "", "browser-permission-details");

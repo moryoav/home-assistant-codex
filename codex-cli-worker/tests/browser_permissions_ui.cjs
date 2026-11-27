@@ -36,6 +36,7 @@ async function task(page) {
     const panel = await inspection(page);
     const allow = panel.getByRole('button', {name: 'Allow selected and retry', exact: true});
     assert.equal(await allow.isDisabled(), true);
+    assert.equal(await panel.getByText(/every matching request on desktop and mobile, including later retries/).isVisible(), true);
     await page.locator('#message').fill('Keep my unsent draft');
     await panel.getByRole('checkbox', {name: 'Select all resource requests', exact: true}).check();
     const module = panel.getByRole('checkbox', {name: 'WebSocket bubble_card_tools/read_module', exact: true});
@@ -115,7 +116,7 @@ async function task(page) {
     await once.getByRole('checkbox', {name: 'WebSocket bubble_card_tools/read_module', exact: true}).check();
     await once.getByRole('checkbox', {name: 'WebSocket frontend/set_user_data', exact: true}).check();
     await once.getByRole('button', {name: 'Allow selected and retry', exact: true}).click();
-    await page.getByText('Allowed for this retry:', {exact: false}).waitFor();
+    await page.getByText('Allowed for this inspection and its retries:', {exact: false}).waitFor();
     const single = await task(page);
     assert.equal(single.verification.at(-1).status, 'captured');
     assert.equal(single.verification.at(-1).permission_candidates.length, 1);

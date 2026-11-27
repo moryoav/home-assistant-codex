@@ -61,10 +61,6 @@ Assistant validates the condition values. Unfamiliar condition types still need
 review. At most 64 condition subscriptions can be active across the inspection's
 connections at once. A failed subscription, successful unsubscription, or closed
 connection releases its slots. This resource limit cannot be raised by approval.
-Knob Swipe Navigation's configuration and rotation subscriptions are
-also allowed automatically because they only read configuration or listen for
-events. Reporting navigation results requires owner approval because it updates
-the integration's state.
 
 Core versions before 2026.10 also require administrator access for
 `subscribe_condition`. The controller allows supported read-only predicates
@@ -156,9 +152,8 @@ Browser Mod remains separate. Its `connect` handler can update stored browser
 details and attach a registered browser to its command channel, so it needs
 dedicated support rather than a generic approval. A `zha_event` subscription is
 read-only, but Home Assistant restricts that event stream to administrators.
-The inspection browser keeps its read-only account, so this subscription is
-unavailable even with user approval. Listening through the supported knob
-rotation subscription does not require access to that administrator event stream.
+The inspection browser keeps its read-only account, so Home Assistant rejects
+this subscription even after approval.
 
 **Load raster map tiles** is one bounded permission for the map-only token and
 valid raster tile coordinates, rather than a permission per image URL. The real
@@ -231,17 +226,14 @@ Older integration versions support the original built-in paths but cannot
 supply the registered route list.
 
 Core supplies registered static file and directory URLs, never filesystem paths.
-This allows assets such as Browser Mod, custom icons, navigation modules, and
-WebRTC card scripts without granting access to arbitrary integration GET endpoints.
-Loading a script does not permit its service calls, writes, or unsupported APIs.
+This allows assets such as Browser Mod, custom icons, and WebRTC card scripts
+without granting access to arbitrary integration GET endpoints. Requests from
+loaded scripts follow the same approval rules.
 The read-only `recorder/statistic_during_period` and `camera/capabilities`
 commands are supported.
 Custom Icons' active-set, list, cache, and single-icon reads are supported with
 bounded set/icon names; icon selection and download operations remain blocked.
-Knob Swipe Navigation's configuration read and passive rotation subscriptions
-are supported. Its navigation-result writes remain blocked, as do Browser Mod
-connection/registration requests. Features depending on those blocked operations
-may still report restricted requests.
+Browser Mod connection and registration requests need separate support.
 
 Same-origin scripts and stylesheets explicitly registered as Core frontend modules
 or Lovelace resources can also load through custom HTTP views. Only the exact

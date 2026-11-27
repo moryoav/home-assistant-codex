@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.84
+
+- Added approval for unfamiliar Home Assistant WebSocket requests during dashboard verification, including custom-card module reads.
+- Showed exact parameters, required individual selection for WebSocket requests, and explained how approvals apply across screenshots and retries.
+- Grouped optional diagnostic requests so they cannot crowd out other approvals.
+
+Update the worker app to **0.1.84** for these changes. The integration is also available at **0.1.84**.
+
 ## 0.1.83
 
 - Added GPT-6.2 Sol and GPT-6.2 Astra to the worker app options and the chat model picker, with reasoning levels from Low through Ultra.

@@ -1,5 +1,4 @@
-// User-granted exceptions for one Core installation and dashboard. This module
-// excludes known writes, credentials, signing, and camera signaling.
+// Exact owner grants for one Core installation and dashboard.
 // browser_permission_policy.json holds the rules the worker also enforces.
 const { createHash } = require('node:crypto');
 const POLICY = require('./browser_permission_policy.json');
@@ -12,8 +11,7 @@ const TYPE = new RegExp(`^(?:${POLICY.type_pattern})$`);
 const HTTP_PATH = new RegExp(`^(?:${POLICY.http_path_pattern})$`);
 const SENSITIVE = new RegExp(any(POLICY.sensitive_names), 'i');
 const CREDENTIAL = new RegExp(`bearer${POLICY.whitespace}|(?:${any(POLICY.credential_value_names)})${POLICY.whitespace}*[=:]`, 'i');
-const READ = new RegExp(`(?:^|/)(?:${any(POLICY.read_prefixes)})(?:_|$)|/(?:${any(POLICY.read_suffixes)})$`);
-const DENIED_TYPE = new RegExp(`^(?:${any(POLICY.denied_websocket_prefixes)})(?:/|$)`);
+const RESERVED_TYPE = new RegExp(`^(?:${any(POLICY.reserved_websocket_prefixes)})(?:/|$)`);
 const WRITE_WORDS = new Set(POLICY.write_words);
 
 /** Split a command or path into lowercase words at punctuation and camelCase. */
@@ -55,10 +53,8 @@ function raster(url) {
 }
 
 /**
- * Build a rule only for eligible reads; an unknown handler is still a trust
- * decision. Commands the controller restricts by name or parameters (knob
- * handlers, icon sets, event subscriptions, Browser Mod) are never eligible, so
- * an approval cannot widen those restrictions.
+ * Build a rule for an exact request the owner can review. The controller
+ * reserves credentials, separate transports, and the bounded icon handlers.
  */
 function rule(kind, value) {
   let request;
@@ -66,8 +62,7 @@ function rule(kind, value) {
     request = { type: 'map_tiles/raster' };
   } else if (kind === 'websocket') {
     if (!value || typeof value.type !== 'string' || value.type.length > LIMITS.type_length || !TYPE.test(value.type) ||
-        writes(value.type) || DENIED_TYPE.test(value.type) || POLICY.denied_websocket_types.includes(value.type) ||
-        SENSITIVE.test(value.type) || !READ.test(value.type)) return null;
+        RESERVED_TYPE.test(value.type) || SENSITIVE.test(value.type)) return null;
     request = Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'id'));
   } else if (kind === 'http') {
     if (!value || !['GET', 'HEAD'].includes(value.method) || typeof value.path !== 'string' ||
@@ -85,7 +80,7 @@ function rule(kind, value) {
   return { id, kind, request: snapshot };
 }
 
-/** Explain a controller refusal without treating every unrecognized read as a write. */
+/** Explain a held request or a constraint of the inspection. */
 function websocketBlockReason(message) {
   const type = message.type;
   if (typeof type !== 'string') return 'Invalid request type. Approval is unavailable.';
@@ -93,24 +88,14 @@ function websocketBlockReason(message) {
     return 'Browser Mod can update stored browser details and attach a command channel. It needs separate support; approval is unavailable.';
   if (type === 'browser_mod' || type.startsWith('browser_mod/'))
     return 'Browser Mod needs separate support for this inspection. Approval is unavailable.';
-  if (type === 'subscribe_events')
-    return message.event_type === 'zha_event'
-      ? 'Listening is read-only, but Home Assistant restricts this event stream to administrators. User approval cannot grant administrator access.'
-      : 'This event stream is outside the supported event allowlist. Listening is not a write, but approval is unavailable.';
   if (rule('websocket', message))
-    return type === 'subscribe_condition'
-      ? 'This condition is outside the automatic built-in read checks. Review this exact request for approval.'
-      : 'This request is outside the automatic read allowlist. Review this exact request for approval.';
-  if (type === 'knob_swipe_navigation/navigation_result')
-    return 'Reporting navigation results updates integration state. Approval is unavailable in this observational browser.';
-  if (type === 'knob_swipe_navigation/subscribe_rotations' || type === 'knob_swipe_navigation/config')
-    return 'This read handler accepts only id and type. Extra parameters are unsupported; approval is unavailable.';
+    return 'Held for your approval. Review this exact request in the approval list if included.';
   if (type === 'auth' || type.startsWith('auth/'))
     return 'Authentication changes and URL signing need separate support. Approval is unavailable.';
   if (type === 'camera/stream' || type === 'camera/webrtc' || type.startsWith('camera/webrtc/'))
     return 'Camera streaming and signaling need separate support. Approval is unavailable.';
-  if (writes(type)) return 'Device actions and write-like commands are not supported by this observational browser. Approval is unavailable.';
-  return 'This request is outside the supported read policy or cannot be safely reviewed. Approval is unavailable; this does not establish that it is a write.';
+  if (RESERVED_TYPE.test(type)) return 'This command is outside the inspection browser’s supported capabilities. Approval is unavailable.';
+  return 'Approval is unavailable for requests with unsupported formatting, oversized details, or credentials.';
 }
 
 /** Revalidate saved rules, including their fingerprint, at the enforcement boundary. */
@@ -230,7 +215,7 @@ class BrowserPermissions {
     return false;
   }
 
-  /** Authorize one exact WebSocket read or the bounded map capability. */
+  /** Authorize one exact WebSocket request or the bounded map capability. */
   message(message, viewport) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
     const map = message.type === 'map_tiles/access_token' && Object.keys(message).every(key => ['id', 'type'].includes(key));

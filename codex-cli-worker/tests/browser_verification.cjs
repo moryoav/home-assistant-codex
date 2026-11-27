@@ -145,8 +145,8 @@ async function main() {
             if (ws._ws) report('page_reached_core_socket');
             send({type:'get_states'});
             send({type:'weather/subscribe_forecast',entity_id:'weather.fixture',forecast_type:'daily'});
-            send({type:'call_service',domain:'system_log',service:'write'});
-            send({type:'call_service',domain:'persistent_notification',service:'create'});
+            ${busyReads || permissionRequests ? `send({type:'call_service',domain:'system_log',service:'write'});
+            send({type:'call_service',domain:'persistent_notification',service:'create'});` : ''}
             send({type:'knob_swipe_navigation/config'});
             send({type:'knob_swipe_navigation/subscribe_rotations'});
             for (const condition of ${JSON.stringify(readConditions)}) send({type:'subscribe_condition',condition});
@@ -155,7 +155,8 @@ async function main() {
             send({type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']});
             send({type:'camera/capabilities',entity_id:'camera.fixture'});
             ${permissionRequests ? `
-            send({type:'bubble_card_tools/list_modules'});
+            send({type:'bubble_card_tools/read_module',name:'config.yaml'});
+            send({type:'custom/dashboard_status'});
             ids.map = send({type:'map_tiles/access_token'});
             send({type:'auth/sign_path',path:'/api/camera_proxy/camera.fixture'});
             send({type:'call_service',domain:'light',service:'turn_on'});
@@ -219,7 +220,7 @@ async function main() {
       } else if (message.type === 'map_tiles/access_token') {
         if (malformedMap) malformedAt = Date.now();
         ws.send(JSON.stringify([...(malformedMap ? [null] : []), {id:message.id,type:'result',success:true,result:{token:'private-map-access'}}]));
-      } else if (deniedRead && message.type === 'get_states') {
+      } else if ((deniedRead && message.type === 'get_states') || (message.type === 'call_service' && message.domain === 'light')) {
         ws.send(JSON.stringify({id:message.id,type:'result',success:false,error:{code:'unauthorized'}}));
       } else ws.send(JSON.stringify({id:message.id,type:'result',success:true,result:message.type === 'lovelace/resources'
         ? [{url: '/integration-b/panel.mjs?version=456', type: 'module'},
@@ -235,7 +236,8 @@ async function main() {
     assert.equal(first.status, 'captured', JSON.stringify(first));
     assert.deepEqual(first.errors, []);
     assert.deepEqual(first.blocked, []);
-    assert.deepEqual(first.permission_candidates, [], 'ordinary conditions and knob subscriptions need no approvals');
+    assert.equal(first.permission_candidates.length, 2, 'only the diagnostic calls need approval');
+    assert(first.permission_candidates.every(item => JSON.parse(item.request).type === 'call_service'));
     assert.equal(requests.filter(url => url === '/api/states/sensor.busy_connection_survived').length, 2);
     busyReads = false;
     // Core's socket lives in the controller, never inside the page.
@@ -330,25 +332,31 @@ async function main() {
     }
     permissionRequests = true;
     const pending = await inspect(input);
-    assert.equal(pending.permission_candidates.length, 3, JSON.stringify(pending));
+    const selected = pending.permission_candidates.filter(item =>
+      !['system_log', 'persistent_notification'].includes(JSON.parse(item.request).domain));
+    assert.equal(pending.permission_candidates.length, 7, JSON.stringify(pending));
+    assert.equal(selected.length, 5);
     assert(!pending.permission_candidates.some(item => item.request.includes('subscribe_condition')));
-    assert(pending.blocked.some(item => item.includes('bubble_card_tools/list_modules:') && item.includes('Review this exact request for approval')));
+    assert(pending.blocked.some(item => item.includes('bubble_card_tools/read_module:') && item.includes('Held for your approval')));
     assert(!JSON.stringify(pending).includes('private-map-access'));
-    assert(!upstream.includes('bubble_card_tools/list_modules'));
-    const granted = await inspect({...input, permissions: pending.permission_candidates});
-    assert.equal(granted.permission_candidates.length, 0, JSON.stringify(granted));
-    assert.equal(granted.permissions_used.length, 3);
-    assert(upstream.includes('bubble_card_tools/list_modules'));
+    assert(!upstream.includes('bubble_card_tools/read_module'));
+    assert(!upstream.includes('custom/dashboard_status'));
+    assert(!upstream.includes('call_service'));
+    const granted = await inspect({...input, permissions: selected});
+    assert.equal(granted.permission_candidates.length, 2, JSON.stringify(granted));
+    assert.equal(granted.permissions_used.length, selected.length);
+    assert(upstream.includes('bubble_card_tools/read_module'));
+    assert(upstream.includes('custom/dashboard_status'));
+    assert(granted.errors.some(message => message.includes('call_service: unauthorized') && message.includes('Home Assistant denied access')));
     assert(upstream.includes('subscribe_condition'));
     assert(upstream.includes('map_tiles/access_token'));
     assert(!upstream.includes('auth/sign_path'));
-    assert(!upstream.includes('call_service'));
     assert.equal(requests.filter(url => url.startsWith('/api/map_tiles/raster/')).length, 2);
     assert.equal(requests.filter(url => url.startsWith('/api/custom/data')).length, 2);
     assert(!JSON.stringify(granted).includes('private-map-access'));
     assert(!requests.includes('/api/states/sensor.page_saw_real_credentials'), 'the real map token must stay out of page scripts');
     malformedMap = true;
-    const malformed = await inspect({...input, permissions: pending.permission_candidates});
+    const malformed = await inspect({...input, permissions: selected});
     assert(!requests.includes('/api/states/sensor.map_token_leaked'), 'malformed batches must never bypass token scrubbing');
     assert(malformed.errors.some(error => error.includes('Home Assistant sent an invalid frame')), JSON.stringify(malformed));
     // The controller closes Core's side at once instead of leaving it open until the page closes.
@@ -359,15 +367,16 @@ async function main() {
     assert.deepEqual(revoked.permission_candidates.map(item => item.id).sort(), pending.permission_candidates.map(item => item.id).sort());
     permissionRequests = false;
     bad = true;
+    const beforeBad = upstream.length;
     const second = await inspect(input);
     assert.equal(second.status, 'issues');
     assert(second.errors.some(error => error.includes('Custom element')));
     assert(second.errors.some(error => error.includes('HTTP 404')));
-    assert(second.blocked.some(item => item.startsWith('WebSocket call_service (light.turn_on):') && item.includes('Approval is unavailable')));
+    assert(second.blocked.some(item => item.startsWith('WebSocket call_service (light.turn_on):') && item.includes('Held for your approval')));
     assert(!second.blocked.some(item => item.includes('WebSocket knob_swipe_navigation/subscribe_rotations')));
-    assert(second.blocked.some(item => item.startsWith('WebSocket knob_swipe_navigation/navigation_result:') && item.includes('updates integration state')));
+    assert(second.blocked.some(item => item.startsWith('WebSocket knob_swipe_navigation/navigation_result:') && item.includes('Held for your approval')));
     assert(second.blocked.some(item => item.startsWith('WebSocket browser_mod/connect:') && item.includes('separate support')));
-    assert(second.blocked.some(item => item.startsWith('WebSocket subscribe_events (zha_event):') && item.includes('Listening is read-only') && item.includes('administrators')));
+    assert(second.blocked.some(item => item.startsWith('WebSocket subscribe_events (zha_event):') && item.includes('Held for your approval')));
     assert(second.blocked.some(item => item.startsWith('WebSocket camera/stream:') && item.includes('Approval is unavailable')));
     assert(second.blocked.some(item => item.startsWith('WebSocket recorder/clear_statistics:')));
     assert(second.blocked.includes('WebSocket get_states (invalid or reused request ID): Approval is unavailable.'));
@@ -382,14 +391,15 @@ async function main() {
     assert.equal(second.findings.find(item => item.message === 'Fixture custom card error').count, 2);
     assert(second.blocked.includes('Redirect /local/redirect.js'));
     assert.equal(redirectedRequests, 0);
-    assert(!upstream.includes('call_service'));
+    assert(!upstream.slice(beforeBad).includes('call_service'));
     assert(!upstream.includes('browser_mod/connect'));
     assert(!upstream.includes('subscribe_events'));
     assert(!upstream.includes('knob_swipe_navigation/navigation_result'));
     assert(!upstream.includes('camera/stream'));
     assert(!upstream.includes('recorder/clear_statistics'));
     assert(!requests.some(url => url.startsWith('/api/services')));
-    assert(!second.permission_candidates.some(item => item.kind === 'websocket'), 'unsupported WebSocket operations must not be offered for approval');
+    const reviewTypes = second.permission_candidates.filter(item => item.kind === 'websocket').map(item => JSON.parse(item.request).type);
+    assert.deepEqual(reviewTypes.sort(), ['call_service', 'knob_swipe_navigation/navigation_result', 'recorder/clear_statistics', 'subscribe_events']);
     bad = false;
     fillConditions = true;
     const beforeConditions = upstream.filter(type => type === 'subscribe_condition').length;

@@ -63,8 +63,8 @@ connections at once. A failed subscription, successful unsubscription, or closed
 connection releases its slots. This resource limit cannot be raised by approval.
 Knob Swipe Navigation's configuration and rotation subscriptions are
 also allowed automatically because they only read configuration or listen for
-events. Reporting navigation results remains blocked because it updates the
-integration's state.
+events. Reporting navigation results requires owner approval because it updates
+the integration's state.
 
 Core versions before 2026.10 also require administrator access for
 `subscribe_condition`. The controller allows supported read-only predicates
@@ -94,6 +94,8 @@ screenshots. Matching devices can add images beyond the two browser viewports.
 After an inspection, open its verification result and choose requests under
 **Review blocked browser requests**. Select individual requests or **Select all
 requests**, inspect their details, then choose **Allow selected and retry**.
+When a request has an action warning, the bulk selector skips it. You can select
+that request individually.
 Unselected requests stay blocked. **Keep blocked** closes the result without
 granting access. A batch is available only for the current exchange after tasks
 in every chat have finished, and can be approved once. Each exchange permits up
@@ -134,21 +136,20 @@ get each request's label. Update both the worker and integration for approval
 support. With an older integration, screenshots still work and the result asks
 you to update the integration before requests can be approved.
 
-User approval is a trust decision, not certification that an unfamiliar custom
-handler has no side effects. Generic exceptions cover bounded read-like WebSocket
-operations with their exact parameters, or exact same-origin GET/HEAD resources
-and query parameters. Changing the request parameters requires another approval.
-Repeated query parameters retain their value order, so changing which value
-comes first requires another approval.
-Request IDs and object-key order do not change a WebSocket permission. Requests
-with hidden credentials, malformed query encoding, oversized details, or
-unsupported actions cannot be approved. Known device controls, writes (also when
-the write word is separated by `-` or `.` or written in camelCase), sign-in
-changes, URL signing, camera WebRTC setup/signaling, redirects and arbitrary
-external access stay blocked. Commands the controller restricts by name or
-parameters (Knob Swipe Navigation, Custom Icons, Browser Mod and event
-subscriptions) cannot be widened by an approval. `browser_permission_policy.json`
-holds these rules for both the controller and the worker.
+Dashboard reads on the automatic list run immediately. The browser holds other
+reviewable WebSocket requests for the owner. The command name needs no read prefix.
+Approved requests run as the inspection account. Home Assistant still checks that
+account's permissions, and custom handlers can have side effects. Exceptions also
+cover exact same-origin GET/HEAD resources and query parameters. Changing the
+parameters or the order of repeated query values requires another approval.
+Request IDs and object-key order do not change a WebSocket permission.
+
+Requests with credentials or details outside the review limits stay blocked.
+The inspection reserves credential issuance, signed URLs, transports such as
+camera WebRTC and Browser Mod, and operations protected by built-in resource
+validation such as Custom Icons. Redirects and arbitrary external access stay
+blocked. The controller and worker share their rules in
+`browser_permission_policy.json`.
 
 Browser Mod remains separate. Its `connect` handler can update stored browser
 details and attach a registered browser to its command channel, so it needs
@@ -287,11 +288,9 @@ HTTP errors, and invalid dashboard templates still require separate fixes.
   integrations cause browser/log checks to report unavailable.
 - Authenticated browser HTTP requests stay on the Core origin and known read paths. WebSocket
   messages use an explicit read allowlist, plus exceptions the owner approves.
-  Request IDs must increase on each connection, as Core requires. Service calls,
-  saves, arbitrary event subscriptions, external navigation, and service workers
-  are blocked. External
-  assets use the separate restricted transport described above. Unsupported
-  custom-card requests are reported instead of silently expanding access.
+  Request IDs must increase on each connection, as Core requires. External
+  navigation and service workers are blocked. External assets use the separate
+  restricted transport described above.
 - The dedicated identity may see different cards, themes, or views from a household
   member. Administrator-only dashboards, unsupported external resources, and cards requiring
   writes during initialization may not be available.

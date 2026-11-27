@@ -37,8 +37,7 @@ def _any(words):
 SENSITIVE = re.compile(_any(POLICY["sensitive_names"]), FLAGS)
 CREDENTIAL = re.compile(
     f"bearer{POLICY['whitespace']}|(?:{_any(POLICY['credential_value_names'])}){POLICY['whitespace']}*[=:]", FLAGS)
-READ = re.compile(f"(?:^|/)(?:{_any(POLICY['read_prefixes'])})(?:_|$)|/(?:{_any(POLICY['read_suffixes'])})$")
-DENIED_TYPE = re.compile(f"^(?:{_any(POLICY['denied_websocket_prefixes'])})(?:/|$)")
+RESERVED_TYPE = re.compile(f"^(?:{_any(POLICY['reserved_websocket_prefixes'])})(?:/|$)")
 WRITE_WORDS = frozenset(POLICY["write_words"])
 
 
@@ -102,8 +101,7 @@ def valid_rule(value):
     elif kind == "websocket":
         name = request.get("type")
         if (not isinstance(name, str) or len(name) > LIMITS["type_length"] or "id" in request
-            or not TYPE.fullmatch(name) or writes(name) or DENIED_TYPE.match(name)
-            or name in POLICY["denied_websocket_types"] or SENSITIVE.search(name) or not READ.search(name)):
+            or not TYPE.fullmatch(name) or RESERVED_TYPE.match(name) or SENSITIVE.search(name)):
             return None
     else:
         path, query = request.get("path"), request.get("query")
@@ -126,8 +124,12 @@ def describe(rule):
     request = json.loads(rule["request"])
     if rule["kind"] == "map_tiles":
         return {"label": "Load raster map tiles", "description": "Allows the map-only token and validated raster tile images. The token stays outside page scripts."}
-    return {"label": f"WebSocket {request['type']}" if rule["kind"] == "websocket" else f"{request['method']} {request['path']}",
-            "description": rule["request"]}
+    if rule["kind"] == "http":
+        return {"label": f"{request['method']} {request['path']}", "description": rule["request"]}
+    result = {"label": f"WebSocket {request['type']}", "description": rule["request"]}
+    if request["type"] in POLICY["websocket_action_types"]:
+        result["warning"] = "This request can change Home Assistant state or control a device."
+    return result
 
 
 def scope(session):

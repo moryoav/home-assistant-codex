@@ -1031,14 +1031,16 @@ function renderBrowserPermissions(check, turn, taskId) {
     return textNode("p", "This exchange was stopped, so its requests can't be approved. Start a new inspection to review them.", "muted");
   const panel = textNode("div", "", "browser-permission-review");
   panel.append(textNode("h4", "Review blocked browser requests"));
-  panel.append(textNode("p", "Select requests you trust. Unreviewed handlers may have side effects. Known device controls, writes, sign-in changes, URL signing and camera signaling stay blocked."));
+  panel.append(textNode("p", "Review the exact requests before approving. An approved command can have side effects even with the inspection account."));
   const fields = document.createElement("fieldset");
   fields.append(textNode("legend", `Additional access for ${check.path}`));
   const boxes = [];
+  const bulk = [];
   const selectLabel = textNode("label", "", "browser-permission-choice");
   const selectAll = document.createElement("input");
   selectAll.type = "checkbox";
-  selectLabel.append(selectAll, textNode("span", "Select all requests"));
+  selectLabel.append(selectAll, textNode("span", candidates.some(candidate => candidate.warning)
+    ? "Select all unmarked requests" : "Select all requests"));
   fields.append(selectLabel);
   for (const candidate of candidates) {
     const item = textNode("div", "", "browser-permission-request");
@@ -1049,8 +1051,12 @@ function renderBrowserPermissions(check, turn, taskId) {
     boxes.push(box);
     label.append(box, textNode("span", candidate.label));
     const details = textNode("details", "", "browser-permission-details");
+    details.open = true;
     details.append(textNode("summary", "Request details"), textNode("pre", candidate.description));
     item.append(label, details);
+    if (candidate.warning) {
+      item.append(textNode("p", `Potentially dangerous. ${candidate.warning}`));
+    } else bulk.push(box);
     fields.append(item);
   }
   const rememberLabel = textNode("label", "", "browser-permission-choice browser-permission-remember");
@@ -1076,12 +1082,13 @@ function renderBrowserPermissions(check, turn, taskId) {
     ["queued", "running", "in_queue"].includes(state.task?.status);
   fields.disabled = busy;
   const update = () => {
-    const selected = boxes.filter(box => box.checked).length;
-    selectAll.checked = selected === boxes.length;
-    selectAll.indeterminate = selected > 0 && selected < boxes.length;
-    allow.disabled = busy || !selected;
+    const selected = bulk.filter(box => box.checked).length;
+    selectAll.disabled = !bulk.length;
+    selectAll.checked = bulk.length > 0 && selected === bulk.length;
+    selectAll.indeterminate = selected > 0 && selected < bulk.length;
+    allow.disabled = busy || !boxes.some(box => box.checked);
   };
-  selectAll.onchange = () => { for (const box of boxes) box.checked = selectAll.checked; update(); };
+  selectAll.onchange = () => { for (const box of bulk) box.checked = selectAll.checked; update(); };
   for (const box of boxes) box.onchange = update;
   update();
   allow.onclick = async () => {

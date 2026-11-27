@@ -13,10 +13,11 @@ Dashboard rendering can fetch supported public HTTPS scripts, styles, fonts, and
 images through a separate client without Home Assistant credentials or browser
 cookies. The client validates and pins public DNS addresses and rechecks redirects.
 External servers still see the host's public IP and resource URL. Installed custom
-cards remain trusted code with access to dashboard data. The browser blocks
-service calls and writes; an explicit `save_pending` verification request can
+cards remain trusted code with access to dashboard data. The browser holds
+unfamiliar reviewable commands for owner approval. An approved command can have
+side effects under the inspection account. An explicit `save_pending` request can
 save a dashboard edited during the task when auto-save is enabled and the task
-mode permits writes. See [resource policy and limits](codex-cli-worker/VERIFICATION.md#dashboard-resources).
+mode permits writes. See [browser approval rules](codex-cli-worker/VERIFICATION.md#approving-additional-browser-requests).
 
 Dashboard inspections can also fetch screenshots from matching Fully Kiosk
 devices through the paired integration. These images have the same authenticated

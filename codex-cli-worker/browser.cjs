@@ -48,16 +48,15 @@ function readOnlyCondition(condition) {
 }
 
 /**
- * Return whether a WebSocket message from the dashboard may be forwarded to
- * Home Assistant. Only the read-only commands listed here and subscriptions
- * to a fixed set of event types pass.
+ * Return whether a known WebSocket read can run automatically, before checking
+ * for an exact owner grant.
  */
 function allowMessage(message) {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
   if (message.type === 'subscribe_condition')
     return Object.keys(message).every(key => ['id', 'type', 'condition'].includes(key)) && readOnlyCondition(message.condition);
   // These handlers only return configuration or listen for rotation events.
-  // Reporting navigation results remains blocked because it updates HA state.
+  // Reporting navigation results requires approval because it updates HA state.
   if (['knob_swipe_navigation/config', 'knob_swipe_navigation/subscribe_rotations'].includes(message.type))
     return Object.keys(message).every(key => ['id', 'type'].includes(key));
   // These custom_icons handlers only return active sets, icon lists, cached
@@ -324,15 +323,17 @@ async function inspect(input) {
         try { message = JSON.parse(String(raw)); } catch (_) { return closeBoth('the dashboard sent an invalid message', 'dashboard'); }
         if (!message || typeof message !== 'object' || Array.isArray(message))
           return closeBoth('the dashboard sent an invalid message', 'dashboard');
+        const automatic = authenticated && allowMessage(message);
         if (message.type === 'auth' && !authenticated) {
           authenticated = true;
           toCore(JSON.stringify({ type: 'auth', access_token: input.access_token }));
-        } else if (authenticated && (allowMessage(message) || permissions.message(message, activeViewport?.name))) {
+        } else if (authenticated && (automatic || permissions.message(message, activeViewport?.name))) {
           // Core requires increasing request IDs, so each response correlates
           // with exactly one request, including map token responses.
           const refused = commands.accept(message);
           if (refused) return refuse(message, refused, refused.includes('ID') ? 'id_reuse' : 'unauthorized');
-          toCore(String(raw));
+          // Forward the parsed fields used for exact approval matching.
+          toCore(automatic ? String(raw) : JSON.stringify(message));
         } else {
           const service = message.type === 'call_service' && /^[a-z_]+$/.test(message.domain) && /^[a-z_]+$/.test(message.service)
             ? `${message.domain}.${message.service}` : '';

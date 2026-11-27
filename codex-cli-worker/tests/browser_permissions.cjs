@@ -6,6 +6,7 @@ const { execFileSync } = require('node:child_process');
 const { BrowserPermissions, CommandTracker, LIMITS, canonical, rule, validate, boundedResult, websocketBlockReason } = require('../browser_permissions.cjs');
 
 const moduleList = { id: 1, type: 'bubble_card_tools/list_modules' };
+const moduleRead = { id: 1, type: 'bubble_card_tools/read_module', name: 'config.yaml' };
 const first = new BrowserPermissions();
 assert.equal(first.message(moduleList, 'desktop'), false);
 assert.equal(first.message({ type: moduleList.type, id: 77 }, 'mobile'), false);
@@ -19,10 +20,23 @@ assert.equal(allowed.message({ ...moduleList, id: 2 }), true);
 assert.equal(allowed.message({ ...moduleList, query: 'different parameters' }), false);
 assert.equal(allowed.message({ ...moduleList, type: 'bubble_card_tools/delete_modules' }), false);
 assert.equal(validate({ ...candidates[0], id: 'f'.repeat(64) }), null);
-for (const type of ['call_service', 'auth/sign_path', 'camera/webrtc/offer', 'camera/webrtc/candidate',
-  'execute_script', 'subscribe_trigger', 'custom/get_and_update', 'custom/read', 'auth/list', 'config/list']) {
+const reserved = ['auth/sign_path', 'camera/webrtc/offer', 'camera/webrtc/candidate', 'auth/list',
+  'config/auth/list', 'supervisor/api', 'web_rtc/ice_servers', 'media_source/resolve_media', 'debug_console/execute'];
+for (const type of reserved) {
   assert.equal(rule('websocket', { type }), null, type);
 }
+const reviewable = [moduleRead, {type: 'custom/dashboard_status'}, {type: 'custom/get_and_update'},
+  {type: 'config/list'}, {type: 'execute_script'}, {type: 'call_service', domain: 'light', service: 'turn_on'}];
+for (const message of reviewable) assert.ok(rule('websocket', message), JSON.stringify(message));
+const moduleGrant = new BrowserPermissions([rule('websocket', moduleRead)]);
+assert.equal(moduleGrant.message({...moduleRead, id: 2}), true);
+assert.equal(moduleGrant.message({...moduleRead, name: 'other.yaml'}), false);
+const optional = new BrowserPermissions();
+const diagnostic = { type: 'call_service', domain: 'system_log', service: 'write' };
+assert.equal(optional.message(diagnostic, 'desktop', true), false);
+const [diagnosticGrant] = optional.evidence().permission_candidates;
+assert.equal(diagnosticGrant.diagnostic, true);
+assert.equal(new BrowserPermissions([diagnosticGrant]).message(diagnostic, 'desktop', true), true);
 assert.equal(rule('websocket', { type: 'custom/get', password: 'secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: 'Bearer secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: Infinity }), null);
@@ -35,17 +49,14 @@ const condition = rule('websocket', { type: 'subscribe_condition', condition: { 
 assert.ok(condition);
 assert.equal(new BrowserPermissions([condition]).message(JSON.parse(condition.request)), true);
 // Commands the controller restricts by name or parameters stay outside approvals.
-for (const message of [{ type: 'knob_swipe_navigation/subscribe_rotations' }, { type: 'knob_swipe_navigation/navigation_result' },
-  { type: 'custom_icons/list', set: '../../../config' }, { type: 'custom_icons/icon', set: 'local', icon: '../secret' },
-  { type: 'subscribe_events' }, { type: 'subscribe_events', event_type: 'call_service' }, { type: 'browser_mod/settings/get' }]) {
+for (const message of [{ type: 'custom_icons/list', set: '../fixture' },
+  { type: 'custom_icons/icon', set: 'local', icon: '../fixture' }, { type: 'browser_mod/settings/get' }]) {
   assert.equal(rule('websocket', message), null, JSON.stringify(message));
 }
-assert.match(websocketBlockReason(moduleList), /Review this exact request for approval/);
-assert.match(websocketBlockReason({type: 'subscribe_events', event_type: 'zha_event'}), /read-only.*administrators/);
+assert.match(websocketBlockReason(moduleRead), /Held for your approval/);
+assert.match(websocketBlockReason({type: 'subscribe_events', event_type: 'zha_event'}), /Held for your approval.*requires administrator access/);
 assert.match(websocketBlockReason({type: 'browser_mod/connect'}), /stored browser details.*separate support/);
-assert.match(websocketBlockReason({type: 'subscribe_events'}), /Listening is not a write.*approval is unavailable/);
-assert.match(websocketBlockReason({type: 'knob_swipe_navigation/navigation_result'}), /updates integration state/);
-assert.match(websocketBlockReason({type: 'knob_swipe_navigation/subscribe_rotations', extra: true}), /Extra parameters.*approval is unavailable/);
+assert.match(websocketBlockReason({type: 'knob_swipe_navigation/navigation_result'}), /Held for your approval/);
 assert.match(websocketBlockReason({type: 'custom/get', password: 'hidden'}), /Approval is unavailable/);
 assert.match(websocketBlockReason({type: null}), /Invalid request type/);
 
@@ -170,6 +181,8 @@ for (const candidate of result.permission_candidates) assert.ok(validate(candida
 
 // The worker's Python validator must reach the same decision on the same requests.
 const corpus = [
+  ...reviewable.map(message => ['websocket', message]),
+  ...reserved.map(type => ['websocket', {type}]),
   ['websocket', { type: 'bubble_card_tools/list_modules' }],
   ['websocket', { type: 'subscribe_condition', condition: { condition: 'state', entity_id: 'light.x', state: 'on' } }],
   ['websocket', { type: 'system_health/info' }],

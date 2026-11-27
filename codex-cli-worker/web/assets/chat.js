@@ -996,7 +996,7 @@ function renderVerification(turn, taskId) {
     if (check.checked_at) row.append(textNode("small", dateLabel(check.checked_at, true)));
     if (check.permission_decision) {
       const names = (check.permission_decision.approved || []).map(item => item.label).join(", ");
-      row.append(textNode("p", `${check.permission_decision.remember ? "Remembered for this dashboard" : "Allowed for this retry"}: ${names}`));
+      row.append(textNode("p", `${check.permission_decision.remember ? "Remembered for this dashboard" : "Allowed for this inspection and its retries"}: ${names}`));
       const kept = (check.permission_decision.carried || []).map(item => item.label).join(", ");
       if (kept) row.append(textNode("p", `Still allowed from earlier in this exchange: ${kept}`));
     }
@@ -1029,17 +1029,22 @@ function renderBrowserPermissions(check, turn, taskId) {
   if (turn.turn_id !== state.task?.current_turn_id) return null;
   if (state.task?.cancellation_requested)
     return textNode("p", "This exchange was stopped, so its requests can't be approved. Start a new inspection to review them.", "muted");
-  const panel = textNode("div", "", "browser-permission-review");
-  panel.append(textNode("h4", "Review blocked browser requests"));
-  panel.append(textNode("p", "Select requests you trust. Unreviewed handlers may have side effects. Known device controls, writes, sign-in changes, URL signing and camera signaling stay blocked."));
+  const onlyDiagnostics = candidates.every(candidate => candidate.diagnostic);
+  const panel = textNode(onlyDiagnostics ? "details" : "div", "", "browser-permission-review");
+  panel.append(onlyDiagnostics ? textNode("summary", "Optional diagnostic requests")
+    : textNode("h4", "Review blocked browser requests"));
+  panel.append(textNode("p", "Any approved command can have side effects. Approval covers every matching request on desktop and mobile, including later retries of this inspection."));
   const fields = document.createElement("fieldset");
   fields.append(textNode("legend", `Additional access for ${check.path}`));
+  const diagnostics = textNode("details", "", "browser-permission-details");
+  diagnostics.append(textNode("summary", "Optional diagnostic requests"));
   const boxes = [];
+  const bulk = [];
   const selectLabel = textNode("label", "", "browser-permission-choice");
   const selectAll = document.createElement("input");
   selectAll.type = "checkbox";
-  selectLabel.append(selectAll, textNode("span", "Select all requests"));
-  fields.append(selectLabel);
+  selectLabel.append(selectAll, textNode("span", "Select all resource requests"));
+  if (candidates.some(candidate => candidate.kind !== "websocket")) fields.append(selectLabel);
   for (const candidate of candidates) {
     const item = textNode("div", "", "browser-permission-request");
     const label = textNode("label", "", "browser-permission-choice");
@@ -1049,10 +1054,16 @@ function renderBrowserPermissions(check, turn, taskId) {
     boxes.push(box);
     label.append(box, textNode("span", candidate.label));
     const details = textNode("details", "", "browser-permission-details");
+    details.open = true;
     details.append(textNode("summary", "Request details"), textNode("pre", candidate.description));
     item.append(label, details);
-    fields.append(item);
+    if (candidate.warning) {
+      item.append(textNode("p", `Potentially dangerous. ${candidate.warning}`));
+    }
+    if (candidate.kind !== "websocket") bulk.push(box);
+    (candidate.diagnostic && !onlyDiagnostics ? diagnostics : fields).append(item);
   }
+  if (diagnostics.childElementCount > 1) fields.append(diagnostics);
   const rememberLabel = textNode("label", "", "browser-permission-choice browser-permission-remember");
   const remember = document.createElement("input");
   remember.type = "checkbox";
@@ -1076,12 +1087,12 @@ function renderBrowserPermissions(check, turn, taskId) {
     ["queued", "running", "in_queue"].includes(state.task?.status);
   fields.disabled = busy;
   const update = () => {
-    const selected = boxes.filter(box => box.checked).length;
-    selectAll.checked = selected === boxes.length;
-    selectAll.indeterminate = selected > 0 && selected < boxes.length;
-    allow.disabled = busy || !selected;
+    const selected = bulk.filter(box => box.checked).length;
+    selectAll.checked = selected === bulk.length;
+    selectAll.indeterminate = selected > 0 && selected < bulk.length;
+    allow.disabled = busy || !boxes.some(box => box.checked);
   };
-  selectAll.onchange = () => { for (const box of boxes) box.checked = selectAll.checked; update(); };
+  selectAll.onchange = () => { for (const box of bulk) box.checked = selectAll.checked; update(); };
   for (const box of boxes) box.onchange = update;
   update();
   allow.onclick = async () => {
@@ -1126,6 +1137,7 @@ async function loadBrowserPermissions() {
       const row = textNode("div", "", "saved-browser-permission");
       const info = textNode("div", "", "saved-browser-permission-info");
       info.append(textNode("strong", permission.label), textNode("p", permission.path));
+      if (permission.warning) info.append(textNode("p", `Potentially dangerous. ${permission.warning}`));
       const details = textNode("details", "", "browser-permission-details");
       details.append(textNode("summary", "Request details"), textNode("pre", permission.description));
       info.append(details);

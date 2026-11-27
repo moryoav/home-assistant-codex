@@ -58,24 +58,26 @@ def main():
 
         permission_scope = scope({"installation_id": "a" * 32, "url": "http://fixture:8123"})
         permission_requests = [
-            ("websocket", {"type": "bubble_card_tools/list_modules"}),
-            ("websocket", {"type": "subscribe_condition", "condition": {"condition": "state", "entity_id": "light.kitchen", "state": "on"}}),
+            ("websocket", {"type": "bubble_card_tools/read_module", "name": "config.yaml"}),
+            ("websocket", {"type": "frontend/set_user_data", "key": "sidebar", "value": []}),
             ("map_tiles", {"type": "map_tiles/raster"}),
-            ("websocket", {"type": "custom/get", "query": "<img src=x onerror=alert(1)>"}),
+            ("websocket", {"type": "call_service", "domain": "system_log", "service": "write",
+                           "service_data": {"message": "<img src=x onerror=alert(1)>"}}),
         ]
         permission_rules = []
         for kind, body in permission_requests:
             # The controller's canonical form: sorted keys, compact, unescaped UTF-8.
             snapshot = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             rule = {"id": hashlib.sha256(f"{kind}\n{snapshot}".encode()).hexdigest(), "kind": kind, "request": snapshot}
-            permission_rules.append({**rule, **describe(rule)})
+            permission_rules.append({**rule, **describe(rule), "diagnostic": body.get("domain") == "system_log"})
 
         def permission_check(grants=()):
             """Make fixture evidence while the real worker handles approval and persistence."""
             allowed = {item["id"] for item in grants}
             pending = [item for item in permission_rules if item["id"] not in allowed]
             return {"operation": "dashboard", "check_id": server.uuid.uuid4().hex, "path": "/lovelace/home",
-                    "status": "issues" if pending else "captured", "permission_scope": permission_scope,
+                    "status": "issues" if any(not item["diagnostic"] for item in pending) else "captured",
+                    "permission_scope": permission_scope,
                     "message": "Fixture dashboard inspection.", "permission_candidates": pending,
                     "permissions_used": sorted(allowed)}
 

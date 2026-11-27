@@ -25,13 +25,12 @@
     "upload", "edit", "modify", "patch", "put", "post", "insert", "replace", "reconfigure", "activate", "deactivate",
     "approve", "dismiss", "revoke"
   ],
-  "read_prefixes": ["get", "list", "subscribe"],
-  "read_suffixes": ["config", "info", "capabilities"],
-  "denied_websocket_prefixes": [
-    "auth", "config", "hassio", "cloud", "stream", "backup", "person", "automation", "script",
-    "camera/webrtc", "camera/stream", "knob_swipe_navigation", "custom_icons", "browser_mod"
+  "reserved_websocket_prefixes": [
+    "auth", "config/auth", "config/auth_provider", "application_credentials", "hassio", "supervisor", "cloud",
+    "stream", "backup", "camera/webrtc", "camera/stream", "web_rtc", "media_source/resolve_media", "debug_console",
+    "custom_icons", "browser_mod"
   ],
-  "denied_websocket_types": ["subscribe_events"],
+  "websocket_action_types": ["call_service", "execute_script", "fire_event"],
   "denied_http_prefixes": [
     "/auth", "/api/auth", "/api/services", "/api/events", "/api/config", "/api/hassio", "/api/webhook",
     "/api/camera", "/api/codex_cli", "/api/stream", "/api/backup", "/api/map_tiles"

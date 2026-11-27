@@ -293,16 +293,25 @@ class BrowserPermissionTests(unittest.TestCase):
         self.assertTrue(self.engine.execution_lock.acquire(blocking=False))
         self.engine.execution_lock.release()
 
-    def test_sensitive_write_restricted_and_malformed_rules_are_never_eligible(self):
-        """Validation refuses dangerous or restricted commands even with a correctly computed fingerprint."""
+    def test_request_names_do_not_need_to_look_like_reads(self):
+        """Unfamiliar and action commands can be approved with their exact parameters."""
+        for request in ({"type": "bubble_card_tools/read_module", "name": "config.yaml"},
+                        {"type": "custom_tools/get_and_delete"}, {"type": "config/list"},
+                        {"type": "subscribe_events", "event_type": "zha_event"},
+                        {"type": "call_service", "domain": "light", "service": "turn_on"}):
+            with self.subTest(request=request):
+                rule = request_rule(request=request)
+                self.assertEqual(valid_rule(rule), rule)
+                self.assertEqual("warning" in describe(rule), request["type"] == "call_service")
+
+    def test_sensitive_reserved_and_malformed_rules_are_never_eligible(self):
+        """Validation keeps inspection boundaries even with a correctly computed fingerprint."""
         bad = [request_rule(request={"type": name}) for name in (
-            "call_service", "auth/sign_path", "map_tiles/access_token", "camera/webrtc/get_client_config", "camera/webrtc/offer", "camera/webrtc/candidate",
-            "custom_tools/get_and_delete", "custom_tools/register", "config/list", "execute_script",
-            "knob_swipe_navigation/subscribe_rotations", "subscribe_events", "browser_mod/settings/get")]
+            "auth/sign_path", "map_tiles/access_token", "camera/webrtc/get_client_config", "camera/webrtc/offer",
+            "web_rtc/ice_servers", "media_source/resolve_media", "supervisor/api", "browser_mod/settings/get")]
         bad += [request_rule(request={"type": "custom/get", "password": "hidden"}),
                 request_rule(request={"type": "custom/get", "query": "Bearer secret"}),
                 request_rule(request={"type": "custom_icons/list", "set": "../../../config"}),
-                request_rule(request={"type": "subscribe_events", "event_type": "call_service"}),
                 request_rule("http", {"method": "POST", "path": "/api/custom/read", "query": []}),
                 request_rule("http", {"method": "GET", "path": "/api/custom/get_token", "query": []}),
                 request_rule("http", {"method": "GET", "path": "/api/custom/delete-all", "query": []}),

@@ -537,7 +537,10 @@ class Verification:
                         for candidate in raw[:MAX_CANDIDATES]:
                             rule = valid_rule(candidate)
                             if rule and self.worker.redact(rule["request"]) == rule["request"]:
-                                candidates.append({**rule, **describe(rule)})
+                                item = {**rule, **describe(rule)}
+                                if candidate.get("diagnostic") is True:
+                                    item["diagnostic"] = True
+                                candidates.append(item)
                             else:
                                 omitted += 1
                     elif raw:

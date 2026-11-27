@@ -16,7 +16,7 @@ Matching Fully Kiosk devices can also supply fresh screenshots of the view they 
 
 For setup, security notes, and action examples, see the [repository README](https://github.com/moryoav/home-assistant-codex/blob/main/README.md) and [app documentation](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/DOCS.md).
 
-When a dashboard inspection blocks additional browser requests, open **Review blocked browser requests** in its result to approve a selected batch and retry the capture. Choose **Remember for this dashboard** to reuse those exceptions, and revoke them under **Settings > Browser permissions**. Approving a custom request is a trust decision. Known controls, writes, URL signing and camera signaling stay blocked. See [permission scopes and limits](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/VERIFICATION.md#approving-additional-browser-requests).
+When a dashboard inspection holds requests for approval, open **Review blocked browser requests** to approve a selected batch and retry the capture. Choose **Remember for this dashboard** to reuse those exceptions, and revoke them under **Settings > Browser permissions**. Approved requests run as the inspection account and can have side effects. See [permission scopes and limits](https://github.com/moryoav/home-assistant-codex/blob/main/codex-cli-worker/VERIFICATION.md#approving-additional-browser-requests).
 
 ## History and statistics
 

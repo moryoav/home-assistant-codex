@@ -13,7 +13,7 @@ async function inspection(page) {
   await page.getByRole('button', {name: 'Send message', exact: true}).click();
   const panel = page.locator('.browser-permission-review').last();
   await panel.locator('..').locator('summary').first().click();
-  await panel.getByRole('checkbox', {name: 'Select all requests', exact: true}).waitFor();
+  await panel.getByRole('checkbox', {name: 'Select all resource requests', exact: true}).waitFor();
   return panel;
 }
 
@@ -36,14 +36,28 @@ async function task(page) {
     const panel = await inspection(page);
     const allow = panel.getByRole('button', {name: 'Allow selected and retry', exact: true});
     assert.equal(await allow.isDisabled(), true);
+    assert.equal(await panel.getByText(/every matching request on desktop and mobile, including later retries/).isVisible(), true);
     await page.locator('#message').fill('Keep my unsent draft');
-    await panel.getByRole('checkbox', {name: 'Select all requests', exact: true}).check();
+    await panel.getByRole('checkbox', {name: 'Select all resource requests', exact: true}).check();
+    const module = panel.getByRole('checkbox', {name: 'WebSocket bubble_card_tools/read_module', exact: true});
+    const preference = panel.getByRole('checkbox', {name: 'WebSocket frontend/set_user_data', exact: true});
+    const diagnostic = panel.getByText('Optional diagnostic requests', {exact: true});
+    assert.equal(await diagnostic.locator('..').evaluate(node => node.open), false);
+    await diagnostic.click();
+    const action = panel.getByRole('checkbox', {name: 'WebSocket call_service', exact: true});
+    assert.equal(await module.isChecked(), false);
+    assert.equal(await preference.isChecked(), false);
+    assert.equal(await action.isChecked(), false);
+    assert.equal(await panel.getByText('Potentially dangerous.', {exact: false}).isVisible(), true);
+    assert.equal(await panel.getByText(/"name":"config\.yaml"/).isVisible(), true);
+    await module.check();
+    await preference.check();
+    await action.check();
     await panel.getByRole('checkbox', {name: 'Remember for this dashboard', exact: true}).check();
     assert.equal(await allow.isEnabled(), true);
     const old = await task(page);
     const source = old.verification[0];
-    await panel.getByText('Request details', {exact: true}).last().click();
-    assert.match(await panel.locator('pre').last().textContent(), /<img src=x onerror/);
+    assert.match(await panel.getByText(/<img src=x onerror/).textContent(), /<img src=x onerror/);
     assert.equal(await panel.locator('img').count(), 0);
     await panel.scrollIntoViewIfNeeded();
     await page.screenshot({path: path.join(output, 'browser-permissions-desktop.png'), fullPage: true, animations: 'disabled'});
@@ -78,6 +92,7 @@ async function task(page) {
     const list = page.locator('#browser-permissions');
     await list.getByRole('button').first().waitFor();
     assert.equal(await list.getByRole('button').count(), 4);
+    assert.equal(await list.getByText('Potentially dangerous.', {exact: false}).isVisible(), true);
     for (let remaining = 4; remaining > 0; remaining--) {
       await list.getByRole('button').first().click();
       await page.waitForFunction(count => document.querySelectorAll('#browser-permissions button').length === count, remaining - 1);
@@ -97,11 +112,18 @@ async function task(page) {
     await page.getByRole('button', {name: 'Close settings', exact: true}).click();
     // An unselected request stays blocked and one-off approval creates no saved rule.
     const once = await inspection(page);
-    await once.getByRole('checkbox', {name: 'WebSocket bubble_card_tools/list_modules', exact: true}).check();
+    await once.getByRole('checkbox', {name: 'Select all resource requests', exact: true}).check();
+    await once.getByRole('checkbox', {name: 'WebSocket bubble_card_tools/read_module', exact: true}).check();
+    await once.getByRole('checkbox', {name: 'WebSocket frontend/set_user_data', exact: true}).check();
     await once.getByRole('button', {name: 'Allow selected and retry', exact: true}).click();
-    await page.getByText('Allowed for this retry:', {exact: false}).waitFor();
+    await page.getByText('Allowed for this inspection and its retries:', {exact: false}).waitFor();
     const single = await task(page);
-    assert.equal(single.verification.at(-1).permission_candidates.length, 3);
+    assert.equal(single.verification.at(-1).status, 'captured');
+    assert.equal(single.verification.at(-1).permission_candidates.length, 1);
+    const clean = page.locator('.verification-result.is-captured').last();
+    assert.equal(await clean.locator('.browser-permission-review').evaluate(node => node.open), false);
+    assert.equal(await clean.getByText('Optional diagnostic requests', {exact: true}).isVisible(), true);
+    assert.equal(await clean.getByText('Review blocked browser requests', {exact: true}).count(), 0);
     assert.equal((await (await page.request.get(new URL('browser-permissions', base).href)).json()).permissions.length, 0);
     assert.deepEqual(errors, []);
     console.log('PASS: batch selection, remembered/once decisions, fresh retry evidence, stale rejection, safe details, drafts, saved permissions after reload, revocation, mobile dark mode, and no page errors.');

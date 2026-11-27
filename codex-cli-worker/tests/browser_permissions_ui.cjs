@@ -13,7 +13,7 @@ async function inspection(page) {
   await page.getByRole('button', {name: 'Send message', exact: true}).click();
   const panel = page.locator('.browser-permission-review').last();
   await panel.locator('..').locator('summary').first().click();
-  await panel.getByRole('checkbox', {name: 'Select all unmarked requests', exact: true}).waitFor();
+  await panel.getByRole('checkbox', {name: 'Select all resource requests', exact: true}).waitFor();
   return panel;
 }
 
@@ -37,11 +37,17 @@ async function task(page) {
     const allow = panel.getByRole('button', {name: 'Allow selected and retry', exact: true});
     assert.equal(await allow.isDisabled(), true);
     await page.locator('#message').fill('Keep my unsent draft');
-    await panel.getByRole('checkbox', {name: 'Select all unmarked requests', exact: true}).check();
+    await panel.getByRole('checkbox', {name: 'Select all resource requests', exact: true}).check();
+    const module = panel.getByRole('checkbox', {name: 'WebSocket bubble_card_tools/read_module', exact: true});
+    const preference = panel.getByRole('checkbox', {name: 'WebSocket frontend/set_user_data', exact: true});
     const action = panel.getByRole('checkbox', {name: 'WebSocket call_service', exact: true});
+    assert.equal(await module.isChecked(), false);
+    assert.equal(await preference.isChecked(), false);
     assert.equal(await action.isChecked(), false);
     assert.equal(await panel.getByText('Potentially dangerous.', {exact: false}).isVisible(), true);
     assert.equal(await panel.getByText(/"name":"config\.yaml"/).isVisible(), true);
+    await module.check();
+    await preference.check();
     await action.check();
     await panel.getByRole('checkbox', {name: 'Remember for this dashboard', exact: true}).check();
     assert.equal(await allow.isEnabled(), true);

@@ -88,8 +88,11 @@ function websocketBlockReason(message) {
     return 'Browser Mod can update stored browser details and attach a command channel. It needs separate support; approval is unavailable.';
   if (type === 'browser_mod' || type.startsWith('browser_mod/'))
     return 'Browser Mod needs separate support for this inspection. Approval is unavailable.';
-  if (rule('websocket', message))
+  if (rule('websocket', message)) {
+    if (type === 'subscribe_events' && message.event_type === 'zha_event')
+      return 'Held for your approval. Home Assistant requires administrator access for this event stream and can reject it after approval.';
     return 'Held for your approval. Review this exact request in the approval list if included.';
+  }
   if (type === 'auth' || type.startsWith('auth/'))
     return 'Authentication changes and URL signing need separate support. Approval is unavailable.';
   if (type === 'camera/stream' || type === 'camera/webrtc' || type.startsWith('camera/webrtc/'))

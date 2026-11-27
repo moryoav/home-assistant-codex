@@ -92,10 +92,9 @@ screenshots. Matching devices can add images beyond the two browser viewports.
 ## Approving additional browser requests
 
 After an inspection, open its verification result and choose requests under
-**Review blocked browser requests**. Select individual requests or **Select all
-requests**, inspect their details, then choose **Allow selected and retry**.
-When a request has an action warning, the bulk selector skips it. You can select
-that request individually.
+**Review blocked browser requests**. Review the exact details and select the
+requests to allow, then choose **Allow selected and retry**. Select WebSocket
+requests individually. **Select all resource requests** covers HTTP and map tiles.
 Unselected requests stay blocked. **Keep blocked** closes the result without
 granting access. A batch is available only for the current exchange after tasks
 in every chat have finished, and can be approved once. Each exchange permits up

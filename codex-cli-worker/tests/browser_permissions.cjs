@@ -48,7 +48,7 @@ for (const message of [{ type: 'custom_icons/list', set: '../fixture' },
   assert.equal(rule('websocket', message), null, JSON.stringify(message));
 }
 assert.match(websocketBlockReason(moduleRead), /Held for your approval/);
-assert.match(websocketBlockReason({type: 'subscribe_events', event_type: 'zha_event'}), /Held for your approval/);
+assert.match(websocketBlockReason({type: 'subscribe_events', event_type: 'zha_event'}), /Held for your approval.*requires administrator access/);
 assert.match(websocketBlockReason({type: 'browser_mod/connect'}), /stored browser details.*separate support/);
 assert.match(websocketBlockReason({type: 'knob_swipe_navigation/navigation_result'}), /Held for your approval/);
 assert.match(websocketBlockReason({type: 'custom/get', password: 'hidden'}), /Approval is unavailable/);

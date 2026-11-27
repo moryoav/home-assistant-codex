@@ -59,7 +59,7 @@ def main():
         permission_scope = scope({"installation_id": "a" * 32, "url": "http://fixture:8123"})
         permission_requests = [
             ("websocket", {"type": "bubble_card_tools/read_module", "name": "config.yaml"}),
-            ("websocket", {"type": "subscribe_condition", "condition": {"condition": "state", "entity_id": "light.kitchen", "state": "on"}}),
+            ("websocket", {"type": "frontend/set_user_data", "key": "sidebar", "value": []}),
             ("map_tiles", {"type": "map_tiles/raster"}),
             ("websocket", {"type": "call_service", "domain": "system_log", "service": "write",
                            "service_data": {"message": "<img src=x onerror=alert(1)>"}}),

@@ -1039,9 +1039,8 @@ function renderBrowserPermissions(check, turn, taskId) {
   const selectLabel = textNode("label", "", "browser-permission-choice");
   const selectAll = document.createElement("input");
   selectAll.type = "checkbox";
-  selectLabel.append(selectAll, textNode("span", candidates.some(candidate => candidate.warning)
-    ? "Select all unmarked requests" : "Select all requests"));
-  fields.append(selectLabel);
+  selectLabel.append(selectAll, textNode("span", "Select all resource requests"));
+  if (candidates.some(candidate => candidate.kind !== "websocket")) fields.append(selectLabel);
   for (const candidate of candidates) {
     const item = textNode("div", "", "browser-permission-request");
     const label = textNode("label", "", "browser-permission-choice");
@@ -1056,7 +1055,8 @@ function renderBrowserPermissions(check, turn, taskId) {
     item.append(label, details);
     if (candidate.warning) {
       item.append(textNode("p", `Potentially dangerous. ${candidate.warning}`));
-    } else bulk.push(box);
+    }
+    if (candidate.kind !== "websocket") bulk.push(box);
     fields.append(item);
   }
   const rememberLabel = textNode("label", "", "browser-permission-choice browser-permission-remember");
@@ -1083,8 +1083,7 @@ function renderBrowserPermissions(check, turn, taskId) {
   fields.disabled = busy;
   const update = () => {
     const selected = bulk.filter(box => box.checked).length;
-    selectAll.disabled = !bulk.length;
-    selectAll.checked = bulk.length > 0 && selected === bulk.length;
+    selectAll.checked = selected === bulk.length;
     selectAll.indeterminate = selected > 0 && selected < bulk.length;
     allow.disabled = busy || !boxes.some(box => box.checked);
   };

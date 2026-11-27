@@ -69,14 +69,15 @@ def main():
             # The controller's canonical form: sorted keys, compact, unescaped UTF-8.
             snapshot = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             rule = {"id": hashlib.sha256(f"{kind}\n{snapshot}".encode()).hexdigest(), "kind": kind, "request": snapshot}
-            permission_rules.append({**rule, **describe(rule)})
+            permission_rules.append({**rule, **describe(rule), "diagnostic": body.get("domain") == "system_log"})
 
         def permission_check(grants=()):
             """Make fixture evidence while the real worker handles approval and persistence."""
             allowed = {item["id"] for item in grants}
             pending = [item for item in permission_rules if item["id"] not in allowed]
             return {"operation": "dashboard", "check_id": server.uuid.uuid4().hex, "path": "/lovelace/home",
-                    "status": "issues" if pending else "captured", "permission_scope": permission_scope,
+                    "status": "issues" if any(not item["diagnostic"] for item in pending) else "captured",
+                    "permission_scope": permission_scope,
                     "message": "Fixture dashboard inspection.", "permission_candidates": pending,
                     "permissions_used": sorted(allowed)}
 

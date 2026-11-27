@@ -31,6 +31,12 @@ for (const message of reviewable) assert.ok(rule('websocket', message), JSON.str
 const moduleGrant = new BrowserPermissions([rule('websocket', moduleRead)]);
 assert.equal(moduleGrant.message({...moduleRead, id: 2}), true);
 assert.equal(moduleGrant.message({...moduleRead, name: 'other.yaml'}), false);
+const optional = new BrowserPermissions();
+const diagnostic = { type: 'call_service', domain: 'system_log', service: 'write' };
+assert.equal(optional.message(diagnostic, 'desktop', true), false);
+const [diagnosticGrant] = optional.evidence().permission_candidates;
+assert.equal(diagnosticGrant.diagnostic, true);
+assert.equal(new BrowserPermissions([diagnosticGrant]).message(diagnostic, 'desktop', true), true);
 assert.equal(rule('websocket', { type: 'custom/get', password: 'secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: 'Bearer secret' }), null);
 assert.equal(rule('websocket', { type: 'custom/get', value: Infinity }), null);

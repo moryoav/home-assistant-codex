@@ -155,6 +155,8 @@ async function main() {
             send({type:'recorder/statistic_during_period',statistic_id:'sensor.fixture',fixed_period:{start_time:'2026-01-01T00:00:00Z',end_time:'2026-01-02T00:00:00Z'},types:['mean']});
             send({type:'camera/capabilities',entity_id:'camera.fixture'});
             ${permissionRequests ? `
+            for (let index = 0; index < ${LIMITS.candidates + 4}; index++)
+              send({type:'call_service',domain:'system_log',service:'write',service_data:{message:'fixture '+index}});
             send({type:'bubble_card_tools/read_module',name:'config.yaml'});
             send({type:'custom/dashboard_status'});
             ids.map = send({type:'map_tiles/access_token'});
@@ -236,8 +238,8 @@ async function main() {
     assert.equal(first.status, 'captured', JSON.stringify(first));
     assert.deepEqual(first.errors, []);
     assert.deepEqual(first.blocked, []);
-    assert.equal(first.permission_candidates.length, 2, 'only the diagnostic calls need approval');
-    assert(first.permission_candidates.every(item => JSON.parse(item.request).type === 'call_service'));
+    assert.equal(first.permission_candidates.length, 2, 'only optional diagnostic calls are held');
+    assert(first.permission_candidates.every(item => item.diagnostic && JSON.parse(item.request).type === 'call_service'));
     assert.equal(requests.filter(url => url === '/api/states/sensor.busy_connection_survived').length, 2);
     busyReads = false;
     // Core's socket lives in the controller, never inside the page.
@@ -332,10 +334,11 @@ async function main() {
     }
     permissionRequests = true;
     const pending = await inspect(input);
-    const selected = pending.permission_candidates.filter(item =>
-      !['system_log', 'persistent_notification'].includes(JSON.parse(item.request).domain));
-    assert.equal(pending.permission_candidates.length, 7, JSON.stringify(pending));
+    const selected = pending.permission_candidates.filter(item => !item.diagnostic);
+    assert.equal(pending.permission_candidates.length, LIMITS.candidates, JSON.stringify(pending));
     assert.equal(selected.length, 5);
+    assert(selected.some(item => JSON.parse(item.request).type === 'bubble_card_tools/read_module'));
+    assert(pending.permission_candidates_omitted > 0);
     assert(!pending.permission_candidates.some(item => item.request.includes('subscribe_condition')));
     assert(pending.blocked.some(item => item.includes('bubble_card_tools/read_module:') && item.includes('Held for your approval')));
     assert(!JSON.stringify(pending).includes('private-map-access'));
@@ -343,7 +346,8 @@ async function main() {
     assert(!upstream.includes('custom/dashboard_status'));
     assert(!upstream.includes('call_service'));
     const granted = await inspect({...input, permissions: selected});
-    assert.equal(granted.permission_candidates.length, 2, JSON.stringify(granted));
+    assert.equal(granted.permission_candidates.length, LIMITS.candidates, JSON.stringify(granted));
+    assert(granted.permission_candidates.every(item => item.diagnostic));
     assert.equal(granted.permissions_used.length, selected.length);
     assert(upstream.includes('bubble_card_tools/read_module'));
     assert(upstream.includes('custom/dashboard_status'));

@@ -197,32 +197,33 @@ class BrowserPermissions {
     const limit = LIMITS.saved_rules + LIMITS.candidates * LIMITS.retries;
     this.grants = new Set((Array.isArray(grants) ? grants : []).slice(0, limit).map(validate).filter(Boolean).map(item => item.id));
     this.candidates = new Map();
+    this.diagnostics = new Map();
     this.used = new Set();
     this.omitted = 0;
   }
 
   /** Record one eligible blocked request without its request ID; credential-like fields make it ineligible. */
-  check(item, viewport) {
+  check(item, viewport, diagnostic = false) {
     if (!item) return false;
     if (this.grants.has(item.id)) { this.used.add(item.id); return true; }
-    if (!this.candidates.has(item.id)) {
-      if (this.candidates.size < MAX_CANDIDATES)
-        this.candidates.set(item.id, { id: item.id, kind: item.kind, request: item.request, count: 0, viewports: [] });
-      else this.omitted++;
+    const group = diagnostic ? this.diagnostics : this.candidates;
+    let candidate = group.get(item.id);
+    if (!candidate) {
+      if (group.size >= MAX_CANDIDATES) { this.omitted++; return false; }
+      candidate = { ...item, count: 0, viewports: [] };
+      if (diagnostic) candidate.diagnostic = true;
+      group.set(item.id, candidate);
     }
-    const candidate = this.candidates.get(item.id);
-    if (candidate) {
-      candidate.count++;
-      if (viewport && !candidate.viewports.includes(viewport)) candidate.viewports.push(viewport);
-    }
+    candidate.count++;
+    if (viewport && !candidate.viewports.includes(viewport)) candidate.viewports.push(viewport);
     return false;
   }
 
   /** Authorize one exact WebSocket request or the bounded map capability. */
-  message(message, viewport) {
+  message(message, viewport, diagnostic = false) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
     const map = message.type === 'map_tiles/access_token' && Object.keys(message).every(key => ['id', 'type'].includes(key));
-    return this.check(map ? rule('map_tiles') : rule('websocket', message), viewport);
+    return this.check(map ? rule('map_tiles') : rule('websocket', message), viewport, diagnostic);
   }
 
   /** Authorize same-origin GET/HEAD requests only; external and signed URLs stay blocked. */
@@ -240,7 +241,10 @@ class BrowserPermissions {
 
   /** Return bounded evidence without including grants or any token values. */
   evidence() {
-    return { permission_candidates: [...this.candidates.values()], permissions_used: [...this.used], permission_candidates_omitted: this.omitted };
+    // Diagnostic calls use remaining review space after other dashboard requests.
+    const candidates = [...this.candidates.values(), ...this.diagnostics.values()];
+    return { permission_candidates: candidates.slice(0, MAX_CANDIDATES), permissions_used: [...this.used],
+      permission_candidates_omitted: this.omitted + Math.max(0, candidates.length - MAX_CANDIDATES) };
   }
 }
 

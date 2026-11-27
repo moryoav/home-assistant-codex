@@ -101,6 +101,8 @@ in every chat have finished, and can be approved once. Each exchange permits up
 to four retries. An inspection offers at most 16 complete requests, and private
 storage holds at most 128 remembered rules. Additional requests may be omitted to
 keep the evidence bounded; an approvable request is never shortened to fit.
+Diagnostic logging and notifications appear in a collapsed group and use only
+the review space left after other requests.
 
 An approval starts a fresh dashboard capture with a new short-lived session.
 It does not rerun the task, save dashboard changes, reload Home Assistant, or

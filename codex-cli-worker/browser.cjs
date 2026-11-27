@@ -323,11 +323,15 @@ async function inspect(input) {
         try { message = JSON.parse(String(raw)); } catch (_) { return closeBoth('the dashboard sent an invalid message', 'dashboard'); }
         if (!message || typeof message !== 'object' || Array.isArray(message))
           return closeBoth('the dashboard sent an invalid message', 'dashboard');
+        const service = message.type === 'call_service' && typeof message.domain === 'string' && typeof message.service === 'string' &&
+          /^[a-z_]+$/.test(message.domain) && /^[a-z_]+$/.test(message.service)
+          ? `${message.domain}.${message.service}` : '';
+        const diagnostic = ['system_log.write', 'persistent_notification.create'].includes(service);
         const automatic = authenticated && allowMessage(message);
         if (message.type === 'auth' && !authenticated) {
           authenticated = true;
           toCore(JSON.stringify({ type: 'auth', access_token: input.access_token }));
-        } else if (authenticated && (automatic || permissions.message(message, activeViewport?.name))) {
+        } else if (authenticated && (automatic || permissions.message(message, activeViewport?.name, diagnostic))) {
           // Core requires increasing request IDs, so each response correlates
           // with exactly one request, including map token responses.
           const refused = commands.accept(message);
@@ -335,9 +339,6 @@ async function inspect(input) {
           // Forward the parsed fields used for exact approval matching.
           toCore(automatic ? String(raw) : JSON.stringify(message));
         } else {
-          const service = message.type === 'call_service' && /^[a-z_]+$/.test(message.domain) && /^[a-z_]+$/.test(message.service)
-            ? `${message.domain}.${message.service}` : '';
-          const diagnostic = ['system_log.write', 'persistent_notification.create'].includes(service);
           const reason = websocketBlockReason(message);
           add(diagnostic ? null : blocked, `WebSocket ${String(message.type)}${service ? ` (${service})` : message.event_type ? ` (${message.event_type})` : ''}: ${reason}`,
             diagnostic ? 'diagnostic' : 'policy');

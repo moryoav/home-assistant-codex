@@ -1029,11 +1029,15 @@ function renderBrowserPermissions(check, turn, taskId) {
   if (turn.turn_id !== state.task?.current_turn_id) return null;
   if (state.task?.cancellation_requested)
     return textNode("p", "This exchange was stopped, so its requests can't be approved. Start a new inspection to review them.", "muted");
-  const panel = textNode("div", "", "browser-permission-review");
-  panel.append(textNode("h4", "Review blocked browser requests"));
-  panel.append(textNode("p", "Review the exact requests before approving. An approved command can have side effects even with the inspection account."));
+  const onlyDiagnostics = candidates.every(candidate => candidate.diagnostic);
+  const panel = textNode(onlyDiagnostics ? "details" : "div", "", "browser-permission-review");
+  panel.append(onlyDiagnostics ? textNode("summary", "Optional diagnostic requests")
+    : textNode("h4", "Review blocked browser requests"));
+  panel.append(textNode("p", "Review the exact requests before approving. Any approved command can have side effects even with the inspection account."));
   const fields = document.createElement("fieldset");
   fields.append(textNode("legend", `Additional access for ${check.path}`));
+  const diagnostics = textNode("details", "", "browser-permission-details");
+  diagnostics.append(textNode("summary", "Optional diagnostic requests"));
   const boxes = [];
   const bulk = [];
   const selectLabel = textNode("label", "", "browser-permission-choice");
@@ -1057,8 +1061,9 @@ function renderBrowserPermissions(check, turn, taskId) {
       item.append(textNode("p", `Potentially dangerous. ${candidate.warning}`));
     }
     if (candidate.kind !== "websocket") bulk.push(box);
-    fields.append(item);
+    (candidate.diagnostic && !onlyDiagnostics ? diagnostics : fields).append(item);
   }
+  if (diagnostics.childElementCount > 1) fields.append(diagnostics);
   const rememberLabel = textNode("label", "", "browser-permission-choice browser-permission-remember");
   const remember = document.createElement("input");
   remember.type = "checkbox";
@@ -1132,6 +1137,7 @@ async function loadBrowserPermissions() {
       const row = textNode("div", "", "saved-browser-permission");
       const info = textNode("div", "", "saved-browser-permission-info");
       info.append(textNode("strong", permission.label), textNode("p", permission.path));
+      if (permission.warning) info.append(textNode("p", `Potentially dangerous. ${permission.warning}`));
       const details = textNode("details", "", "browser-permission-details");
       details.append(textNode("summary", "Request details"), textNode("pre", permission.description));
       info.append(details);
